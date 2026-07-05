@@ -39,6 +39,7 @@ compile_commands.json
 *.exe
 
 # Editor and OS files
+.vscode/
 .vscode/.browse.c_cpp.db*
 .vscode/ipch/
 .DS_Store
@@ -47,3 +48,4 @@ Desktop.ini
 *.tmp
 *.bak
 *.log
+

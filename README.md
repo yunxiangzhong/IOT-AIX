@@ -49,6 +49,23 @@ python -m aix_host_app
 
 如果暂时没有连接开发板，可以勾选“模拟数据”查看曲线和界面状态。
 
+
+## VSCode ESP-IDF 插件配置
+
+本仓库不提交 `.vscode/`，因为 VSCode 配置里通常包含本机 ESP-IDF 安装路径、串口号、clangd 路径和构建目录。这些内容每台电脑都不同，上传到 GitHub 反而容易导致他人环境出错。
+
+推荐使用 VSCode 插件 **Espressif IDF** 重新生成本地配置：
+
+1. 安装 VSCode 插件：在扩展市场搜索 `ESP-IDF`，安装 Espressif 官方插件。
+2. 打开工程目录：用 VSCode 打开 `D:\Projects\IOTCompetition\ProjectFile\AIX`。
+3. 配置插件：按 `Ctrl+Shift+P`，执行 `ESP-IDF: Configure ESP-IDF Extension`。
+4. 选择 ESP-IDF 安装方式：如果本机已经装好 ESP-IDF，选择已有安装；否则按插件向导安装。
+5. 设置目标芯片：执行 `ESP-IDF: Set Espressif Device Target`，选择 `esp32s3`。
+6. 选择串口：执行 `ESP-IDF: Select Port to Use`，选择开发板对应的 COM 口。
+7. 构建烧录：可使用插件侧边栏按钮，或在终端运行 `idf.py build`、`idf.py flash monitor`。
+
+插件可能会在本地重新生成 `.vscode/`，这是正常现象；该目录已被 `.gitignore` 忽略，不需要提交。
+
 ## 串口数据格式
 
 固件每 500 ms 输出一行压力事件：
@@ -77,3 +94,4 @@ python -m aix_host_app
 - 将路口、车辆、行人、侧后方接近等算法结果封装为风险事件。
 - 将风险等级映射到气囊预充气策略，例如 0%、20%、50%、80%、100%。
 - 云端大模型只用于非安全关键的骑行复盘、参数建议和事件说明，本地控制闭环保持端侧独立。
+
