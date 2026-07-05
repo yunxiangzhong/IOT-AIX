@@ -1,0 +1,49 @@
+# Repository ignores
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python caches and packaging
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Host app runtime output
+host_app/logs/
+*.csv
+
+# ESP-IDF build output
+AIX/build/
+AIX/sdkconfig.old
+AIX/managed_components/
+AIX/.espressif/
+
+# CMake and compiler output
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+*.o
+*.a
+*.out
+*.exe
+
+# Editor and OS files
+.vscode/.browse.c_cpp.db*
+.vscode/ipch/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak
+*.log
