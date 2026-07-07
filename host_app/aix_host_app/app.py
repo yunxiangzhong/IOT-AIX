@@ -6,14 +6,17 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
-from .models import PressureSample
-from .parsers import ParseError, parse_pressure_line
+from .models import ActuatorEvent, MotionEvent, PressureSample, RiskEvent
+from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
 from .simulation import make_simulated_pressure_sample
 from .styles import app_stylesheet
+from .vision import CameraFrame, CameraReader, CameraSourceConfig, VisionEventBridge, VisionTrendAnalyzer
 from .widgets.connection_panel import ConnectionPanel
 from .widgets.event_timeline import EventTimeline
+from .widgets.motion_panel import MotionPanel
 from .widgets.pressure_panel import PressurePanel
+from .widgets.sensor_overview_panel import SensorOverviewPanel
 from .widgets.vision_panel import VisionPanel
 
 
@@ -25,6 +28,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setStyleSheet(app_stylesheet())
 
         self.reader: SerialLineReader | None = None
+        self.camera_reader: CameraReader | None = None
+        self.vision_analyzer = VisionTrendAnalyzer()
+        self.vision_bridge = VisionEventBridge(min_interval_ms=100)
+        self._camera_error_active = False
         self.record_file = None
         self.record_writer: csv.writer | None = None
         self.sim_seq = 0
@@ -34,7 +41,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sim_timer.timeout.connect(self._emit_simulated_sample)
 
         self.connection_panel = ConnectionPanel()
+        self.overview_panel = SensorOverviewPanel()
         self.pressure_panel = PressurePanel()
+        self.motion_panel = MotionPanel()
         self.vision_panel = VisionPanel()
         self.timeline = EventTimeline()
 
@@ -44,6 +53,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage("就绪")
 
     def closeEvent(self, event) -> None:
+        self._stop_camera(log=False)
         self._stop_serial()
         self._close_record_file()
         super().closeEvent(event)
@@ -56,27 +66,37 @@ class MainWindow(QtWidgets.QMainWindow):
         main_splitter.setChildrenCollapsible(False)
         main_splitter.addWidget(self.connection_panel)
 
-        center = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        center.setChildrenCollapsible(False)
-        center.addWidget(self.pressure_panel)
-        center.addWidget(self.timeline)
-        center.setSizes([520, 210])
+        center = QtWidgets.QWidget()
+        center_layout = QtWidgets.QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(8)
+        center_layout.addWidget(self.overview_panel)
+
+        sensor_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        sensor_splitter.setChildrenCollapsible(False)
+        sensor_splitter.addWidget(self.pressure_panel)
+        sensor_splitter.addWidget(self.motion_panel)
+        sensor_splitter.setSizes([620, 260])
+        center_layout.addWidget(sensor_splitter, 1)
+        center_layout.addWidget(self.timeline)
+
         main_splitter.addWidget(center)
         main_splitter.addWidget(self.vision_panel)
-        main_splitter.setSizes([250, 740, 330])
+        main_splitter.setSizes([230, 820, 360])
 
         wrapper = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(wrapper)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.addWidget(main_splitter)
         self.setCentralWidget(wrapper)
-
     def _wire_signals(self) -> None:
         self.connection_panel.refresh_requested.connect(self.refresh_ports)
         self.connection_panel.connect_requested.connect(self._start_serial)
         self.connection_panel.disconnect_requested.connect(self._stop_serial)
         self.connection_panel.simulation_changed.connect(self._set_simulation_enabled)
         self.connection_panel.recording_changed.connect(self._set_recording_enabled)
+        self.vision_panel.camera_start_requested.connect(self._start_camera)
+        self.vision_panel.camera_stop_requested.connect(self._stop_camera)
 
     def _start_serial(self, port: str, baudrate: int) -> None:
         self._set_simulation_enabled(False)
@@ -103,8 +123,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _handle_reader_state(self, state: str) -> None:
         if state == "connected":
-            self.connection_panel.set_connected(True, "串口已连接")
-            self.statusBar().showMessage("正在接收串口数据")
+            self.connection_panel.set_connected(True, "串口双向已连接")
+            self.statusBar().showMessage("正在接收 ESP 事件，可发送视觉特征")
         elif state == "disconnected":
             self.connection_panel.set_connected(False)
             self.statusBar().showMessage("串口未连接")
@@ -116,16 +136,31 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _handle_raw_line(self, line: str) -> None:
         try:
-            sample = parse_pressure_line(line)
+            event = parse_event_line(line)
         except ParseError:
             if line.startswith("{"):
                 self.timeline.add_line(f"[ignored] {line}")
             return
 
-        self._accept_sample(sample, raw_line=line)
+        if isinstance(event, PressureSample):
+            self._accept_sample(event, raw_line=line)
+        elif isinstance(event, MotionEvent):
+            self.motion_panel.update_motion(event)
+            self.overview_panel.update_motion(event)
+            self.timeline.add_line(line)
+        elif isinstance(event, RiskEvent):
+            self.vision_panel.update_esp_risk(event)
+            self.overview_panel.update_risk(event)
+            self.timeline.set_summary(f"risk {event.level} | target {event.target_pct}% | {event.reason}")
+            self.timeline.add_line(line)
+        elif isinstance(event, ActuatorEvent):
+            self.vision_panel.update_actuator(event)
+            self.overview_panel.update_actuator(event)
+            self.timeline.add_line(line)
 
     def _accept_sample(self, sample: PressureSample, raw_line: str | None = None) -> None:
         self.pressure_panel.update_sample(sample)
+        self.overview_panel.update_pressure(sample)
         self.timeline.set_summary(
             f"seq {sample.seq} | {sample.filtered_kpa:.1f} kPa | {sample.source}"
         )
@@ -136,6 +171,76 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"[sim] seq={sample.seq}, filtered={sample.filtered_kpa:.1f}kPa"
             )
         self._record_sample(sample)
+
+    def _start_camera(self, config: CameraSourceConfig) -> None:
+        self._stop_camera(log=False)
+        self._camera_error_active = False
+        self.vision_analyzer = VisionTrendAnalyzer()
+        self.vision_panel.set_placeholder_state()
+        self.timeline.add_line(f"[camera] opening {config.source_label()}")
+
+        self.camera_reader = CameraReader(config, self)
+        self.camera_reader.frame_received.connect(self._handle_camera_frame)
+        self.camera_reader.error_changed.connect(self._handle_camera_error)
+        self.camera_reader.state_changed.connect(self._handle_camera_state)
+        self.camera_reader.finished.connect(self._handle_camera_finished)
+        self.camera_reader.start()
+        self.vision_panel.set_camera_running(True, "正在打开摄像头")
+        self.statusBar().showMessage("正在打开摄像头")
+
+    def _stop_camera(self, log: bool = True) -> None:
+        if self.camera_reader is None:
+            self.vision_panel.set_camera_running(False)
+            return
+
+        reader = self.camera_reader
+        self.camera_reader = None
+        self._camera_error_active = False
+        reader.stop()
+        reader.wait(1500)
+        self.vision_panel.set_camera_running(False)
+        if log:
+            self.timeline.add_line("[camera] stopped")
+        self.statusBar().showMessage("摄像头已停止")
+
+    def _handle_camera_state(self, state: str) -> None:
+        if state == "connected":
+            self._camera_error_active = False
+            self.vision_panel.set_camera_running(True, "摄像头已连接")
+            self.statusBar().showMessage("摄像头画面接收中")
+
+    def _handle_camera_error(self, message: str) -> None:
+        self._camera_error_active = True
+        self.timeline.add_line(f"[camera:error] {message}")
+        self.vision_panel.set_camera_error(message)
+        self.statusBar().showMessage(message)
+
+    def _handle_camera_finished(self) -> None:
+        reader = self.sender()
+        if reader is not self.camera_reader:
+            return
+        self.camera_reader = None
+        if not self._camera_error_active:
+            self.vision_panel.set_camera_running(False)
+
+    def _handle_camera_frame(self, frame: CameraFrame) -> None:
+        result = self.vision_analyzer.analyze(frame)
+        self.vision_panel.update_frame(frame)
+        self.vision_panel.update_analysis(result)
+        now_ms = QtCore.QDateTime.currentMSecsSinceEpoch()
+        failures_before = self.vision_bridge.status.failure_count
+        sent = self.vision_bridge.maybe_send(result.features, self.reader, now_ms=now_ms)
+        status = self.vision_bridge.status
+        age_ms = None if status.last_sent_ms is None else max(0, now_ms - status.last_sent_ms)
+        self.vision_panel.update_vision_tx_status(
+            status.last_seq,
+            age_ms,
+            status.failure_count,
+            connected=self.reader is not None,
+        )
+        if not sent and status.failure_count > failures_before:
+            self.timeline.add_line("[vision:tx-fail] 串口写入视觉事件失败")
+
 
     def _set_simulation_enabled(self, enabled: bool) -> None:
         if enabled:

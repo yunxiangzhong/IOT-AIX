@@ -29,7 +29,29 @@ def app_stylesheet() -> str:
         font-weight: 800;
         background: transparent;
     }
-    QLabel#muted {
+    QFrame#metricCell {
+        background: #ffffff;
+        border: 1px solid #d7e4dd;
+        border-radius: 6px;
+    }
+    QLabel#metricTitle {
+        color: #687873;
+        font-size: 12px;
+        font-weight: 700;
+        background: transparent;
+    }
+    QLabel#metricCellValue {
+        color: #16352f;
+        font-size: 22px;
+        font-weight: 800;
+        background: transparent;
+    }
+    QLabel#metricSmallValue {
+        color: #0f766e;
+        font-size: 24px;
+        font-weight: 800;
+        background: transparent;
+    }    QLabel#muted {
         color: #687873;
         background: transparent;
     }
@@ -78,7 +100,7 @@ def app_stylesheet() -> str:
         border-color: #0f766e;
         color: #f8fbf8;
     }
-    QComboBox, QSpinBox {
+    QComboBox, QSpinBox, QLineEdit {
         background: #ffffff;
         border: 1px solid #ccd8d1;
         border-radius: 6px;
@@ -102,4 +124,3 @@ def app_stylesheet() -> str:
         background: #d7e4dd;
     }
     """
-

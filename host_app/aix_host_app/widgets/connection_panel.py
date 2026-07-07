@@ -84,14 +84,12 @@ class ConnectionPanel(QtWidgets.QFrame):
         self.simulation_check.setEnabled(not connected)
         self.state_label.setText(label or ("已连接" if connected else "未连接"))
         self.state_label.setObjectName("statusOk" if connected else "muted")
-        self.state_label.style().unpolish(self.state_label)
-        self.state_label.style().polish(self.state_label)
+        self._refresh_label_style(self.state_label)
 
     def set_status_text(self, text: str, warning: bool = False) -> None:
         self.state_label.setText(text)
         self.state_label.setObjectName("statusWarn" if warning else "muted")
-        self.state_label.style().unpolish(self.state_label)
-        self.state_label.style().polish(self.state_label)
+        self._refresh_label_style(self.state_label)
 
     def set_simulation_checked(self, checked: bool) -> None:
         self.simulation_check.blockSignals(True)
@@ -108,3 +106,7 @@ class ConnectionPanel(QtWidgets.QFrame):
             self.set_status_text("未选择串口", warning=True)
             return
         self.connect_requested.emit(port, self.current_baudrate())
+
+    def _refresh_label_style(self, label: QtWidgets.QLabel) -> None:
+        label.style().unpolish(label)
+        label.style().polish(label)

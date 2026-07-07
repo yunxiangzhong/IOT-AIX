@@ -44,5 +44,6 @@ static inline bool pressure_sensor_is_over_pressure(float pressure_kpa)
 
 esp_err_t pressure_sensor_init(void);
 esp_err_t pressure_sensor_read(pressure_sensor_sample_t *out);
+bool pressure_sensor_get_latest(pressure_sensor_sample_t *out);
 esp_err_t pressure_sensor_start_task(void);
 #endif

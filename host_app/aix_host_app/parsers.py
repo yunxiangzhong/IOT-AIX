@@ -4,16 +4,16 @@ import json
 import re
 from typing import Any
 
-from .models import PressureSample
+from .models import ActuatorEvent, MotionEvent, PressureSample, RiskEvent
 
 
 class ParseError(ValueError):
-    """Raised when a serial line is not a pressure telemetry event."""
+    """Raised when a serial line is not a supported telemetry event."""
 
 
 _LEGACY_PREFIX_RE = re.compile(r"\((?P<ts_ms>\d+)\).*PRESSURE,(?P<body>.*)$")
 _LEGACY_BODY_RE = re.compile(r"PRESSURE,(?P<body>.*)$")
-_JSON_REQUIRED = (
+_PRESSURE_REQUIRED = (
     "seq",
     "ts_ms",
     "raw",
@@ -23,30 +23,66 @@ _JSON_REQUIRED = (
     "over_pressure",
     "valid",
 )
+_RISK_REQUIRED = (
+    "seq",
+    "ts_ms",
+    "level",
+    "target_pct",
+    "reason",
+    "vision_stale",
+    "pressure_safe",
+)
+_ACTUATOR_REQUIRED = ("seq", "ts_ms", "mode", "target_pct", "pump", "valve")
+_MOTION_REQUIRED = (
+    "seq",
+    "ts_ms",
+    "speed_mps",
+    "accel_mps2",
+    "speed_valid",
+    "accel_valid",
+)
 
 
-def parse_pressure_line(line: str) -> PressureSample:
+def parse_event_line(line: str) -> PressureSample | RiskEvent | ActuatorEvent | MotionEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
 
-    if text.startswith("{"):
-        return _parse_pressure_json(text)
-    return _parse_legacy_pressure(text)
+    if not text.startswith("{"):
+        return _parse_legacy_pressure(text)
+
+    payload = _load_json_object(text)
+    event_type = payload.get("type")
+    if event_type == "pressure":
+        return _parse_pressure_payload(payload)
+    if event_type == "risk":
+        return _parse_risk_payload(payload)
+    if event_type == "actuator":
+        return _parse_actuator_payload(payload)
+    if event_type == "motion":
+        return _parse_motion_payload(payload)
+    raise ParseError(f"unsupported json event type: {event_type}")
 
 
-def _parse_pressure_json(text: str) -> PressureSample:
+def parse_pressure_line(line: str) -> PressureSample:
+    event = parse_event_line(line)
+    if not isinstance(event, PressureSample):
+        raise ParseError("line is not pressure telemetry")
+    return event
+
+
+def _load_json_object(text: str) -> dict[str, Any]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ParseError(f"invalid json: {exc}") from exc
-
     if not isinstance(payload, dict):
         raise ParseError("json event is not an object")
-    if payload.get("type") != "pressure":
-        raise ParseError("json event is not a pressure sample")
+    return payload
 
-    missing = [key for key in _JSON_REQUIRED if key not in payload]
+
+def _parse_pressure_payload(payload: dict[str, Any]) -> PressureSample:
+    missing = [key for key in _PRESSURE_REQUIRED if key not in payload]
     if missing:
         raise ParseError(f"pressure json missing fields: {', '.join(missing)}")
 
@@ -60,6 +96,63 @@ def _parse_pressure_json(text: str) -> PressureSample:
             filtered_kpa=_as_float(payload["filtered_kpa"], "filtered_kpa"),
             over_pressure=_as_bool(payload["over_pressure"], "over_pressure"),
             valid=_as_bool(payload["valid"], "valid"),
+            source="json",
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_risk_payload(payload: dict[str, Any]) -> RiskEvent:
+    missing = [key for key in _RISK_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"risk json missing fields: {', '.join(missing)}")
+
+    try:
+        return RiskEvent(
+            seq=_as_int(payload["seq"], "seq"),
+            ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+            level=_as_int(payload["level"], "level"),
+            target_pct=_as_int(payload["target_pct"], "target_pct"),
+            reason=str(payload["reason"]),
+            vision_stale=_as_bool(payload["vision_stale"], "vision_stale"),
+            pressure_safe=_as_bool(payload["pressure_safe"], "pressure_safe"),
+            pressure_state=str(payload.get("pressure_state", "enabled")),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_actuator_payload(payload: dict[str, Any]) -> ActuatorEvent:
+    missing = [key for key in _ACTUATOR_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"actuator json missing fields: {', '.join(missing)}")
+
+    try:
+        return ActuatorEvent(
+            seq=_as_int(payload["seq"], "seq"),
+            ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+            mode=str(payload["mode"]),
+            target_pct=_as_int(payload["target_pct"], "target_pct"),
+            pump=str(payload["pump"]),
+            valve=str(payload["valve"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
+    missing = [key for key in _MOTION_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"motion json missing fields: {', '.join(missing)}")
+
+    try:
+        return MotionEvent(
+            seq=_as_int(payload["seq"], "seq"),
+            ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+            speed_mps=_as_float(payload["speed_mps"], "speed_mps"),
+            accel_mps2=_as_float(payload["accel_mps2"], "accel_mps2"),
+            speed_valid=_as_bool(payload["speed_valid"], "speed_valid"),
+            accel_valid=_as_bool(payload["accel_valid"], "accel_valid"),
             source="json",
         )
     except (TypeError, ValueError) as exc:

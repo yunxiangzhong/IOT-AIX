@@ -1,0 +1,34 @@
+#pragma once
+
+#include <stdbool.h>
+
+#include "vision_input.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    int level;
+    int target_pct;
+    const char *reason;
+    bool vision_stale;
+    bool pressure_safe;
+    const char *pressure_state;
+} risk_fusion_result_t;
+
+risk_fusion_result_t risk_fusion_evaluate(const vision_input_snapshot_t *vision,
+                                          bool pressure_safe);
+risk_fusion_result_t risk_fusion_evaluate_with_pressure(const vision_input_snapshot_t *vision,
+                                                        bool pressure_enabled,
+                                                        bool pressure_safe);
+
+#ifdef ESP_PLATFORM
+#include "esp_err.h"
+
+esp_err_t risk_fusion_start_task(void);
+#endif
+
+#ifdef __cplusplus
+}
+#endif

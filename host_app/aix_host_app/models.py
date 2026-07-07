@@ -26,9 +26,33 @@ class VisionFrame:
 
 
 @dataclass(frozen=True)
+class MotionEvent:
+    seq: int
+    ts_ms: int
+    speed_mps: float
+    accel_mps2: float
+    speed_valid: bool
+    accel_valid: bool
+    source: str = "json"
+
+
+@dataclass(frozen=True)
 class RiskEvent:
+    seq: int
     ts_ms: int
     level: int
-    label: str
+    target_pct: int
     reason: str
-    source: str
+    vision_stale: bool
+    pressure_safe: bool
+    pressure_state: str = "enabled"
+
+
+@dataclass(frozen=True)
+class ActuatorEvent:
+    seq: int
+    ts_ms: int
+    mode: str
+    target_pct: int
+    pump: str
+    valve: str

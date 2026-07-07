@@ -10,12 +10,13 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "config_input.h"
 
 #define PRESSURE_SENSOR_ADC_UNIT ADC_UNIT_1
 #define PRESSURE_SENSOR_ADC_CHANNEL ADC_CHANNEL_0
 #define PRESSURE_SENSOR_ADC_ATTEN ADC_ATTEN_DB_12
 #define PRESSURE_SENSOR_SAMPLE_PERIOD_MS 20
-#define PRESSURE_SENSOR_LOG_PERIOD_MS 500
+#define PRESSURE_SENSOR_LOG_PERIOD_MS 1000
 #define PRESSURE_SENSOR_FILTER_ALPHA 0.2f
 #define PRESSURE_SENSOR_TASK_STACK 3072
 #define PRESSURE_SENSOR_TASK_PRIORITY 5
@@ -32,6 +33,9 @@ static bool s_filter_ready;
 static bool s_task_started;
 static float s_filtered_kpa;
 static uint32_t s_sample_count;
+static portMUX_TYPE s_latest_lock = portMUX_INITIALIZER_UNLOCKED;
+static pressure_sensor_sample_t s_latest_sample;
+static bool s_has_latest_sample;
 
 static bool pressure_sensor_calibration_init(void)
 {
@@ -157,7 +161,28 @@ esp_err_t pressure_sensor_read(pressure_sensor_sample_t *out)
                  (voltage_mv <= PRESSURE_SENSOR_VALID_HIGH_MV);
     out->sample_count = s_sample_count;
 
+    taskENTER_CRITICAL(&s_latest_lock);
+    s_latest_sample = *out;
+    s_has_latest_sample = true;
+    taskEXIT_CRITICAL(&s_latest_lock);
+
     return ESP_OK;
+}
+
+bool pressure_sensor_get_latest(pressure_sensor_sample_t *out)
+{
+    if (out == NULL) {
+        return false;
+    }
+
+    taskENTER_CRITICAL(&s_latest_lock);
+    const bool has_sample = s_has_latest_sample;
+    if (has_sample) {
+        *out = s_latest_sample;
+    }
+    taskEXIT_CRITICAL(&s_latest_lock);
+
+    return has_sample;
 }
 
 static void pressure_sensor_task(void *arg)
@@ -167,6 +192,11 @@ static void pressure_sensor_task(void *arg)
     TickType_t last_log_tick = xTaskGetTickCount();
 
     while (1) {
+        if (!config_input_pressure_enabled()) {
+            vTaskDelay(pdMS_TO_TICKS(PRESSURE_SENSOR_SAMPLE_PERIOD_MS));
+            continue;
+        }
+
         pressure_sensor_sample_t sample = {0};
         const esp_err_t ret = pressure_sensor_read(&sample);
         if (ret == ESP_OK) {
@@ -230,5 +260,4 @@ esp_err_t pressure_sensor_start_task(void)
     s_task_started = true;
     return ESP_OK;
 }
-
 

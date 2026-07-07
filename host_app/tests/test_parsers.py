@@ -1,7 +1,7 @@
 import unittest
 
-from aix_host_app.models import PressureSample
-from aix_host_app.parsers import ParseError, parse_pressure_line
+from aix_host_app.models import ActuatorEvent, MotionEvent, PressureSample, RiskEvent
+from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
 class PressureParserTests(unittest.TestCase):
@@ -51,6 +51,55 @@ class PressureParserTests(unittest.TestCase):
     def test_rejects_malformed_line(self):
         with self.assertRaises(ParseError):
             parse_pressure_line("boot log without pressure data")
+
+
+class EventParserTests(unittest.TestCase):
+    def test_parses_risk_ndjson_event(self):
+        line = (
+            '{"type":"risk","version":1,"seq":35,"ts_ms":43100,'
+            '"level":80,"target_pct":80,"reason":"vision_looming",'
+            '"vision_stale":false,"pressure_safe":true}'
+        )
+
+        event = parse_event_line(line)
+
+        self.assertIsInstance(event, RiskEvent)
+        self.assertEqual(event.seq, 35)
+        self.assertEqual(event.ts_ms, 43100)
+        self.assertEqual(event.level, 80)
+        self.assertEqual(event.target_pct, 80)
+        self.assertEqual(event.reason, "vision_looming")
+        self.assertFalse(event.vision_stale)
+        self.assertTrue(event.pressure_safe)
+
+    def test_parses_risk_pressure_state(self):
+        line = (
+            '{"type":"risk","version":1,"seq":35,"ts_ms":43100,'
+            '"level":20,"target_pct":20,"reason":"vision_weak",'
+            '"vision_stale":false,"pressure_safe":true,'
+            '"pressure_state":"disabled"}'
+        )
+
+        event = parse_event_line(line)
+
+        self.assertIsInstance(event, RiskEvent)
+        self.assertEqual(event.pressure_state, "disabled")
+
+    def test_parses_actuator_ndjson_event(self):
+        line = (
+            '{"type":"actuator","version":1,"seq":35,"ts_ms":43100,'
+            '"mode":"sim","target_pct":80,"pump":"hold","valve":"closed"}'
+        )
+
+        event = parse_event_line(line)
+
+        self.assertIsInstance(event, ActuatorEvent)
+        self.assertEqual(event.seq, 35)
+        self.assertEqual(event.ts_ms, 43100)
+        self.assertEqual(event.mode, "sim")
+        self.assertEqual(event.target_pct, 80)
+        self.assertEqual(event.pump, "hold")
+        self.assertEqual(event.valve, "closed")
 
 
 if __name__ == "__main__":

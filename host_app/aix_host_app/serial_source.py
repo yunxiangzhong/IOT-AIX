@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 
 from PySide6 import QtCore
 
@@ -40,6 +41,7 @@ class SerialLineReader(QtCore.QThread):
         self._baudrate = baudrate
         self._stop_requested = False
         self._serial = None
+        self._write_lock = Lock()
 
     def stop(self) -> None:
         self._stop_requested = True
@@ -49,6 +51,19 @@ class SerialLineReader(QtCore.QThread):
                 serial_obj.close()
             except Exception:
                 pass
+
+    def write_line(self, line: str) -> bool:
+        serial_obj = self._serial
+        if serial_obj is None:
+            return False
+        text = line.rstrip("\r\n") + "\n"
+        try:
+            with self._write_lock:
+                serial_obj.write(text.encode("utf-8"))
+            return True
+        except Exception as exc:
+            self.error_changed.emit(f"串口写入失败：{exc}")
+            return False
 
     def run(self) -> None:
         try:
