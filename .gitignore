@@ -38,6 +38,10 @@ compile_commands.json
 *.out
 *.exe
 
+# Test code (keep locally, exclude from repo)
+AIX/test/
+host_app/tests/
+
 # Editor and OS files
 .vscode/
 .vscode/.browse.c_cpp.db*
