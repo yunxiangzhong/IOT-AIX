@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..models import ActuatorEvent, RiskEvent
+from ..models import ActuatorEvent, RiskEvent, VisionDetectEvent
 from ..vision import CameraFrame, CameraSourceConfig, VisionAnalysisResult
 
 
@@ -94,6 +94,10 @@ class VisionPanel(QtWidgets.QFrame):
         self.rule_label.setObjectName("muted")
         self.rule_label.setWordWrap(True)
 
+        self.detect_label = QtWidgets.QLabel("目标检测：等待数据")
+        self.detect_label.setObjectName("muted")
+        self.detect_label.setWordWrap(True)
+
         for widget in (
             self.scene_label,
             self.target_label,
@@ -101,6 +105,7 @@ class VisionPanel(QtWidgets.QFrame):
             self.tx_label,
             self.risk_label,
             self.action_label,
+            self.detect_label,
             self.rule_label,
         ):
             widget.setWordWrap(True)
@@ -128,7 +133,10 @@ class VisionPanel(QtWidgets.QFrame):
         self.risk_label.setText("ESP风险等级 0")
         self.risk_label.setObjectName("statusOk")
         self.action_label.setText("气囊策略：等待 ESP")
+        self.detect_label.setText("目标检测：等待数据")
+        self.detect_label.setObjectName("muted")
         self._refresh_label_style(self.risk_label)
+        self._refresh_label_style(self.detect_label)
 
     def set_camera_running(self, running: bool, text: str | None = None) -> None:
         self._running = running
@@ -203,6 +211,20 @@ class VisionPanel(QtWidgets.QFrame):
         )
         self.action_label.setObjectName("statusWarn" if event.target_pct > 0 else "muted")
         self._refresh_label_style(self.action_label)
+
+    def update_vision_detect(self, event: VisionDetectEvent) -> None:
+        lines = [f"目标检测 [{event.source}] seq={event.seq}"]
+        for obj in event.objects:
+            lines.append(
+                f"  {obj.class_name} {obj.confidence:.0%} | "
+                f"距离 {obj.distance_m:.2f}m | "
+                f"bbox({obj.bbox[0]},{obj.bbox[1]},{obj.bbox[2]},{obj.bbox[3]})"
+            )
+        lines.append(f"最近 {event.nearest_distance_m:.2f}m | TTC {event.ttc_s:.2f}s")
+        self.detect_label.setText("\n".join(lines))
+        warn = not event.valid or event.ttc_s < 1.0
+        self.detect_label.setObjectName("statusWarn" if warn else "muted")
+        self._refresh_label_style(self.detect_label)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

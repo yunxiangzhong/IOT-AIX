@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
-from .models import ActuatorEvent, MotionEvent, PressureSample, RiskEvent
+from .models import ActuatorEvent, MotionEvent, PressureSample, RiskEvent, VisionDetectEvent
 from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
 from .simulation import make_simulated_pressure_sample
@@ -156,6 +156,9 @@ class MainWindow(QtWidgets.QMainWindow):
         elif isinstance(event, ActuatorEvent):
             self.vision_panel.update_actuator(event)
             self.overview_panel.update_actuator(event)
+            self.timeline.add_line(line)
+        elif isinstance(event, VisionDetectEvent):
+            self.vision_panel.update_vision_detect(event)
             self.timeline.add_line(line)
 
     def _accept_sample(self, sample: PressureSample, raw_line: str | None = None) -> None:
