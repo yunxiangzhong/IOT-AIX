@@ -37,7 +37,6 @@ _RISK_REQUIRED = (
     "level",
     "target_pct",
     "reason",
-    "vision_stale",
     "pressure_safe",
 )
 _ACTUATOR_REQUIRED = ("seq", "ts_ms", "mode", "target_pct", "pump", "valve")
@@ -129,7 +128,7 @@ def _parse_risk_payload(payload: dict[str, Any]) -> RiskEvent:
             level=_as_int(payload["level"], "level"),
             target_pct=_as_int(payload["target_pct"], "target_pct"),
             reason=str(payload["reason"]),
-            vision_stale=_as_bool(payload["vision_stale"], "vision_stale"),
+            vision_stale=_as_bool(payload.get("vision_stale", False), "vision_stale"),
             pressure_safe=_as_bool(payload["pressure_safe"], "pressure_safe"),
             pressure_state=str(payload.get("pressure_state", "enabled")),
             version=version,
