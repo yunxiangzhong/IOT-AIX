@@ -127,6 +127,21 @@ risk_fusion_result_v2_t risk_fusion_evaluate_v2(const vision_detect_result_t *de
     return result;
 }
 
+risk_fusion_result_t risk_fusion_v2_to_actuator_result(const risk_fusion_result_v2_t *result)
+{
+    if (result == NULL) {
+        return make_result(0, 0, "risk_v2_missing", true, true, true);
+    }
+    risk_fusion_result_t converted = {
+        .level = result->level,
+        .target_pct = result->target_pct,
+        .reason = result->reason,
+        .vision_stale = false,
+        .pressure_safe = result->pressure_safe,
+        .pressure_state = result->pressure_state,
+    };
+    return converted;
+}
 #ifdef ESP_PLATFORM
 #include <stdio.h>
 #include <string.h>
@@ -209,22 +224,24 @@ static void risk_fusion_task(void *arg)
                        v2.pressure_safe ? "true" : "false",
                        v2.pressure_state);
 
+                risk_fusion_result_t actuator_result = risk_fusion_v2_to_actuator_result(&v2);
+                airbag_control_apply_simulated(&actuator_result, s_risk_seq, now_ms);
+
                 /* voice prompt for level >= 20 */
                 if (v2.level >= 20) {
+                    char voice_buf[96];
                     const char *voice = NULL;
                     if (strcmp(v2.category, "critical") == 0) {
                         voice = "\xe7\xb4\xa7\xe6\x80\xa5\xe5\x8d\xb1\xe9\x99\xa9\xef\xbc\x8c\xe7\x9b\xae\xe6\xa0\x87\xe8\xbf\x87\xe8\xbf\x91";
                     } else if (strcmp(v2.category, "vision_warning") == 0) {
                         /* "注意，{nearest_class}接近" - build dynamically */
-                        char buf[64];
-                        snprintf(buf, sizeof(buf), "\xe6\xb3\xa8\xe6\x84\x8f\xef\xbc\x8c%s\xe6\x8e\xa5\xe8\xbf\x91",
+                        snprintf(voice_buf, sizeof(voice_buf), "\xe6\xb3\xa8\xe6\x84\x8f\xef\xbc\x8c%s\xe6\x8e\xa5\xe8\xbf\x91",
                                  v2.nearest_class ? v2.nearest_class : "\xe7\x9b\xae\xe6\xa0\x87");
-                        voice = buf;
+                        voice = voice_buf;
                     } else if (strcmp(v2.category, "vision_caution") == 0) {
-                        char buf[64];
-                        snprintf(buf, sizeof(buf), "\xe5\x89\x8d\xe6\x96\xb9%s\xef\xbc\x8c\xe8\xaf\xb7\xe6\xb3\xa8\xe6\x84\x8f",
+                        snprintf(voice_buf, sizeof(voice_buf), "\xe5\x89\x8d\xe6\x96\xb9%s\xef\xbc\x8c\xe8\xaf\xb7\xe6\xb3\xa8\xe6\x84\x8f",
                                  v2.nearest_class ? v2.nearest_class : "\xe7\x9b\xae\xe6\xa0\x87");
-                        voice = buf;
+                        voice = voice_buf;
                     }
                     if (voice) {
                         voice_prompt_say(voice, s_risk_seq, now_ms);
