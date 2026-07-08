@@ -74,7 +74,18 @@ class SensorOverviewPanel(QtWidgets.QFrame):
             object_name = "statusWarn"
         else:
             object_name = "statusOk"
-        self.risk.set_metric(str(event.level), event.reason, object_name)
+        
+        risk_status = event.reason
+        if event.version == 2 and event.category:
+            risk_status = f"{event.category} | {event.reason}"
+            if event.nearest_class:
+                risk_status += f" | {event.nearest_class}"
+            if event.nearest_distance_m >= 0:
+                risk_status += f" | {event.nearest_distance_m:.1f}m"
+            if event.ttc_s >= 0:
+                risk_status += f" | TTC:{event.ttc_s:.1f}s"
+        
+        self.risk.set_metric(str(event.level), risk_status, object_name)
         self.airbag.set_metric(f"{event.target_pct}%", "ESP目标", object_name)
 
     def update_actuator(self, event: ActuatorEvent) -> None:
