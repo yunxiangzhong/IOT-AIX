@@ -1,44 +1,83 @@
 # AIX 脉盔
 
-AIX 脉盔是一套面向电动车和摩托车骑行安全的智能头盔原型。项目核心不是“碰撞后触发”，而是把环境风险转换成连续的气囊预充气状态，让骑手通过头部压力变化直接感知风险，并在碰撞前提前进入防护准备。
+AIX 脉盔是一套面向电动车、摩托车骑行场景的智能安全头盔原型。项目目标不是只在碰撞后被动保护，而是在骑行过程中用摄像头识别前方或侧方风险目标，结合距离估计和气囊压力反馈，让骑手提前听到提醒、感受到头部压力变化，并在紧急场景下进入气囊保护状态。
 
-当前代码仓库聚焦 ESP32-S3 端的本地安全闭环，以及 PC 上位机的数据验证与演示。当前阶段暂时没有真实摄像头、速度、加速度、IMU 或雷达模块；PC 摄像头作为临时视觉传感器替身，用光流扩张、中心运动和前景面积变化提取图像接近趋势特征并通过 USB-UART 发给 ESP32-S3，最终风险等级和气囊策略仍由 ESP32-S3 输出。
-
-## 顶层设计
+当前 7.8 版本的主线已经收敛为：
 
 ```text
-环境感知层
-├─ 当前临时输入：PC 本机摄像头 / 手机 IP 摄像头
-├─ 后续真实模块：摄像头模块、速度模块、加速度模块、IMU、毫米波雷达
-├─ 当前输出：vision 趋势特征 NDJSON
-└─ 后续输出：motion、姿态、距离、TTC、目标类别等非直接执行信号
-
-控制与采集层
-├─ ESP32-S3-DevKitC-1
-├─ XGZP6847A 气压传感器 ADC 采样，默认启用压力监测
-├─ vision_input：接收 PC 摄像头临时传感器事件
-├─ risk_fusion：每 50 ms 本地融合视觉趋势和压力安全状态
-├─ airbag_control：当前仅输出气囊模拟动作
-└─ 后续：气泵、电磁阀、PWM、PID 气动闭环
-
-PC 验证与演示层
-├─ 双向串口：接收 pressure / risk / actuator / motion，发送 vision
-├─ 传感器总览：压力、速度、加速度、ESP 风险、气囊目标
-├─ 压力曲线、运动模块占位、视觉闭环调试、事件流
-└─ CSV 记录：当前只记录压力样本
-
-安全边界
-├─ 本地端侧规则负责安全关键动作
-└─ 云端/大模型只做骑行复盘、参数建议、说明文本，不参与紧急控制闭环
+摄像头采集
+    -> ESP32-S3 端侧轻量目标检测
+    -> 获取目标类别、方位、距离估计、接近趋势
+    -> risk_fusion 生成风险等级和目标充气比例
+    -> voice_prompt 语音提醒
+    -> airbag_control 控制气泵、电磁阀和气囊
 ```
 
-设计原则：
+第一版推荐使用 `OV5640 + ESP32-S3 + PSRAM`。`OV2640` 可作为低成本验证方案，双目摄像头暂不作为必须项，只作为后续距离精度升级方向。
 
-- 安全关键闭环优先放在 ESP32-S3 或本地端侧，不依赖云端网络响应。
-- 上位机是比赛调试和演示工具，不直接承担最终产品的安全控制职责。
-- PC 摄像头只是临时视觉传感器替身，不是最终控制器。
-- 速度、加速度模块目前只做 UI 和协议预留，不伪造输入，不参与风险融合。
-- 气囊执行当前为模拟输出，真实泵阀接入前不得误驱动硬件。
+## 产品定位
+
+### 核心卖点
+
+| 卖点 | 触发场景 | 用户感知 |
+| --- | --- | --- |
+| 舒适低压支撑 | 正常骑行、无明显风险 | 气囊维持约 10% 低压，不明显打扰 |
+| 安全意识反馈 | 检测到车辆、行人、障碍物接近，或距离持续缩短 | 气囊充到 20%-40%，形成明确压力提醒，同时语音播报 |
+| 紧急主动保护 | 目标过近、TTC 很短、碰撞风险高 | 气囊快速满充到 100%，进入保护状态 |
+
+风险映射建议：
+
+```text
+normal   -> 10%  舒适低压
+caution  -> 20%  轻提醒
+warning  -> 40%  明显提醒
+critical -> 100% 紧急保护
+```
+
+## 系统架构
+
+```text
+感知层
+├─ OV5640 单目摄像头：推荐主摄像头，采集车辆、行人、障碍物画面
+├─ OV2640 单目摄像头：低成本备选，用于快速验证采集和检测链路
+├─ PC/手机摄像头：当前已实现的临时输入，用于调试和演示
+└─ 双目/外部视觉模块：后续扩展，不作为第一版必须项
+
+ESP32-S3 视觉处理层
+├─ camera_local：采集摄像头图像，降分辨率到推理输入
+├─ yolo_detector / esp_dl_detector：轻量目标检测
+├─ distance_estimator：基于目标框和标定参数做单目粗测距
+└─ vision_detect：输出目标类别、bbox、confidence、distance_m、approaching
+
+ESP32-S3 决策与执行层
+├─ risk_fusion：融合视觉检测、距离趋势和气压安全状态
+├─ pressure_sensor：XGZP6847A 气囊内压采集、滤波、过压保护
+├─ voice_prompt：语音播报方向、目标和风险
+└─ airbag_control：控制气泵、电磁阀、泄气阀和气囊目标压力
+
+PC 上位机验证层
+├─ 串口读取 pressure / risk / actuator，规划读取 vision_detect / voice
+├─ 当前可用 PC/手机摄像头生成临时 vision 事件
+├─ 展示压力曲线、风险等级、视觉结果、气囊动作和事件流
+└─ 记录调试数据，服务比赛演示和参数复盘
+```
+
+## 当前实现状态
+
+| 模块 | 状态 | 说明 |
+| --- | --- | --- |
+| ESP32-S3 固件工程 | 已建立 | 位于 `AIX/`，使用 ESP-IDF |
+| XGZP6847A 气压采集 | 已实现 | ADC1_CH0 / GPIO1，含校准、滤波、有效性和过压判断 |
+| PC 外部视觉输入 | 已实现 | 上位机从本机/网络摄像头提取 `looming`、`area_rate`、`center_motion` |
+| ESP 风险融合 v1 | 已实现 | 当前融合外部 `vision` 和压力安全状态 |
+| 气囊控制 v1 | 已实现模拟输出 | 当前输出 `actuator` 模拟事件，尚未驱动真实泵阀 |
+| 上位机 | 已实现第一版 | PySide6 界面、串口、曲线、视觉面板、事件流、CSV |
+| OV5640 端侧摄像头 | 规划中 | 7.8 主线，新增 `camera_local.c/h` |
+| 轻量目标检测 | 规划中 | 新增 `yolo_detector.c/h` 或 `esp_dl_detector.c/h` |
+| 单目距离估计 | 规划中 | 新增 `distance_estimator.c/h`，输出距离和接近趋势 |
+| 语音播报 | 规划中 | 新增 `voice_prompt.c/h`，先串口模拟，再接真实语音模块 |
+| 真实气泵/电磁阀闭环 | 规划中 | 接入 PWM、MOS 管、PID 和失效安全策略 |
+| 双目/雷达/IMU | 后续扩展 | 不作为 7.8 第一版主线 |
 
 ## 项目结构
 
@@ -46,38 +85,84 @@ PC 验证与演示层
 ProjectFile/
 ├─ AIX/                 # ESP32-S3 ESP-IDF 固件工程
 ├─ host_app/            # Python / PySide6 桌面上位机
-├─ README.md            # 本文件，项目总览
+├─ README.md            # 项目总览
 └─ .gitignore           # 仓库级忽略规则
 ```
 
-## 当前能力
+## 数据接口
 
-- ESP32-S3 读取 XGZP6847A 气压传感器模拟电压，默认启用压力监测。
-- 固件完成 ADC 校准、kPa 换算、指数滤波、有效性判断和过压判断。
-- 固件通过串口输出 NDJSON 压力事件，开发阶段默认 1000 ms 输出一行。
-- PC 摄像头用 OpenCV 光流提取 `looming`、`area_rate`、`center_motion`、`confidence`。
-- 上位机每 100 ms 最多发送一条 `vision` 事件给 ESP32-S3。
-- ESP32-S3 每 50 ms 运行风险融合，开发阶段每 500 ms 输出 `risk` 和 `actuator` 事件。
-- 上位机显示传感器总览、压力曲线、运动模块占位、视觉画面、视觉特征、ESP 风险原因、气囊模拟动作和事件流。
-- 上位机支持模拟数据、CSV 记录、动态 Y 轴缩放、横向自动跟随开关。
+### 已实现：pressure
+
+```json
+{"type":"pressure","version":1,"seq":123,"ts_ms":45678,"raw":2048,"mv":1450,"kpa":100.0,"filtered_kpa":98.4,"over_pressure":false,"valid":true}
+```
+
+### 已实现：临时外部 vision
+
+当前由 PC 上位机发送给 ESP32-S3，用于在真实摄像头模块接入前验证风险融合链路。
+
+```json
+{"type":"vision","version":1,"seq":12,"ts_ms":43020,"source":"pc_camera","looming":0.72,"area_rate":0.58,"center_motion":0.41,"confidence":0.80,"valid":true}
+```
+
+### 已实现：risk v1 / actuator v1
+
+```json
+{"type":"risk","version":1,"seq":35,"ts_ms":43100,"level":80,"target_pct":80,"reason":"vision_looming","vision_stale":false,"pressure_safe":true,"pressure_state":"safe"}
+{"type":"actuator","version":1,"seq":35,"ts_ms":43100,"mode":"sim","target_pct":80,"pump":"hold","valve":"closed"}
+```
+
+### 规划中：vision_detect
+
+```json
+{
+  "type": "vision_detect",
+  "version": 1,
+  "seq": 42,
+  "ts_ms": 50000,
+  "source": "ov5640",
+  "objects": [
+    {
+      "class": "truck",
+      "confidence": 0.82,
+      "bbox": [78, 42, 65, 48],
+      "distance_m": 5.2,
+      "approaching": true
+    }
+  ],
+  "nearest_distance_m": 5.2,
+  "ttc_s": 4.1,
+  "valid": true
+}
+```
+
+### 规划中：risk v2 / voice
+
+```json
+{"type":"risk","version":2,"seq":43,"ts_ms":50020,"level":40,"target_pct":40,"reason":"truck_approaching","category":"vision_warning","nearest_class":"truck","nearest_distance_m":5.2,"ttc_s":4.1,"pressure_safe":true,"pressure_state":"safe"}
+{"type":"voice","version":1,"seq":43,"ts_ms":50030,"text":"前方大货车接近，请减速","played":true}
+```
 
 ## 快速开始
 
-### 1. 固件
-
-进入 ESP-IDF 工程：
+### 固件
 
 ```powershell
 cd D:\Projects\IOTCompetition\ProjectFile\AIX
+idf.py set-target esp32s3
 idf.py build
 idf.py flash monitor
 ```
 
-当前目标板为 ESP32-S3-DevKitC-1，气压传感器 OUT 接 GPIO1 / ADC1_CH0。需要在 ESP-IDF PowerShell 或 VSCode ESP-IDF 终端中运行 `idf.py`。
+当前已接入的压力传感器默认使用 ESP32-S3 `GPIO1 / ADC1_CH0`。需要在 ESP-IDF PowerShell 或 VSCode ESP-IDF 终端中运行 `idf.py`。
 
-### 2. 上位机
+### 上位机
 
-本项目只保留一套虚拟环境：`D:\Projects\IOTCompetition\ProjectFile\.venv`。
+本项目只保留一套虚拟环境：
+
+```text
+D:\Projects\IOTCompetition\ProjectFile\.venv
+```
 
 首次安装或更新依赖：
 
@@ -89,57 +174,59 @@ cd .\host_app
 python -m pip install -r requirements.txt
 ```
 
-运行上位机推荐使用脚本，避免误用 conda 的 `(base)` 环境：
+运行上位机推荐使用脚本：
 
 ```powershell
 cd D:\Projects\IOTCompetition\ProjectFile\host_app
 .\run_host_app.cmd
 ```
 
-如果暂时没有连接开发板，可以勾选“模拟数据”查看曲线和界面状态。
+未连接开发板时，可以勾选“模拟数据”检查界面和曲线状态。
 
-## 数据接口
+## 开发规划
 
-### 压力事件
+### 阶段一：单目端侧视觉闭环
 
-固件默认启用压力监测，每 1000 ms 输出一行压力事件：
+- 采购或准备 `OV5640 + ESP32-S3 + PSRAM` 摄像头链路。
+- 新增 `camera_local.c/h`，接入 `esp32-camera`，采集低分辨率图像。
+- 新增 `yolo_detector.c/h` 或 `esp_dl_detector.c/h`，跑通少类别轻量检测。
+- 新增 `distance_estimator.c/h`，基于 bbox 宽度做粗测距和接近趋势判断。
+- 将 `risk_fusion` 从临时 `vision` 阈值升级到 `vision_detect + pressure`。
+- 上位机同步展示目标类别、bbox、距离、TTC、风险和气囊目标。
 
-```json
-{"type":"pressure","version":1,"seq":123,"ts_ms":45678,"raw":2048,"mv":1450,"kpa":100.0,"filtered_kpa":98.4,"over_pressure":false,"valid":true}
-```
+### 阶段二：语音与真实气囊执行
 
-上位机也兼容早期 `PRESSURE,seq=...` 日志格式，便于调试过渡。
+- 新增 `voice_prompt.c/h`，先用串口 `voice` 事件模拟语音播报。
+- 接入真实语音模块、蜂鸣器或蓝牙音频方案。
+- 将 `airbag_control` 从模拟输出切换为真实气泵和电磁阀控制。
+- 使用 XGZP6847A 做内压闭环，标定 10%、20%、40%、100% 对应压力。
 
-### 视觉输入
+### 阶段三：稳定性和比赛演示
 
-PC 摄像头临时替代真实摄像头模块时，上位机向 ESP32-S3 发送：
+- 完善压力无效、过压、摄像头无帧、检测置信度低等失效安全策略。
+- 固化演示场景：前方大货车接近、侧方车辆接近、行人/障碍物出现。
+- 记录视觉、风险、压力、执行动作，支持赛后复盘和答辩展示。
 
-```json
-{"type":"vision","version":1,"seq":12,"ts_ms":43020,"source":"pc_camera","looming":0.72,"area_rate":0.58,"center_motion":0.41,"confidence":0.80,"valid":true}
-```
+### 阶段四：后续扩展
 
-当前 `looming` 由光流扩张、中心运动和前景面积变化加权生成，不做人员、车辆或物体类别识别。
+- 如果单目距离误差不够，再考虑 ToF、毫米波、超声波或双目模块。
+- 如果 ESP32-S3 本地 YOLO 性能不足，可加视觉协处理模块，但 ESP32-S3 仍保持主控和执行闭环。
+- IMU 可后续补充急加速、急刹车、急转弯和跌倒检测。
 
-### 风险与气囊模拟事件
+## 硬件选择建议
 
-ESP32-S3 返回本地融合后的风险与气囊模拟动作：
-
-```json
-{"type":"risk","version":1,"seq":35,"ts_ms":43100,"level":80,"target_pct":80,"reason":"vision_looming","vision_stale":false,"pressure_safe":true,"pressure_state":"safe"}
-{"type":"actuator","version":1,"seq":35,"ts_ms":43100,"mode":"sim","target_pct":80,"pump":"hold","valve":"closed"}
-```
-
-`pressure_state` 当前可为 `safe`、`unsafe`、`disabled`。上位机不再提供可见的压力监测关闭开关，`disabled` 仅保留给隐藏调试配置。
-
-### 运动模块预留
-
-后续速度、加速度模块建议通过 `motion` 事件进入上位机，当前仅预留 UI 显示，不参与风险融合：
-
-```json
-{"type":"motion","version":1,"seq":1,"ts_ms":1000,"speed_mps":0.0,"accel_mps2":0.0,"speed_valid":false,"accel_valid":false}
-```
+| 硬件 | 建议 |
+| --- | --- |
+| 摄像头 | 优先 OV5640，OV2640 只做低成本备选 |
+| 主控 | ESP32-S3，必须确认 PSRAM |
+| 气压传感器 | XGZP6847A，当前已按 3.3V 版本接入 GPIO1 / ADC1_CH0 |
+| 执行机构 | 气泵 + 充气电磁阀 + 放气电磁阀 + MOS 管 |
+| 语音输出 | 第一版可串口模拟，后续接语音模块或蓝牙音频 |
+| 双目模块 | 暂缓采购，作为距离精度升级项 |
 
 ## 验证命令
+
+上位机测试：
 
 ```powershell
 cd D:\Projects\IOTCompetition\ProjectFile\host_app
@@ -147,37 +234,23 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 ..\.venv\Scripts\python.exe -m compileall -q aix_host_app tests
 ```
 
-主机侧 C 测试可在仓库根目录用 GCC 运行，用于验证固件纯函数解析和风险分级逻辑。
-
-## VSCode ESP-IDF 插件配置
-
-本仓库不提交 `.vscode/`，因为 VSCode 配置里通常包含本机 ESP-IDF 安装路径、串口号、clangd 路径和构建目录。这些内容每台电脑都不同，上传到 GitHub 反而容易导致他人环境出错。
-
-推荐使用 VSCode 插件 **Espressif IDF** 重新生成本地配置：
-
-1. 安装 VSCode 插件：在扩展市场搜索 `ESP-IDF`，安装 Espressif 官方插件。
-2. 打开工程目录：用 VSCode 打开 `D:\Projects\IOTCompetition\ProjectFile\AIX`。
-3. 配置插件：按 `Ctrl+Shift+P`，执行 `ESP-IDF: Configure ESP-IDF Extension`。
-4. 设置目标芯片：执行 `ESP-IDF: Set Espressif Device Target`，选择 `esp32s3`。
-5. 选择串口：执行 `ESP-IDF: Select Port to Use`，选择开发板对应的 COM 口。
-6. 构建烧录：可使用插件侧边栏按钮，或在终端运行 `idf.py build`、`idf.py flash monitor`。
+固件侧纯函数测试可在仓库根目录用 GCC 编译，详见 `AIX/README.md`。
 
 ## Git 上传约定
 
-本仓库只上传源码、配置、文档和 `requirements.txt`。
+本仓库只上传源码、配置、文档和依赖清单。
 
 不要上传：
 
 - Python 虚拟环境：`.venv/`、`venv/`、`env/`
 - Python 缓存：`__pycache__/`、`*.pyc`
 - ESP-IDF 构建目录：`AIX/build/`
-- 本地日志和上位机 CSV 输出：`host_app/logs/`
-- 本地工具缓存和系统临时文件
+- 上位机日志和 CSV：`host_app/logs/`
+- 本地工具缓存、串口日志和系统临时文件
 
-## 后续方向
+## 安全边界
 
-- 切换到真实摄像头模块，复用现有视觉输入接口展示实时画面或图传帧。
-- 接入速度、加速度、IMU、雷达后，将运动状态、目标距离、姿态补偿和 TTC 合成为风险等级。
-- 将风险等级映射到真实气囊预充气策略，例如 0%、20%、50%、80%、100%。
-- 接入气泵、电磁阀、MOS 管和 PWM 后，把 `airbag_control` 从模拟输出替换为硬件驱动。
-- 云端大模型只用于非安全关键的骑行复盘、参数建议和事件说明，本地控制闭环保持端侧独立。
+- 安全关键闭环必须优先在 ESP32-S3 本地完成。
+- PC 上位机用于调试、演示和数据记录，不作为最终安全执行控制器。
+- 摄像头识别和单目距离估计存在误差，第一版应定位为“风险提醒原型”，不能包装成自动避撞系统。
+- 过压、压力传感器无效、摄像头异常、通信异常时，必须停止继续充气或进入安全泄气策略。
