@@ -4,6 +4,7 @@
 #include "pressure_sensor.h"
 #include "risk_fusion.h"
 #include "vision_input.h"
+#include "vision_detect_input.h"
 
 static const char *TAG = "AIX_BOOT";
 
@@ -36,6 +37,11 @@ void app_main(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "risk fusion task start failed: %s", esp_err_to_name(ret));
         return;
+    }
+
+    ret = vision_detect_input_start_task();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "vision detect input task start failed: %s", esp_err_to_name(ret));
     }
 
     ESP_LOGI(TAG, "AIX sensing and local risk loop started");
