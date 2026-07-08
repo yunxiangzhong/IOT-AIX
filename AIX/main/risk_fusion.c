@@ -129,10 +129,13 @@ risk_fusion_result_v2_t risk_fusion_evaluate_v2(const vision_detect_result_t *de
 
 #ifdef ESP_PLATFORM
 #include <stdio.h>
+#include <string.h>
 
 #include "airbag_control.h"
 #include "config_input.h"
 #include "pressure_sensor.h"
+#include "vision_detect_input.h"
+#include "voice_prompt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_err.h"
@@ -154,6 +157,8 @@ static void risk_fusion_task(void *arg)
 
     while (1) {
         const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+
+        /* v1: looming/area_rate snapshot */
         vision_input_snapshot_t vision = {
             .valid = true,
             .stale = true,
@@ -162,6 +167,11 @@ static void risk_fusion_task(void *arg)
             vision.stale = (now_ms - vision.received_ms) > RISK_FUSION_VISION_STALE_MS;
         }
 
+        /* v2: object detection snapshot */
+        vision_detect_result_t detect = {0};
+        const bool has_detect = vision_detect_input_get_snapshot(&detect);
+
+        /* pressure */
         const config_input_state_t config = config_input_get_state();
         bool pressure_safe = false;
         if (!config.pressure_enabled) {
@@ -173,26 +183,72 @@ static void risk_fusion_task(void *arg)
             }
         }
 
-        const risk_fusion_result_t result = risk_fusion_evaluate_with_pressure(
-            &vision,
-            config.pressure_enabled,
-            pressure_safe);
         const TickType_t tick_now = xTaskGetTickCount();
         if ((tick_now - last_log_tick) >= pdMS_TO_TICKS(RISK_FUSION_LOG_PERIOD_MS)) {
             s_risk_seq++;
-            printf("{\"type\":\"risk\",\"version\":1,\"seq\":%lu,"
-                   "\"ts_ms\":%lu,\"level\":%d,\"target_pct\":%d,"
-                   "\"reason\":\"%s\",\"vision_stale\":%s,"
-                   "\"pressure_safe\":%s,\"pressure_state\":\"%s\"}\n",
-                   (unsigned long)s_risk_seq,
-                   (unsigned long)now_ms,
-                   result.level,
-                   result.target_pct,
-                   result.reason,
-                   result.vision_stale ? "true" : "false",
-                   result.pressure_safe ? "true" : "false",
-                   result.pressure_state);
-            airbag_control_apply_simulated(&result, s_risk_seq, now_ms);
+
+            if (has_detect && detect.valid) {
+                /* v2 path: object-detection-based evaluation */
+                risk_fusion_result_v2_t v2 = risk_fusion_evaluate_v2(
+                    &detect, config.pressure_enabled, pressure_safe);
+                printf("{\"type\":\"risk\",\"version\":2,\"seq\":%lu,"
+                       "\"ts_ms\":%lu,\"level\":%d,\"target_pct\":%d,"
+                       "\"reason\":\"%s\",\"category\":\"%s\","
+                       "\"nearest_class\":\"%s\",\"nearest_distance_m\":%.2f,"
+                       "\"ttc_s\":%.2f,"
+                       "\"pressure_safe\":%s,\"pressure_state\":\"%s\"}\n",
+                       (unsigned long)s_risk_seq,
+                       (unsigned long)now_ms,
+                       v2.level,
+                       v2.target_pct,
+                       v2.reason,
+                       v2.category,
+                       v2.nearest_class ? v2.nearest_class : "",
+                       (double)v2.nearest_distance_m,
+                       (double)v2.ttc_s,
+                       v2.pressure_safe ? "true" : "false",
+                       v2.pressure_state);
+
+                /* voice prompt for level >= 20 */
+                if (v2.level >= 20) {
+                    const char *voice = NULL;
+                    if (strcmp(v2.category, "critical") == 0) {
+                        voice = "\xe7\xb4\xa7\xe6\x80\xa5\xe5\x8d\xb1\xe9\x99\xa9\xef\xbc\x8c\xe7\x9b\xae\xe6\xa0\x87\xe8\xbf\x87\xe8\xbf\x91";
+                    } else if (strcmp(v2.category, "vision_warning") == 0) {
+                        /* "注意，{nearest_class}接近" - build dynamically */
+                        char buf[64];
+                        snprintf(buf, sizeof(buf), "\xe6\xb3\xa8\xe6\x84\x8f\xef\xbc\x8c%s\xe6\x8e\xa5\xe8\xbf\x91",
+                                 v2.nearest_class ? v2.nearest_class : "\xe7\x9b\xae\xe6\xa0\x87");
+                        voice = buf;
+                    } else if (strcmp(v2.category, "vision_caution") == 0) {
+                        char buf[64];
+                        snprintf(buf, sizeof(buf), "\xe5\x89\x8d\xe6\x96\xb9%s\xef\xbc\x8c\xe8\xaf\xb7\xe6\xb3\xa8\xe6\x84\x8f",
+                                 v2.nearest_class ? v2.nearest_class : "\xe7\x9b\xae\xe6\xa0\x87");
+                        voice = buf;
+                    }
+                    if (voice) {
+                        voice_prompt_say(voice, s_risk_seq, now_ms);
+                    }
+                }
+            } else {
+                /* v1 fallback: looming/area_rate evaluation */
+                risk_fusion_result_t v1 = risk_fusion_evaluate_with_pressure(
+                    &vision, config.pressure_enabled, pressure_safe);
+                printf("{\"type\":\"risk\",\"version\":1,\"seq\":%lu,"
+                       "\"ts_ms\":%lu,\"level\":%d,\"target_pct\":%d,"
+                       "\"reason\":\"%s\",\"vision_stale\":%s,"
+                       "\"pressure_safe\":%s,\"pressure_state\":\"%s\"}\n",
+                       (unsigned long)s_risk_seq,
+                       (unsigned long)now_ms,
+                       v1.level,
+                       v1.target_pct,
+                       v1.reason,
+                       v1.vision_stale ? "true" : "false",
+                       v1.pressure_safe ? "true" : "false",
+                       v1.pressure_state);
+                airbag_control_apply_simulated(&v1, s_risk_seq, now_ms);
+            }
+
             fflush(stdout);
             last_log_tick = tick_now;
         }
