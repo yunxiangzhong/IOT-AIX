@@ -4,7 +4,15 @@ import json
 import re
 from typing import Any
 
-from .models import ActuatorEvent, MotionEvent, PressureSample, RiskEvent
+from .models import (
+    ActuatorEvent,
+    MotionEvent,
+    PressureSample,
+    RiskEvent,
+    VisionDetectEvent,
+    VisionDetectObject,
+    VoiceEvent,
+)
 
 
 class ParseError(ValueError):
@@ -41,9 +49,11 @@ _MOTION_REQUIRED = (
     "speed_valid",
     "accel_valid",
 )
+_VISION_DETECT_REQUIRED = ("seq", "ts_ms", "nearest_distance_m", "ttc_s", "valid")
+_VOICE_REQUIRED = ("seq", "ts_ms", "text", "played")
 
 
-def parse_event_line(line: str) -> PressureSample | RiskEvent | ActuatorEvent | MotionEvent:
+def parse_event_line(line: str) -> PressureSample | RiskEvent | ActuatorEvent | MotionEvent | VisionDetectEvent | VoiceEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -61,6 +71,10 @@ def parse_event_line(line: str) -> PressureSample | RiskEvent | ActuatorEvent | 
         return _parse_actuator_payload(payload)
     if event_type == "motion":
         return _parse_motion_payload(payload)
+    if event_type == "vision_detect":
+        return _parse_vision_detect_payload(payload)
+    if event_type == "voice":
+        return _parse_voice_payload(payload)
     raise ParseError(f"unsupported json event type: {event_type}")
 
 
@@ -108,6 +122,7 @@ def _parse_risk_payload(payload: dict[str, Any]) -> RiskEvent:
         raise ParseError(f"risk json missing fields: {', '.join(missing)}")
 
     try:
+        version = _as_int(payload.get("version", 1), "version")
         return RiskEvent(
             seq=_as_int(payload["seq"], "seq"),
             ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
@@ -117,6 +132,11 @@ def _parse_risk_payload(payload: dict[str, Any]) -> RiskEvent:
             vision_stale=_as_bool(payload["vision_stale"], "vision_stale"),
             pressure_safe=_as_bool(payload["pressure_safe"], "pressure_safe"),
             pressure_state=str(payload.get("pressure_state", "enabled")),
+            version=version,
+            category=str(payload.get("category", "")),
+            nearest_class=str(payload.get("nearest_class", "")),
+            nearest_distance_m=_as_float(payload.get("nearest_distance_m", -1.0), "nearest_distance_m"),
+            ttc_s=_as_float(payload.get("ttc_s", -1.0), "ttc_s"),
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc
@@ -157,6 +177,43 @@ def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc
+
+
+def _parse_vision_detect_payload(payload: dict[str, Any]) -> VisionDetectEvent:
+    missing = [k for k in _VISION_DETECT_REQUIRED if k not in payload]
+    if missing:
+        raise ParseError(f"vision_detect missing fields: {', '.join(missing)}")
+    objects = []
+    for obj in payload.get("objects", []):
+        bbox = obj.get("bbox", [0, 0, 0, 0])
+        objects.append(VisionDetectObject(
+            class_name=str(obj.get("class", "")),
+            confidence=_as_float(obj.get("confidence", 0.0), "confidence"),
+            bbox=(int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])),
+            distance_m=_as_float(obj.get("distance_m", -1.0), "distance_m"),
+            approaching=_as_bool(obj.get("approaching", False), "approaching"),
+        ))
+    return VisionDetectEvent(
+        seq=_as_int(payload["seq"], "seq"),
+        ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+        source=str(payload.get("source", "")),
+        objects=tuple(objects),
+        nearest_distance_m=_as_float(payload["nearest_distance_m"], "nearest_distance_m"),
+        ttc_s=_as_float(payload["ttc_s"], "ttc_s"),
+        valid=_as_bool(payload["valid"], "valid"),
+    )
+
+
+def _parse_voice_payload(payload: dict[str, Any]) -> VoiceEvent:
+    missing = [k for k in _VOICE_REQUIRED if k not in payload]
+    if missing:
+        raise ParseError(f"voice missing fields: {', '.join(missing)}")
+    return VoiceEvent(
+        seq=_as_int(payload["seq"], "seq"),
+        ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+        text=str(payload["text"]),
+        played=_as_bool(payload["played"], "played"),
+    )
 
 
 def _parse_legacy_pressure(text: str) -> PressureSample:

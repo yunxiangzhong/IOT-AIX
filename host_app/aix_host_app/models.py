@@ -46,6 +46,11 @@ class RiskEvent:
     vision_stale: bool
     pressure_safe: bool
     pressure_state: str = "enabled"
+    version: int = 1
+    category: str = ""
+    nearest_class: str = ""
+    nearest_distance_m: float = -1.0
+    ttc_s: float = -1.0
 
 
 @dataclass(frozen=True)
@@ -56,3 +61,31 @@ class ActuatorEvent:
     target_pct: int
     pump: str
     valve: str
+
+
+@dataclass(frozen=True)
+class VisionDetectObject:
+    class_name: str
+    confidence: float
+    bbox: tuple[int, int, int, int]  # x, y, w, h
+    distance_m: float
+    approaching: bool
+
+
+@dataclass(frozen=True)
+class VisionDetectEvent:
+    seq: int
+    ts_ms: int
+    source: str
+    objects: tuple[VisionDetectObject, ...]
+    nearest_distance_m: float
+    ttc_s: float
+    valid: bool
+
+
+@dataclass(frozen=True)
+class VoiceEvent:
+    seq: int
+    ts_ms: int
+    text: str
+    played: bool
