@@ -68,6 +68,65 @@ risk_fusion_result_t risk_fusion_evaluate_with_pressure(const vision_input_snaps
     return make_result(0, 0, "vision_clear", false, pressure_enabled, pressure_safe);
 }
 
+risk_fusion_result_v2_t risk_fusion_evaluate_v2(const vision_detect_result_t *detect,
+                                                  bool pressure_enabled,
+                                                  bool pressure_safe)
+{
+    risk_fusion_result_v2_t result = {0};
+    result.pressure_state = pressure_state_name(pressure_enabled, pressure_safe);
+
+    const bool effective_safe = !pressure_enabled || pressure_safe;
+    result.pressure_safe = effective_safe;
+
+    if (!effective_safe) {
+        result.level = 100;
+        result.target_pct = 0;
+        result.reason = "pressure_unsafe";
+        result.category = "safety_stop";
+        return result;
+    }
+
+    if (detect == NULL || !detect->valid || detect->object_count == 0) {
+        result.level = 10;
+        result.target_pct = 10;
+        result.reason = "no_target";
+        result.category = "normal";
+        result.nearest_distance_m = -1.0f;
+        result.ttc_s = -1.0f;
+        return result;
+    }
+
+    result.nearest_distance_m = detect->nearest_distance_m;
+    result.ttc_s = detect->ttc_s;
+    if (detect->object_count > 0) {
+        result.nearest_class = detect->objects[0].class_name;
+    }
+
+    if (detect->ttc_s >= 0.0f && detect->ttc_s < 3.0f) {
+        result.level = 100;
+        result.target_pct = 100;
+        result.category = "critical";
+        result.reason = "ttc_critical";
+    } else if (detect->nearest_distance_m >= 0.0f && detect->nearest_distance_m < 5.0f) {
+        result.level = 40;
+        result.target_pct = 40;
+        result.category = "vision_warning";
+        result.reason = "target_close";
+    } else if (detect->nearest_distance_m >= 0.0f && detect->nearest_distance_m < 15.0f) {
+        result.level = 20;
+        result.target_pct = 20;
+        result.category = "vision_caution";
+        result.reason = "target_approaching";
+    } else {
+        result.level = 10;
+        result.target_pct = 10;
+        result.category = "normal";
+        result.reason = "target_far";
+    }
+
+    return result;
+}
+
 #ifdef ESP_PLATFORM
 #include <stdio.h>
 
