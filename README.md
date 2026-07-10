@@ -2,7 +2,7 @@
 
 AIX 脉盔是一套面向电动车、摩托车骑行场景的智能安全头盔原型。目标是把气囊压力反馈、视觉风险判断、语音提醒和气囊执行串成一条可演示、可调试的闭环。
 
-这份 README 按 2026-07-08 当前仓库代码描述，不把规划中的真实摄像头识别、真实语音硬件或真实泵阀控制写成已完成。
+这份 README 按 2026-07-10 当前仓库代码描述，不把规划中的真实摄像头识别、真实语音硬件或真实泵阀控制写成已完成。完整审阅和优化建议见 [`docs/项目审阅与优化建议.md`](docs/项目审阅与优化建议.md)。
 
 ## 当前真实状态
 
@@ -25,7 +25,11 @@ PC/手机摄像头
     -> risk_fusion v1 fallback
 ```
 
-需要特别注意：固件当前默认启动 `vision_detect_input` 模拟任务，所以一旦模拟检测数据有效，`risk_fusion` 会优先走 v2 路径。PC 摄像头生成的临时 `vision` v1 仍保留，但主要作为 fallback 和调试输入，不等同于最终产品视觉方案。
+需要特别注意：Demo 配置默认启动 `vision_detect_input` 模拟任务，所以新鲜且有效的模拟检测会优先走 v2 路径；Hardware 配置会关闭它。v2 快照达到或超过 500 ms 后会回退到 PC `vision` v1；若两条视觉链路都不可用，气囊目标为 0%。
+
+## 2026-07-10 审阅结论
+
+当前项目适合定位为“比赛演示和算法接口验证原型”，已有架构方向基本合理，不需要更换 ESP32-S3 主控或整体重写。本轮已完成测试可复现、Demo/Hardware 模式切换、v2 超时降级和正常状态 0% 语义；下一阶段应进入真实摄像头最小采帧，再逐步接检测与执行安全状态机。
 
 ## 还没有完成的部分
 
@@ -36,6 +40,8 @@ PC/手机摄像头
 - `airbag_control` 只输出 `actuator` 模拟事件，没有驱动真实气泵、电磁阀或泄气阀。
 - 上位机 CSV 记录目前主要记录压力样本，不是完整多源事件日志。
 - `motion` 在上位机有解析和占位显示，但固件侧没有 IMU/运动数据源。
+- C 端 `vision_detect` 结构支持多个对象，但当前解析和最近类别选择仍以第一个对象为主。
+- 真实摄像头、语音和泵阀仍未接入；Hardware 配置下无外部视觉输入时会保守输出 0%。
 
 ## 系统架构
 
@@ -86,7 +92,7 @@ OV5640 / OV2640 摄像头
 | XGZP6847A 气压采集 | 已实现 | `GPIO1 / ADC1_CH0`，含校准回退、滤波、有效性和过压判断 |
 | `config` 调试协议 | 已实现 | 压力监测默认开启，可经隐藏 JSON 配置切换 |
 | PC 外部 `vision` v1 | 已实现 | 上位机用 OpenCV 光流生成 `looming`、`area_rate`、`center_motion` |
-| `vision_detect` 协议结构 | 已实现 | 固件和上位机都有模型/解析；固件解析器是简单字符串扫描 |
+| `vision_detect` 协议结构 | 已实现第一版 | 固件和上位机都有模型/解析；C 端暂以简单字符串扫描和首对象为主 |
 | 模拟 `vision_detect` 输入 | 已实现 | ESP 端模拟 truck 从远到近，默认启动 |
 | `distance_estimator` | 已实现纯函数 | 可用 GCC 测试，尚未接入真实相机检测框 |
 | `risk_fusion` v1 | 已实现 | 处理 PC `vision` v1，作为 fallback |
@@ -94,6 +100,7 @@ OV5640 / OV2640 摄像头
 | `voice_prompt` | 已实现串口 stub | 输出 `voice` JSON，含基础 JSON 字符串转义 |
 | `airbag_control` | 已实现模拟输出 | 输出 `actuator` JSON，没有真实 GPIO/PWM 控制 |
 | 上位机 | 已实现第一版 | PySide6 界面、串口、压力曲线、视觉面板、事件流、压力 CSV |
+| 自动化验证 | 已实现 | `scripts/verify.ps1` 运行 Python、编译检查和 7 组 C 测试；测试源码不再被忽略，可随下次提交纳入仓库 |
 | 真实摄像头端侧检测 | 未实现 | 还没有 `camera_local`、YOLO/ESP-DL、真实帧输入 |
 | 真实语音硬件 | 未实现 | 需要后续接语音模块、蜂鸣器或蓝牙音频 |
 | 真实泵阀闭环 | 未实现 | 需要接 MOS、PWM、阀控、限压和急停策略 |
@@ -220,16 +227,19 @@ gcc -o D:\Projects\IOTCompetition\tmp\voice_prompt_test.exe main\voice_prompt.c 
 D:\Projects\IOTCompetition\tmp\voice_prompt_test.exe
 ```
 
-注意：当前 `.gitignore` 会忽略 `AIX/test/` 和 `host_app/tests/`。这些测试在本地存在并可运行，但普通 `git add .` 不会自动加入测试文件；如果要提交测试，需要显式处理忽略规则或使用 `git add -f`。
+推荐统一使用仓库验证脚本；它会把 C 测试产物写入被忽略的 `.test-bin/`：
+
+```powershell
+cd D:\Projects\IOTCompetition\ProjectFile
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
+```
 
 ## 下一步建议
 
-1. 先决定演示默认输入源：保留 ESP 端模拟 `vision_detect`，还是增加开关让 PC 光流 `vision` v1 能单独驱动风险融合。
-2. 接入真实摄像头前，补齐 `camera_local.c/h` 的最小采集状态输出，不急着上检测模型。
-3. 让真实相机帧产生检测框后，再把 `distance_estimator` 接入运行时链路。
-4. 接入轻量检测器时控制类别数量和帧率，先只验证车辆/行人/障碍物少类别。
-5. 真实泵阀接入前，先完成 GPIO/PWM 失效安全、过压停止、泄气和人工急停策略。
-6. 上位机后续可把 CSV 从压力样本扩展成多源事件日志。
+1. 补齐 `camera_source` 的最小采帧与错误状态，再接少类别轻量检测器。
+2. 贯通 `detector -> distance_estimator -> vision_detect -> risk_fusion` 真实运行链路，并完善多目标“最近对象”语义。
+3. 真实泵阀接入前，完成安全状态机、GPIO/PWM 抽象、过压停止、泄气和人工急停。
+4. 上位机把 CSV 扩展为 pressure/vision/risk/voice/actuator/fault 多源事件日志。
 
 ## Git 上传约定
 

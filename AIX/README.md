@@ -4,6 +4,8 @@
 
 当前还没有真实摄像头采集、真实目标检测、真实语音模块和真实泵阀控制。固件现在更准确的定位是：用真实气压传感器和模拟视觉事件验证安全闭环接口。
 
+项目级审阅和分阶段建议见 [`../docs/项目审阅与优化建议.md`](../docs/项目审阅与优化建议.md)。
+
 ## 当前运行链路
 
 ```text
@@ -18,10 +20,15 @@ app_main
 │  ├─ 根据风险结果输出 actuator 模拟事件
 │  └─ v2 风险达到阈值时输出 voice 事件
 └─ vision_detect_input_start_task()
-   └─ 默认模拟 truck 从远到近，输出 vision_detect v1 并写入 snapshot
+   └─ 仅 Demo 配置启动，模拟 truck 从远到近并写入 snapshot
 ```
 
-因为 `vision_detect_input_start_task()` 现在默认启动，正常运行一小段时间后 `risk_fusion` 基本会走 v2 路径。PC 上位机发送的 `vision` v1 保留为 fallback，不是当前默认主风险源。
+Demo 配置默认启动 `vision_detect_input_start_task()`，正常运行一小段时间后 `risk_fusion` 基本走 v2 路径。Hardware 配置关闭模拟任务；v2 snapshot 达到 `CONFIG_AIX_VISION_DETECT_STALE_MS` 后，风险融合自动回退到 PC `vision` v1，两个输入都不可用时目标为 0%。
+
+### 当前关键工程限制
+
+- `vision_detect_result_t` 预留 8 个对象，但当前 C 解析器只提取第一个对象，`nearest_class` 也取 `objects[0]`。
+- 风险任务同时负责策略、事件编码、语音选择和执行调用，真实硬件接入前应拆分职责。
 
 ## 当前硬件目标
 
@@ -54,9 +61,11 @@ AIX/
 │  ├─ voice_prompt.c/h       # voice JSON 格式化和串口输出
 │  ├─ airbag_control.c/h     # actuator 模拟输出
 │  └─ CMakeLists.txt
-├─ test/                     # 本地主机 GCC 测试，当前被 .gitignore 忽略
+├─ test/                     # 不再被忽略的本地主机 GCC 测试
+├─ Kconfig.projbuild          # Demo/Hardware 模式和 v2 超时配置
 ├─ CMakeLists.txt
-├─ sdkconfig
+├─ sdkconfig.defaults         # 默认 Demo 配置
+├─ sdkconfig.hardware.defaults # Hardware 覆盖配置
 └─ README.md
 ```
 
@@ -87,6 +96,7 @@ AIX/
 - `voice_prompt` 没有接语音硬件。
 - `airbag_control` 没有真实 GPIO/PWM/MOS 管/阀控输出。
 - 没有人工急停、硬件限压、真实泄气策略验证。
+- 多目标解析和“最近目标”选择尚未形成可验证的统一语义。
 
 ## 风险融合规则
 
@@ -129,11 +139,11 @@ pressure: enabled / valid / over_pressure
 | 条件 | category | level | target_pct |
 | --- | --- | --- | --- |
 | 气压无效或过压 | `safety_stop` | 100 | 0 |
-| 无目标或无有效检测 | `normal` | 10 | 10 |
+| 无目标或无有效检测 | `normal` | 0 | 0 |
 | `ttc_s < 3.0` | `critical` | 100 | 100 |
 | `nearest_distance_m < 5.0` | `vision_warning` | 40 | 40 |
 | `nearest_distance_m < 15.0` | `vision_caution` | 20 | 20 |
-| 更远目标 | `normal` | 10 | 10 |
+| 更远目标 | `normal` | 0 | 0 |
 
 ## 串口事件
 
@@ -187,17 +197,24 @@ PC 上位机发送：
 | `RISK_FUSION_PERIOD_MS` | `50` | 风险融合周期 |
 | `RISK_FUSION_LOG_PERIOD_MS` | `500` | risk / actuator / voice 开发阶段输出周期 |
 | `RISK_FUSION_VISION_STALE_MS` | `500` | PC `vision` v1 过期时间 |
+| `CONFIG_AIX_VISION_DETECT_STALE_MS` | `500` | v2 snapshot 过期时间 |
+| `CONFIG_AIX_ENABLE_SIMULATED_VISION_DETECT` | Demo: `y` / Hardware: `n` | 是否启动模拟检测任务 |
 | `VISION_DETECT_PERIOD_MS` | `200` | 模拟 `vision_detect` 输出周期 |
 
 ## 构建和烧录
 
-需要先安装 ESP-IDF，并进入 ESP-IDF PowerShell 环境。
+需要先安装 ESP-IDF，并进入 ESP-IDF PowerShell 环境。默认构建为 Demo；Hardware 构建会关闭模拟视觉。
 
 ```powershell
 cd D:\Projects\IOTCompetition\ProjectFile\AIX
 idf.py set-target esp32s3
 idf.py build
 idf.py flash monitor
+```
+
+```powershell
+# Hardware 配置，使用独立构建目录
+idf.py -B build-hardware -D "SDKCONFIG=build-hardware/sdkconfig" -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.hardware.defaults" build
 ```
 
 如果只需要查看串口输出：
@@ -235,16 +252,17 @@ gcc -o D:\Projects\IOTCompetition\tmp\voice_prompt_test.exe main\voice_prompt.c 
 D:\Projects\IOTCompetition\tmp\voice_prompt_test.exe
 ```
 
-仓库当前 `.gitignore` 忽略 `AIX/test/`，所以本地测试文件默认不会被普通 `git add .` 提交。
+全部 C 测试源码不再被忽略，提交时可纳入仓库。建议从仓库根目录统一运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
+```
 
 ## 下一步开发建议
 
-1. 增加一个明确开关，控制是否启动模拟 `vision_detect`，避免它默认覆盖 PC `vision` v1 演示路径。
-2. 接入 `camera_local.c/h`，先验证真实摄像头初始化、低分辨率采帧和错误状态输出。
-3. 用固定假检测框接入 `distance_estimator`，确认距离、approaching 和 TTC 在运行时可用。
-4. 再接轻量检测器，先限制类别和分辨率，避免 ESP32-S3 负载失控。
-5. 接真实泵阀前，先实现 GPIO/PWM 层、过压停止、泄气策略和人工急停。
-6. 语音硬件接入前，保留 `voice` JSON 作为上位机和答辩演示接口。
+1. 接入 `camera_source`，先验证真实摄像头初始化、低分辨率采帧和错误状态输出。
+2. 再接少类别轻量检测器，贯通 bbox、距离、approaching 和 TTC，并按距离选择最近目标。
+3. 接真实泵阀前，拆出安全状态机和 actuator HAL，实现过压停止、泄气、超时和人工急停。
 
 ## 安全边界
 

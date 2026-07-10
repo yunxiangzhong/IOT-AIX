@@ -39,10 +39,14 @@ void app_main(void)
         return;
     }
 
+#if CONFIG_AIX_ENABLE_SIMULATED_VISION_DETECT
     ret = vision_detect_input_start_task();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "vision detect input task start failed: %s", esp_err_to_name(ret));
     }
+#else
+    ESP_LOGI(TAG, "Simulated vision_detect disabled; waiting for external vision input");
+#endif
 
     ESP_LOGI(TAG, "AIX sensing and local risk loop started");
 }

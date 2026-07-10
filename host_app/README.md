@@ -4,6 +4,10 @@
 
 上位机不是最终产品的安全执行控制器。当前代码既支持 PC/手机摄像头光流输入，也能显示 ESP32-S3 模拟 `vision_detect` 事件；但真实视觉判断、过压保护和执行策略最终仍应落在 ESP32-S3 本地。
 
+固件现在只会采用新鲜的 `vision_detect` v2；达到 500 ms 的 v2 snapshot 会回退到 `vision` v1，两个视觉输入都不可用时显示 0% 气囊目标。
+
+项目级审阅和结构优化建议见 [`../docs/项目审阅与优化建议.md`](../docs/项目审阅与优化建议.md)。
+
 ## 当前真实职责
 
 ```text
@@ -30,6 +34,8 @@ host_app
 └─ CSV 记录
    └─ 当前主要记录压力样本
 ```
+
+当前 `app.py` 已同时承担 UI 装配、串口和摄像头生命周期、事件路由、模拟数据及 CSV 记录。下一阶段建议逐步拆为 `SerialController`、`CameraController` 和 `EventRecorder`，让 widget 只负责显示与用户输入。
 
 ## 没有完成的内容
 
@@ -63,7 +69,7 @@ host_app/
 │  ├─ history.py                    # 历史缓存
 │  ├─ simulation.py                 # 上位机压力模拟数据
 │  └─ plot_scaling.py               # 曲线缩放策略
-├─ tests/
+├─ tests/                           # 本机测试较完整，但当前被仓库规则整体忽略
 ├─ requirements.txt
 ├─ run_host_app.cmd
 └─ README.md
@@ -179,7 +185,19 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 - 气压历史缓存、模拟数据生成、X/Y 轴缩放策略。
 - 摄像头配置、视觉事件发送桥和光流趋势分析器。
 
-注意：仓库 `.gitignore` 当前忽略 `host_app/tests/`，所以本地新增测试不会被普通 `git add .` 自动提交。
+全部 Python 测试源码不再被忽略，提交时可纳入仓库。建议从仓库根目录运行统一验证：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
+```
+
+## 结构优化建议
+
+1. `app.py` 只保留主窗口装配与顶层路由，串口、摄像头和记录分别交给控制器/服务。
+2. 把 `models.py`、`parsers.py` 和发送编码归入 `protocol/`，并用独立协议文档约束版本、字段、方向和单位。
+3. 把压力 CSV 扩展为统一事件记录器，覆盖 `pressure / vision_detect / risk / voice / actuator / fault`。
+4. 为串口断开、摄像头断流、解析失败和固件事件超时提供统一状态模型，而不是只显示原始错误文本。
+5. 保持 PC 摄像头分析器接口可替换；它是临时输入与调试工具，不应成为最终安全决策依赖。
 
 ## 安全边界
 

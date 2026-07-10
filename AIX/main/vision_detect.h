@@ -21,6 +21,7 @@ typedef struct {
 typedef struct {
     uint32_t seq;
     uint32_t ts_ms;
+    uint32_t received_ms;
     char source[32];
     vision_detect_object_t objects[8];
     int object_count;

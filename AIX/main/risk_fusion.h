@@ -40,6 +40,11 @@ risk_fusion_result_v2_t risk_fusion_evaluate_v2(const vision_detect_result_t *de
                                                   bool pressure_enabled,
                                                   bool pressure_safe);
 
+bool risk_fusion_should_use_v2(bool has_detect,
+                               const vision_detect_result_t *detect,
+                               uint32_t now_ms,
+                               uint32_t stale_ms);
+
 risk_fusion_result_t risk_fusion_v2_to_actuator_result(const risk_fusion_result_v2_t *result);
 
 #ifdef ESP_PLATFORM

@@ -24,6 +24,7 @@ host_app/logs/
 
 # ESP-IDF build output
 AIX/build/
+AIX/build-*/
 AIX/sdkconfig.old
 AIX/managed_components/
 AIX/.espressif/
@@ -39,8 +40,7 @@ compile_commands.json
 *.exe
 
 # Test code (keep locally, exclude from repo)
-AIX/test/
-host_app/tests/
+/.test-bin/
 
 # Editor and OS files
 .vscode/

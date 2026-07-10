@@ -62,6 +62,7 @@ static void vision_detect_sim_task(void *arg)
         vision_detect_result_t snap = {0};
         snap.seq = seq;
         snap.ts_ms = now_ms;
+        snap.received_ms = now_ms;
         strncpy(snap.source, "simulated", 31);
         snap.valid = true;
         snap.nearest_distance_m = distance;

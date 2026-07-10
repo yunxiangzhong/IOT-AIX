@@ -29,6 +29,15 @@ static risk_fusion_result_t make_result(int level,
     return result;
 }
 
+bool risk_fusion_should_use_v2(bool has_detect,
+                               const vision_detect_result_t *detect,
+                               uint32_t now_ms,
+                               uint32_t stale_ms)
+{
+    return has_detect && detect != NULL && detect->valid &&
+           ((uint32_t)(now_ms - detect->received_ms) < stale_ms);
+}
+
 risk_fusion_result_t risk_fusion_evaluate(const vision_input_snapshot_t *vision,
                                           bool pressure_safe)
 {
@@ -87,8 +96,8 @@ risk_fusion_result_v2_t risk_fusion_evaluate_v2(const vision_detect_result_t *de
     }
 
     if (detect == NULL || !detect->valid || detect->object_count == 0) {
-        result.level = 10;
-        result.target_pct = 10;
+        result.level = 0;
+        result.target_pct = 0;
         result.reason = "no_target";
         result.category = "normal";
         result.nearest_distance_m = -1.0f;
@@ -118,8 +127,8 @@ risk_fusion_result_v2_t risk_fusion_evaluate_v2(const vision_detect_result_t *de
         result.category = "vision_caution";
         result.reason = "target_approaching";
     } else {
-        result.level = 10;
-        result.target_pct = 10;
+        result.level = 0;
+        result.target_pct = 0;
         result.category = "normal";
         result.reason = "target_far";
     }
@@ -185,6 +194,8 @@ static void risk_fusion_task(void *arg)
         /* v2: object detection snapshot */
         vision_detect_result_t detect = {0};
         const bool has_detect = vision_detect_input_get_snapshot(&detect);
+        const bool use_v2 = risk_fusion_should_use_v2(
+            has_detect, &detect, now_ms, CONFIG_AIX_VISION_DETECT_STALE_MS);
 
         /* pressure */
         const config_input_state_t config = config_input_get_state();
@@ -202,7 +213,7 @@ static void risk_fusion_task(void *arg)
         if ((tick_now - last_log_tick) >= pdMS_TO_TICKS(RISK_FUSION_LOG_PERIOD_MS)) {
             s_risk_seq++;
 
-            if (has_detect && detect.valid) {
+            if (use_v2) {
                 /* v2 path: object-detection-based evaluation */
                 risk_fusion_result_v2_t v2 = risk_fusion_evaluate_v2(
                     &detect, config.pressure_enabled, pressure_safe);

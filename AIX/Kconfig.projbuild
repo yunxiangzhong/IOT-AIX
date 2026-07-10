@@ -1,0 +1,19 @@
+menu "AIX pulse helmet configuration"
+
+config AIX_ENABLE_SIMULATED_VISION_DETECT
+    bool "Enable simulated vision_detect source"
+    default y
+    help
+        Generate simulated truck-approach vision_detect events for the
+        competition demo. Disable this for hardware runs so only real or
+        externally supplied visual input can affect risk fusion.
+
+config AIX_VISION_DETECT_STALE_MS
+    int "vision_detect stale timeout (ms)"
+    default 500
+    range 100 10000
+    help
+        A valid vision_detect snapshot at or beyond this timeout is ignored and
+        risk fusion falls back to the PC vision v1 path or a safe zero target.
+
+endmenu
