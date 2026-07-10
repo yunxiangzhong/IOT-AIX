@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
-from .models import ActuatorEvent, MotionEvent, PressureSample, RiskEvent, VisionDetectEvent, VoiceEvent
+from .models import ActuatorEvent, CameraStatusEvent, MotionEvent, PressureSample, RiskEvent, VisionDetectEvent, VoiceEvent
 from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
 from .simulation import make_simulated_pressure_sample
@@ -159,6 +159,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.timeline.add_line(line)
         elif isinstance(event, VisionDetectEvent):
             self.vision_panel.update_vision_detect(event)
+            self.timeline.add_line(line)
+        elif isinstance(event, CameraStatusEvent):
+            self.vision_panel.update_camera_status(event)
+            state = "有效" if event.valid else "无效/重试"
+            self.timeline.set_summary(f"camera {event.sensor} | {event.width}x{event.height} | {state}")
             self.timeline.add_line(line)
         elif isinstance(event, VoiceEvent):
             status = "played" if event.played else "pending"

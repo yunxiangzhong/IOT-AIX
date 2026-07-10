@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.models import ActuatorEvent, MotionEvent, PressureSample, RiskEvent
+from aix_host_app.models import ActuatorEvent, CameraStatusEvent, MotionEvent, PressureSample, RiskEvent
 from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
@@ -159,6 +159,28 @@ class VoiceParserTests(unittest.TestCase):
     def test_rejects_voice_missing_text(self):
         with self.assertRaises(ParseError):
             parse_event_line('{"type":"voice","version":1,"seq":1,"ts_ms":1000,"played":true}')
+
+
+class CameraStatusParserTests(unittest.TestCase):
+    def test_parses_camera_status_event(self):
+        event = parse_event_line(
+            '{"type":"camera_status","version":1,"seq":7,"ts_ms":1200,'
+            '"sensor":"OV5640","width":320,"height":240,"pixel_format":"jpeg",'
+            '"frame_bytes":18432,"fps":5.0,"frames_ok":12,"capture_failures":1,'
+            '"psram":false,"valid":true}'
+        )
+
+        self.assertIsInstance(event, CameraStatusEvent)
+        self.assertEqual(event.sensor, "OV5640")
+        self.assertEqual((event.width, event.height), (320, 240))
+        self.assertEqual(event.frame_bytes, 18432)
+        self.assertAlmostEqual(event.fps, 5.0)
+        self.assertFalse(event.psram)
+        self.assertTrue(event.valid)
+
+    def test_rejects_camera_status_with_missing_fields(self):
+        with self.assertRaises(ParseError):
+            parse_event_line('{"type":"camera_status","version":1,"seq":1,"ts_ms":1000}')
 
 
 class RiskV2ParserTests(unittest.TestCase):

@@ -8,6 +8,26 @@ config AIX_ENABLE_SIMULATED_VISION_DETECT
         competition demo. Disable this for hardware runs so only real or
         externally supplied visual input can affect risk fusion.
 
+config AIX_ENABLE_LOCAL_CAMERA
+    bool "Enable local OV5640 camera capture"
+    default n
+    help
+        Start the fixed-wiring OV5640 capture task. This P1 profile only
+        validates QVGA JPEG frames and emits camera_status; it does not emit
+        vision_detect or affect risk fusion.
+
+config AIX_CAMERA_CAPTURE_PERIOD_MS
+    int "Local camera capture period (ms)"
+    default 200
+    range 100 1000
+    depends on AIX_ENABLE_LOCAL_CAMERA
+
+config AIX_CAMERA_STATUS_PERIOD_MS
+    int "Local camera status report period (ms)"
+    default 1000
+    range 500 10000
+    depends on AIX_ENABLE_LOCAL_CAMERA
+
 config AIX_VISION_DETECT_STALE_MS
     int "vision_detect stale timeout (ms)"
     default 500

@@ -6,6 +6,7 @@ from typing import Any
 
 from .models import (
     ActuatorEvent,
+    CameraStatusEvent,
     MotionEvent,
     PressureSample,
     RiskEvent,
@@ -50,9 +51,13 @@ _MOTION_REQUIRED = (
 )
 _VISION_DETECT_REQUIRED = ("seq", "ts_ms", "nearest_distance_m", "ttc_s", "valid")
 _VOICE_REQUIRED = ("seq", "ts_ms", "text", "played")
+_CAMERA_STATUS_REQUIRED = (
+    "seq", "ts_ms", "sensor", "width", "height", "pixel_format", "frame_bytes",
+    "fps", "frames_ok", "capture_failures", "psram", "valid",
+)
 
 
-def parse_event_line(line: str) -> PressureSample | RiskEvent | ActuatorEvent | MotionEvent | VisionDetectEvent | VoiceEvent:
+def parse_event_line(line: str) -> PressureSample | RiskEvent | ActuatorEvent | MotionEvent | VisionDetectEvent | CameraStatusEvent | VoiceEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -72,6 +77,8 @@ def parse_event_line(line: str) -> PressureSample | RiskEvent | ActuatorEvent | 
         return _parse_motion_payload(payload)
     if event_type == "vision_detect":
         return _parse_vision_detect_payload(payload)
+    if event_type == "camera_status":
+        return _parse_camera_status_payload(payload)
     if event_type == "voice":
         return _parse_voice_payload(payload)
     raise ParseError(f"unsupported json event type: {event_type}")
@@ -213,6 +220,29 @@ def _parse_voice_payload(payload: dict[str, Any]) -> VoiceEvent:
         text=str(payload["text"]),
         played=_as_bool(payload["played"], "played"),
     )
+
+
+def _parse_camera_status_payload(payload: dict[str, Any]) -> CameraStatusEvent:
+    missing = [key for key in _CAMERA_STATUS_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"camera_status missing fields: {', '.join(missing)}")
+    try:
+        return CameraStatusEvent(
+            seq=_as_int(payload["seq"], "seq"),
+            ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+            sensor=str(payload["sensor"]),
+            width=_as_int(payload["width"], "width"),
+            height=_as_int(payload["height"], "height"),
+            pixel_format=str(payload["pixel_format"]),
+            frame_bytes=_as_int(payload["frame_bytes"], "frame_bytes"),
+            fps=_as_float(payload["fps"], "fps"),
+            frames_ok=_as_int(payload["frames_ok"], "frames_ok"),
+            capture_failures=_as_int(payload["capture_failures"], "capture_failures"),
+            psram=_as_bool(payload["psram"], "psram"),
+            valid=_as_bool(payload["valid"], "valid"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
 
 
 def _parse_legacy_pressure(text: str) -> PressureSample:

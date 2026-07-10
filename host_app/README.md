@@ -1,6 +1,6 @@
 # AIX 脉盔上位机
 
-这是 AIX 脉盔项目的 PC 端可视化与调试程序。它用于开发和比赛演示阶段，把 ESP32-S3 的压力、风险、模拟视觉检测、语音事件和气囊模拟动作放在同一个界面里观察。
+这是 AIX 脉盔项目的 PC 端可视化与调试程序。它用于开发和比赛演示阶段，把 ESP32-S3 的压力、风险、模拟视觉检测、OV5640 状态、语音事件和气囊模拟动作放在同一个界面里观察。
 
 上位机不是最终产品的安全执行控制器。当前代码既支持 PC/手机摄像头光流输入，也能显示 ESP32-S3 模拟 `vision_detect` 事件；但真实视觉判断、过压保护和执行策略最终仍应落在 ESP32-S3 本地。
 
@@ -24,6 +24,8 @@ host_app
 │  └─ OpenCV 光流趋势分析
 ├─ 视觉检测显示
 │  └─ 显示 ESP 返回的 vision_detect 对象、距离、bbox、TTC
+├─ OV5640 健康状态显示
+│  └─ 显示 camera_status 的传感器、分辨率、FPS、帧长度、失败次数和 PSRAM 状态
 ├─ 风险和动作显示
 │  ├─ risk v1 / risk v2
 │  └─ actuator 模拟动作
@@ -64,7 +66,7 @@ host_app/
 │  │  └─ bridge.py                  # vision v1 事件发送桥
 │  ├─ app.py                        # 主窗口和事件路由
 │  ├─ serial_source.py              # 串口读取/写入线程
-│  ├─ parsers.py                    # pressure/risk/actuator/motion/vision_detect/voice 解析
+│  ├─ parsers.py                    # pressure/risk/actuator/motion/vision_detect/camera_status/voice 解析
 │  ├─ models.py                     # 数据模型
 │  ├─ history.py                    # 历史缓存
 │  ├─ simulation.py                 # 上位机压力模拟数据
@@ -146,6 +148,14 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 {"type":"vision_detect","version":1,"seq":42,"ts_ms":50000,"source":"simulated","objects":[{"class":"truck","confidence":0.85,"bbox":[100,60,80,60],"distance_m":5.2,"approaching":true}],"nearest_distance_m":5.2,"ttc_s":4.1,"valid":true}
 ```
 
+### camera_status v1
+
+Camera profile 的状态事件只用于健康展示；上位机不会接收或预览 JPEG，也不会把该事件视为真实目标检测。
+
+```json
+{"type":"camera_status","version":1,"seq":7,"ts_ms":1200,"sensor":"OV5640","width":320,"height":240,"pixel_format":"jpeg","frame_bytes":18432,"fps":5.00,"frames_ok":12,"capture_failures":0,"psram":false,"valid":true}
+```
+
 ### risk v1 / risk v2
 
 ```json
@@ -179,8 +189,8 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 当前测试覆盖：
 
 - `pressure` NDJSON 和旧版 `PRESSURE` 日志解析。
-- `risk` v1/v2、`actuator`、`motion`、`vision_detect`、`voice` 解析。
-- 上位机 voice 事件路由到事件流。
+- `risk` v1/v2、`actuator`、`motion`、`vision_detect`、`camera_status`、`voice` 解析。
+- 上位机 voice 和 camera_status 事件路由到事件流/视觉面板。
 - 坏行、缺字段和无效 JSON 处理。
 - 气压历史缓存、模拟数据生成、X/Y 轴缩放策略。
 - 摄像头配置、视觉事件发送桥和光流趋势分析器。

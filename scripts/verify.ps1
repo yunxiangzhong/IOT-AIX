@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("none", "demo", "hardware")]
+    [ValidateSet("none", "demo", "hardware", "camera")]
     [string]$IdfProfile = "none"
 )
 
@@ -95,29 +95,48 @@ Invoke-HostCTest "voice_prompt_test" @(
     (Join-Path $main "voice_prompt.c"),
     (Join-Path $aix "test\voice_prompt_test.c")
 )
+Invoke-HostCTest "camera_local_test" @(
+    (Join-Path $main "camera_local.c"),
+    (Join-Path $aix "test\camera_local_test.c")
+)
 
 if ($IdfProfile -ne "none") {
-    $idf = Get-Command idf.py -ErrorAction SilentlyContinue
-    if ($null -eq $idf) {
-        throw "idf.py was not found in PATH. Run ESP-IDF export.ps1 before requesting an ESP-IDF build."
+    $idfPython = if ($env:IDF_PYTHON_ENV_PATH) {
+        Join-Path $env:IDF_PYTHON_ENV_PATH "Scripts\python.exe"
+    } else {
+        $null
+    }
+    $idfScript = if ($env:IDF_PATH) {
+        Join-Path $env:IDF_PATH "tools\idf.py"
+    } else {
+        $null
+    }
+    $useEspIdfPython = (Test-Path -LiteralPath $idfPython) -and (Test-Path -LiteralPath $idfScript)
+    $idf = if ($useEspIdfPython) { $null } else { Get-Command idf.py -ErrorAction SilentlyContinue }
+    if (-not $useEspIdfPython -and $null -eq $idf) {
+        throw "ESP-IDF tools were not found. Run ESP-IDF export.ps1 before requesting an ESP-IDF build."
     }
 
     $buildDir = "build-$IdfProfile"
     $sdkconfig = "$buildDir/sdkconfig"
-    $defaults = if ($IdfProfile -eq "demo") {
-        "sdkconfig.defaults"
-    } else {
-        "sdkconfig.defaults;sdkconfig.hardware.defaults"
+    $defaults = switch ($IdfProfile) {
+        "demo" { "sdkconfig.defaults" }
+        "hardware" { "sdkconfig.defaults;sdkconfig.hardware.defaults" }
+        "camera" { "sdkconfig.defaults;sdkconfig.hardware.defaults;sdkconfig.camera.defaults" }
     }
 
     Invoke-Checked "ESP-IDF $IdfProfile build" {
         Push-Location $aix
         try {
-            & $idf.Source -B $buildDir "-DSDKCONFIG=$sdkconfig" "-DSDKCONFIG_DEFAULTS=$defaults" build
+            if ($useEspIdfPython) {
+                & $idfPython $idfScript -B $buildDir "-DSDKCONFIG=$sdkconfig" "-DSDKCONFIG_DEFAULTS=$defaults" build
+            } else {
+                & $idf.Source -B $buildDir "-DSDKCONFIG=$sdkconfig" "-DSDKCONFIG_DEFAULTS=$defaults" build
+            }
         } finally {
             Pop-Location
         }
     }
 }
 
-Write-Output "Verification passed: Python tests, compileall, and seven host-side C tests."
+Write-Output "Verification passed: Python tests, compileall, and eight host-side C tests."

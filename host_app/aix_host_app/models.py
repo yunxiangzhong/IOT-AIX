@@ -84,6 +84,22 @@ class VisionDetectEvent:
 
 
 @dataclass(frozen=True)
+class CameraStatusEvent:
+    seq: int
+    ts_ms: int
+    sensor: str
+    width: int
+    height: int
+    pixel_format: str
+    frame_bytes: int
+    fps: float
+    frames_ok: int
+    capture_failures: int
+    psram: bool
+    valid: bool
+
+
+@dataclass(frozen=True)
 class VoiceEvent:
     seq: int
     ts_ms: int
