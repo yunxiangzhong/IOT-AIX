@@ -56,6 +56,7 @@ class VisionPanel(QtWidgets.QFrame):
 
         button_row = QtWidgets.QHBoxLayout()
         self.start_button = QtWidgets.QPushButton("启动摄像头")
+        self.start_button.setProperty("primary", True)
         self.stop_button = QtWidgets.QPushButton("停止")
         self.stop_button.setEnabled(False)
         button_row.addWidget(self.start_button)
@@ -70,8 +71,8 @@ class VisionPanel(QtWidgets.QFrame):
         self.frame.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.frame.setMinimumHeight(210)
         self.frame.setStyleSheet(
-            "background:#e3ede8;border:1px dashed #8aa49b;border-radius:8px;"
-            "color:#61736e;font-weight:700;"
+            "background:#F1F1EF;border:1px solid #E2E2DE;border-radius:8px;"
+            "color:#9A9A95;font-weight:600;"
         )
         layout.addWidget(self.frame)
 

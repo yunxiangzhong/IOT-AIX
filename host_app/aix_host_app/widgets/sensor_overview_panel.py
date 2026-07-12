@@ -44,10 +44,19 @@ class SensorOverviewPanel(QtWidgets.QFrame):
         self.airbag = _MetricCell("气囊目标", "0%", "等待动作")
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-        for cell in (self.pressure, self.speed, self.accel, self.risk, self.airbag):
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+        
+        cells = (self.pressure, self.speed, self.accel, self.risk, self.airbag)
+        for idx, cell in enumerate(cells):
             layout.addWidget(cell, 1)
+            if idx < len(cells) - 1:
+                divider = QtWidgets.QFrame()
+                divider.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+                divider.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
+                divider.setStyleSheet("color: #ECECE8; background-color: #ECECE8;")
+                divider.setFixedWidth(1)
+                layout.addWidget(divider)
 
     def update_pressure(self, sample: PressureSample) -> None:
         if sample.over_pressure:

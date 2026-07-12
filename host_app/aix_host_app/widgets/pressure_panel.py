@@ -27,19 +27,23 @@ class PressurePanel(QtWidgets.QFrame):
         self.follow_button.setToolTip("开启后横轴跟随最新气压样本；关闭后可手动拖拽查看历史")
         self._set_auto_follow_label(True)
 
-        self.plot = pg.PlotWidget(background="#f8fbf8")
+        self.plot = pg.PlotWidget(background="#FCFCFB")
         self.plot.setMenuEnabled(False)
-        self.plot.showGrid(x=True, y=True, alpha=0.18)
-        self.plot.setLabel("left", "Pressure", units="kPa")
-        self.plot.setLabel("bottom", "Sample seq")
-        self.plot.addLegend(offset=(12, 12))
+        self.plot.showGrid(x=True, y=True, alpha=0.12)
+        self.plot.getAxis('left').setTextPen('#6F6F6B')
+        self.plot.getAxis('left').setPen('#E2E2DE')
+        self.plot.getAxis('bottom').setTextPen('#6F6F6B')
+        self.plot.getAxis('bottom').setPen('#E2E2DE')
+        self.plot.setLabel("left", "Pressure", units="kPa", **{'color': '#6F6F6B'})
+        self.plot.setLabel("bottom", "Sample seq", **{'color': '#6F6F6B'})
+        self.plot.addLegend(offset=(12, 12), labelTextColor='#6F6F6B')
         self.plot.setYRange(0, 10, padding=0)
         self.plot.setXRange(0, 60, padding=0)
         self.kpa_curve = self.plot.plot(
-            [], [], pen=pg.mkPen("#8a6f2a", width=2), name="raw kPa"
+            [], [], pen=pg.mkPen("#9A9A95", width=1.5), name="raw kPa"
         )
         self.filtered_curve = self.plot.plot(
-            [], [], pen=pg.mkPen("#0f766e", width=3), name="filtered kPa"
+            [], [], pen=pg.mkPen("#007AFF", width=2.5), name="filtered kPa"
         )
 
         layout = QtWidgets.QVBoxLayout(self)

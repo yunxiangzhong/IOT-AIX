@@ -25,6 +25,7 @@ class ConnectionPanel(QtWidgets.QFrame):
         self.refresh_button = QtWidgets.QToolButton()
         self.refresh_button.setText("刷新")
         self.connect_button = QtWidgets.QPushButton("连接")
+        self.connect_button.setProperty("primary", True)
         self.simulation_check = QtWidgets.QCheckBox("模拟数据")
         self.recording_check = QtWidgets.QCheckBox("记录 CSV")
         self.state_label = QtWidgets.QLabel("未连接")
