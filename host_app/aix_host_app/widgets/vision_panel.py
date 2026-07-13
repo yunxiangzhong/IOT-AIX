@@ -1,292 +1,102 @@
 from __future__ import annotations
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
-from ..models import ActuatorEvent, CameraStatusEvent, RiskEvent, VisionDetectEvent
-from ..vision import CameraFrame, CameraSourceConfig, VisionAnalysisResult
-
-
-_PRESSURE_TEXT = {
-    "disabled": "压力关闭",
-    "safe": "压力正常",
-    "unsafe": "压力异常",
-    "enabled": "压力开启",
-}
-
-
-_REASON_TEXT = {
-    "vision_missing": "ESP未收到视觉事件",
-    "vision_stale": "ESP视觉过期",
-    "vision_invalid": "视觉事件无效",
-    "vision_clear": "接近趋势不足",
-    "vision_weak": "弱接近",
-    "vision_approach": "稳定接近",
-    "vision_looming": "快速接近",
-    "vision_critical": "极强接近",
-}
+from ..models import CameraStatusEvent
 
 
 class VisionPanel(QtWidgets.QFrame):
-    camera_start_requested = QtCore.Signal(object)
-    camera_stop_requested = QtCore.Signal()
+    """OV5640 health display; image processing remains on the ESP32-S3."""
+
+    CAMERA_STATUS_TIMEOUT_MS = 3000
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("panel")
-        self._last_frame: CameraFrame | None = None
-        self._running = False
+        self._serial_connected = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
         title = QtWidgets.QLabel("视觉感知")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
 
-        source_row = QtWidgets.QHBoxLayout()
-        self.source_combo = QtWidgets.QComboBox()
-        self.source_combo.addItem("本机摄像头", "local")
-        self.source_combo.addItem("手机/IP 摄像头", "url")
-        self.source_value = QtWidgets.QLineEdit("0")
-        self.source_value.setPlaceholderText("0")
-        source_row.addWidget(self.source_combo, 1)
-        source_row.addWidget(self.source_value, 2)
-        layout.addLayout(source_row)
+        self.camera_status_button = QtWidgets.QToolButton()
+        self.camera_status_button.setObjectName("muted")
+        self.camera_status_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.camera_status_button.setText("OV5640：等待状态")
+        self.camera_status_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.camera_status_button.clicked.connect(self.toggle_camera_details)
+        layout.addWidget(self.camera_status_button)
 
-        button_row = QtWidgets.QHBoxLayout()
-        self.start_button = QtWidgets.QPushButton("启动摄像头")
-        self.start_button.setProperty("primary", True)
-        self.stop_button = QtWidgets.QPushButton("停止")
-        self.stop_button.setEnabled(False)
-        button_row.addWidget(self.start_button)
-        button_row.addWidget(self.stop_button)
-        layout.addLayout(button_row)
+        self.camera_details = QtWidgets.QFrame()
+        self.camera_details.setObjectName("cameraDetails")
+        details_layout = QtWidgets.QFormLayout(self.camera_details)
+        details_layout.setContentsMargins(12, 10, 12, 10)
+        details_layout.setSpacing(6)
+        self.camera_detail_label = QtWidgets.QLabel("等待 camera_status")
+        self.camera_detail_label.setWordWrap(True)
+        details_layout.addRow("设备详情", self.camera_detail_label)
+        self.camera_details.setVisible(False)
+        layout.addWidget(self.camera_details)
 
-        self.state_label = QtWidgets.QLabel("摄像头未启动")
-        self.state_label.setObjectName("muted")
-        layout.addWidget(self.state_label)
-
-        self.frame = QtWidgets.QLabel("Camera frame")
-        self.frame.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.frame.setMinimumHeight(210)
-        self.frame.setStyleSheet(
-            "background:#F1F1EF;border:1px solid #E2E2DE;border-radius:8px;"
-            "color:#9A9A95;font-weight:600;"
-        )
-        layout.addWidget(self.frame)
-
-        self.scene_label = QtWidgets.QLabel("场景：待接入")
-        self.scene_label.setObjectName("muted")
-        self.target_label = QtWidgets.QLabel("目标：待接入")
-        self.target_label.setObjectName("muted")
-        self.feature_label = QtWidgets.QLabel("视觉特征：等待画面")
-        self.feature_label.setObjectName("muted")
-        self.tx_label = QtWidgets.QLabel("视觉发送：等待串口和摄像头")
-        self.tx_label.setObjectName("muted")
-        self.risk_label = QtWidgets.QLabel("ESP风险等级 0")
-        self.risk_label.setObjectName("statusOk")
-        self.action_label = QtWidgets.QLabel("气囊策略：等待 ESP")
-        self.action_label.setObjectName("muted")
-        self.rule_label = QtWidgets.QLabel(
-            "阈值：20=looming>=0.25；50=looming>=0.45且area>=0.20；"
-            "80=looming>=0.70且area>=0.35；100=looming>=0.90且area>=0.60"
-        )
-        self.rule_label.setObjectName("muted")
-        self.rule_label.setWordWrap(True)
-
-        self.detect_label = QtWidgets.QLabel("目标检测：等待数据")
+        self.detect_label = QtWidgets.QLabel("视觉模型：等待 ESP32-S3 后续接入")
         self.detect_label.setObjectName("muted")
         self.detect_label.setWordWrap(True)
-
-        self.hardware_camera_label = QtWidgets.QLabel("OV5640：等待设备状态")
-        self.hardware_camera_label.setObjectName("muted")
-        self.hardware_camera_label.setWordWrap(True)
-
-        for widget in (
-            self.scene_label,
-            self.target_label,
-            self.feature_label,
-            self.tx_label,
-            self.risk_label,
-            self.action_label,
-            self.detect_label,
-            self.hardware_camera_label,
-            self.rule_label,
-        ):
-            widget.setWordWrap(True)
+        self.risk_label = QtWidgets.QLabel("ESP 风险：模块未接入")
+        self.risk_label.setObjectName("muted")
+        self.action_label = QtWidgets.QLabel("气囊策略：模块未接入")
+        self.action_label.setObjectName("muted")
+        for widget in (self.detect_label, self.risk_label, self.action_label):
             layout.addWidget(widget)
 
         layout.addStretch(1)
 
-        self.source_combo.currentIndexChanged.connect(self._update_source_hint)
-        self.start_button.clicked.connect(self._emit_start_requested)
-        self.stop_button.clicked.connect(self.camera_stop_requested.emit)
+        self.camera_status_timer = QtCore.QTimer(self)
+        self.camera_status_timer.setSingleShot(True)
+        self.camera_status_timer.setInterval(self.CAMERA_STATUS_TIMEOUT_MS)
+        self.camera_status_timer.timeout.connect(self._mark_camera_timeout)
 
-    def current_config(self) -> CameraSourceConfig:
-        kind = str(self.source_combo.currentData())
-        value = self.source_value.text().strip()
-        return CameraSourceConfig(kind=kind, value=value)
-
-    def set_placeholder_state(self) -> None:
-        self._last_frame = None
-        self.frame.clear()
-        self.frame.setText("Camera frame")
-        self.scene_label.setText("场景：待接入")
-        self.target_label.setText("目标：待接入")
-        self.feature_label.setText("视觉特征：等待画面")
-        self.tx_label.setText("视觉发送：等待串口和摄像头")
-        self.risk_label.setText("ESP风险等级 0")
-        self.risk_label.setObjectName("statusOk")
-        self.action_label.setText("气囊策略：等待 ESP")
-        self.detect_label.setText("目标检测：等待数据")
-        self.detect_label.setObjectName("muted")
-        self.hardware_camera_label.setText("OV5640：等待设备状态")
-        self.hardware_camera_label.setObjectName("muted")
-        self._refresh_label_style(self.risk_label)
-        self._refresh_label_style(self.detect_label)
-        self._refresh_label_style(self.hardware_camera_label)
-
-    def set_camera_running(self, running: bool, text: str | None = None) -> None:
-        self._running = running
-        self.start_button.setEnabled(not running)
-        self.stop_button.setEnabled(running)
-        self.source_combo.setEnabled(not running)
-        self.source_value.setEnabled(not running)
-        self.state_label.setText(text or ("摄像头运行中" if running else "摄像头未启动"))
-        self.state_label.setObjectName("statusOk" if running else "muted")
-        self._refresh_label_style(self.state_label)
-
-    def set_camera_error(self, message: str) -> None:
-        self.set_camera_running(False, message)
-        self.state_label.setObjectName("statusWarn")
-        self._refresh_label_style(self.state_label)
-
-    def update_frame(self, frame: CameraFrame) -> None:
-        self._last_frame = frame
-        self._render_frame(frame)
-
-    def update_analysis(self, result: VisionAnalysisResult) -> None:
-        self.scene_label.setText(f"场景：{result.scene}")
-        self.target_label.setText(f"目标：{result.targets}")
-        self.feature_label.setText(
-            "视觉特征："
-            f"扩张 {result.features.radial_expansion:.2f} | "
-            f"looming {result.features.looming:.2f} | "
-            f"中心 {result.features.center_motion:.2f} | "
-            f"面积 {result.features.area_rate:.2f} | "
-            f"置信 {result.features.confidence:.2f}"
-        )
-
-    def update_vision_tx_status(
-        self,
-        last_seq: int,
-        last_sent_age_ms: int | None,
-        failure_count: int,
-        connected: bool,
-    ) -> None:
-        if not connected:
-            text = "视觉发送：串口未连接"
-        elif last_seq <= 0 or last_sent_age_ms is None:
-            text = "视觉发送：等待第一帧发送"
+    def set_serial_connected(self, connected: bool) -> None:
+        self._serial_connected = connected
+        self.camera_status_timer.stop()
+        if connected:
+            self._set_camera_status("OV5640：等待状态", "muted")
+            self.camera_status_timer.start()
         else:
-            text = f"视觉发送：seq {last_seq} | {last_sent_age_ms} ms前 | 失败 {failure_count}"
-        self.tx_label.setText(text)
-        self.tx_label.setObjectName("statusWarn" if failure_count else "muted")
-        self._refresh_label_style(self.tx_label)
-
-    def update_esp_risk(self, event: RiskEvent) -> None:
-        reason_text = _REASON_TEXT.get(event.reason, event.reason)
-        stale_text = "，视觉过期" if event.vision_stale else ""
-        pressure_text = f"，{_PRESSURE_TEXT.get(event.pressure_state, event.pressure_state)}"
-        if not event.pressure_safe:
-            pressure_text += "，气压保护"
-        self.risk_label.setText(
-            f"ESP风险等级 {event.level} -> 目标 {event.target_pct}% "
-            f"({reason_text}{stale_text}{pressure_text})"
-        )
-        if event.level >= 80:
-            object_name = "statusDanger"
-        elif event.level > 0:
-            object_name = "statusWarn"
-        else:
-            object_name = "statusOk"
-        self.risk_label.setObjectName(object_name)
-        self._refresh_label_style(self.risk_label)
-
-    def update_actuator(self, event: ActuatorEvent) -> None:
-        self.action_label.setText(
-            f"气囊策略：{event.mode} | 目标 {event.target_pct}% | 泵 {event.pump} | 阀 {event.valve}"
-        )
-        self.action_label.setObjectName("statusWarn" if event.target_pct > 0 else "muted")
-        self._refresh_label_style(self.action_label)
-
-    def update_vision_detect(self, event: VisionDetectEvent) -> None:
-        lines = [f"目标检测 [{event.source}] seq={event.seq}"]
-        for obj in event.objects:
-            lines.append(
-                f"  {obj.class_name} {obj.confidence:.0%} | "
-                f"距离 {obj.distance_m:.2f}m | "
-                f"bbox({obj.bbox[0]},{obj.bbox[1]},{obj.bbox[2]},{obj.bbox[3]})"
-            )
-        lines.append(f"最近 {event.nearest_distance_m:.2f}m | TTC {event.ttc_s:.2f}s")
-        self.detect_label.setText("\n".join(lines))
-        warn = not event.valid or event.ttc_s < 1.0
-        self.detect_label.setObjectName("statusWarn" if warn else "muted")
-        self._refresh_label_style(self.detect_label)
+            self._set_camera_status("OV5640：等待状态", "muted")
 
     def update_camera_status(self, event: CameraStatusEvent) -> None:
-        state = "有效" if event.valid else "无效，正在重试"
-        psram = "已启用" if event.psram else "未启用（DRAM 单缓冲）"
-        self.hardware_camera_label.setText(
-            f"OV5640：{state} | {event.width}×{event.height} {event.pixel_format.upper()} | "
-            f"{event.fps:.1f} FPS | {event.frame_bytes} B | "
-            f"失败 {event.capture_failures} | PSRAM {psram}"
-        )
-        self.hardware_camera_label.setObjectName("statusOk" if event.valid else "statusWarn")
-        self._refresh_label_style(self.hardware_camera_label)
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        if self._last_frame is not None:
-            self._render_frame(self._last_frame)
-
-    def _emit_start_requested(self) -> None:
-        try:
-            config = self.current_config()
-            config.capture_input()
-        except ValueError as exc:
-            self.set_camera_error(str(exc))
+        if not self._serial_connected:
             return
-        self.camera_start_requested.emit(config)
 
-    def _render_frame(self, frame: CameraFrame) -> None:
-        image = QtGui.QImage(
-            frame.rgb_data,
-            frame.width,
-            frame.height,
-            frame.bytes_per_line,
-            QtGui.QImage.Format.Format_RGB888,
+        self.camera_detail_label.setText(
+            f"分辨率：{event.width}×{event.height}\n"
+            f"格式：{event.pixel_format.upper()}\n"
+            f"FPS：{event.fps:.1f}\n"
+            f"帧大小：{event.frame_bytes} B\n"
+            f"成功帧：{event.frames_ok}\n"
+            f"失败次数：{event.capture_failures}\n"
+            f"PSRAM：{'已启用' if event.psram else '未启用'}\n"
+            f"最后更新：{event.ts_ms} ms"
         )
-        pixmap = QtGui.QPixmap.fromImage(image.copy())
-        scaled = pixmap.scaled(
-            self.frame.size(),
-            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-            QtCore.Qt.TransformationMode.SmoothTransformation,
-        )
-        self.frame.setPixmap(scaled)
-
-    def _update_source_hint(self) -> None:
-        kind = str(self.source_combo.currentData())
-        if kind == "local":
-            self.source_value.setPlaceholderText("0")
-            if not self.source_value.text().strip():
-                self.source_value.setText("0")
+        if event.valid:
+            self._set_camera_status("OV5640：状态正常", "statusOk")
         else:
-            self.source_value.setPlaceholderText("http://手机IP:端口/video 或 rtsp://...")
-            if self.source_value.text().strip() == "0":
-                self.source_value.clear()
+            self._set_camera_status("OV5640：连接异常", "statusWarn")
+        self.camera_status_timer.start()
 
-    def _refresh_label_style(self, label: QtWidgets.QLabel) -> None:
-        label.style().unpolish(label)
-        label.style().polish(label)
+    def toggle_camera_details(self) -> None:
+        self.camera_details.setVisible(self.camera_details.isHidden())
+
+    def _mark_camera_timeout(self) -> None:
+        if self._serial_connected:
+            self._set_camera_status("OV5640：连接异常", "statusWarn")
+
+    def _set_camera_status(self, text: str, object_name: str) -> None:
+        self.camera_status_button.setText(text)
+        self.camera_status_button.setObjectName(object_name)
+        self.camera_status_button.style().unpolish(self.camera_status_button)
+        self.camera_status_button.style().polish(self.camera_status_button)

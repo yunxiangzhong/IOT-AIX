@@ -22,13 +22,13 @@
 
 ## 运行配置
 
-`sdkconfig.camera.defaults` 会关闭模拟 `vision_detect`，开启本地相机。固定参数：`320×240`、JPEG、20 MHz XCLK、质量 12、DRAM 单缓冲、200 ms 采帧周期（目标 5 FPS）。当前配置不依赖 PSRAM；未经确认前不要开启双缓冲。
+固件默认开启本地相机；如需无相机调试，可在 ESP-IDF `menuconfig` 关闭 `AIX_ENABLE_LOCAL_CAMERA`。固定参数：`320×240`、JPEG、20 MHz XCLK、质量 12、DRAM 单缓冲、200 ms 采帧周期（目标 5 FPS）。当前配置不依赖 PSRAM；未经确认前不要开启双缓冲。
 
 在原生 ESP-IDF PowerShell 中构建：
 
 ```powershell
 cd D:\Projects\IOTCompetition\ProjectFile
-powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -IdfProfile camera
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 ```
 
 烧录后，串口应每秒出现一条类似状态；它只包含健康信息，不含图像字节：
@@ -42,6 +42,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -IdfProfile camera
 - `valid:false`：初始化失败、空帧、非 JPEG 帧或 JPEG 首尾标记错误。
 - 连续 3 次采帧失败：驱动会 `deinit/reinit`，不会重启 ESP32-S3。
 - 初始化失败或重启后失败：每 2 秒重试一次。
-- 相机异常不生成 `vision_detect`，风险融合仍只使用 PC `vision` v1；若没有有效 PC 视觉，气囊目标保持 `0%`。
+- 相机异常只会发出无效 `camera_status`，上位机应显示“OV5640：连接异常”。当前不产生检测、风险或执行事件。
 
 验收时连续运行至少 5 分钟并检查不少于 100 帧、JPEG 有效、无系统重启和采帧失败率低于 1%。若模组标有 R2/R8，请先确认其 PSRAM 配置后再单独设计双缓冲 profile。

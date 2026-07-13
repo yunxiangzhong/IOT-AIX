@@ -1,39 +1,16 @@
 menu "AIX pulse helmet configuration"
 
-config AIX_ENABLE_SIMULATED_VISION_DETECT
-    bool "Enable simulated vision_detect source"
-    default y
-    help
-        Generate simulated truck-approach vision_detect events for the
-        competition demo. Disable this for hardware runs so only real or
-        externally supplied visual input can affect risk fusion.
-
 config AIX_ENABLE_LOCAL_CAMERA
     bool "Enable local OV5640 camera capture"
-    default n
+    default y
     help
-        Start the fixed-wiring OV5640 capture task. This P1 profile only
-        validates QVGA JPEG frames and emits camera_status; it does not emit
-        vision_detect or affect risk fusion.
+        Start fixed-wiring OV5640 capture. It validates QVGA JPEG frames and
+        emits camera_status; future visual models run on the ESP32-S3.
 
 config AIX_CAMERA_CAPTURE_PERIOD_MS
     int "Local camera capture period (ms)"
     default 200
     range 100 1000
     depends on AIX_ENABLE_LOCAL_CAMERA
-
-config AIX_CAMERA_STATUS_PERIOD_MS
-    int "Local camera status report period (ms)"
-    default 1000
-    range 500 10000
-    depends on AIX_ENABLE_LOCAL_CAMERA
-
-config AIX_VISION_DETECT_STALE_MS
-    int "vision_detect stale timeout (ms)"
-    default 500
-    range 100 10000
-    help
-        A valid vision_detect snapshot at or beyond this timeout is ignored and
-        risk fusion falls back to the PC vision v1 path or a safe zero target.
 
 endmenu

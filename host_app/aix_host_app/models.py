@@ -17,15 +17,6 @@ class PressureSample:
 
 
 @dataclass(frozen=True)
-class VisionFrame:
-    frame_id: int
-    ts_ms: int
-    width: int
-    height: int
-    source: str
-
-
-@dataclass(frozen=True)
 class MotionEvent:
     seq: int
     ts_ms: int
@@ -34,53 +25,6 @@ class MotionEvent:
     speed_valid: bool
     accel_valid: bool
     source: str = "json"
-
-
-@dataclass(frozen=True)
-class RiskEvent:
-    seq: int
-    ts_ms: int
-    level: int
-    target_pct: int
-    reason: str
-    vision_stale: bool
-    pressure_safe: bool
-    pressure_state: str = "enabled"
-    version: int = 1
-    category: str = ""
-    nearest_class: str = ""
-    nearest_distance_m: float = -1.0
-    ttc_s: float = -1.0
-
-
-@dataclass(frozen=True)
-class ActuatorEvent:
-    seq: int
-    ts_ms: int
-    mode: str
-    target_pct: int
-    pump: str
-    valve: str
-
-
-@dataclass(frozen=True)
-class VisionDetectObject:
-    class_name: str
-    confidence: float
-    bbox: tuple[int, int, int, int]  # x, y, w, h
-    distance_m: float
-    approaching: bool
-
-
-@dataclass(frozen=True)
-class VisionDetectEvent:
-    seq: int
-    ts_ms: int
-    source: str
-    objects: tuple[VisionDetectObject, ...]
-    nearest_distance_m: float
-    ttc_s: float
-    valid: bool
 
 
 @dataclass(frozen=True)
@@ -97,11 +41,3 @@ class CameraStatusEvent:
     capture_failures: int
     psram: bool
     valid: bool
-
-
-@dataclass(frozen=True)
-class VoiceEvent:
-    seq: int
-    ts_ms: int
-    text: str
-    played: bool

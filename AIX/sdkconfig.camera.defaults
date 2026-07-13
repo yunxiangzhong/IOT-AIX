@@ -1,6 +1,0 @@
-# Camera P1: local OV5640 capture only; no simulated vision_detect source.
-# PSRAM intentionally remains disabled until the module's R2/R8 configuration is verified.
-# CONFIG_AIX_ENABLE_SIMULATED_VISION_DETECT is not set
-CONFIG_AIX_ENABLE_LOCAL_CAMERA=y
-CONFIG_AIX_CAMERA_CAPTURE_PERIOD_MS=200
-CONFIG_AIX_CAMERA_STATUS_PERIOD_MS=1000

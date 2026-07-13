@@ -26,12 +26,9 @@ bool camera_local_frame_is_valid_jpeg(const uint8_t *data, size_t length)
 #define CONFIG_AIX_CAMERA_CAPTURE_PERIOD_MS 200
 #endif
 
-#ifndef CONFIG_AIX_CAMERA_STATUS_PERIOD_MS
-#define CONFIG_AIX_CAMERA_STATUS_PERIOD_MS 1000
-#endif
-
 #define CAMERA_INIT_RETRY_MS 2000U
 #define CAMERA_REINIT_FAILURES 3U
+#define CAMERA_STATUS_PERIOD_MS 1000U
 #define OV5640_SENSOR_PID 0x5640U
 
 static const char *TAG = "AIX_CAMERA";
@@ -220,7 +217,7 @@ static void camera_capture_task(void *arg)
 
         if (current_us >= next_status_us) {
             emit_status(current_us);
-            next_status_us = current_us + (uint64_t)CONFIG_AIX_CAMERA_STATUS_PERIOD_MS * 1000U;
+            next_status_us = current_us + (uint64_t)CAMERA_STATUS_PERIOD_MS * 1000U;
         }
         vTaskDelay(pdMS_TO_TICKS(CONFIG_AIX_CAMERA_CAPTURE_PERIOD_MS));
     }

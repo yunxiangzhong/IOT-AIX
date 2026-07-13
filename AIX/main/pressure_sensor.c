@@ -10,7 +10,6 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "config_input.h"
 
 #define PRESSURE_SENSOR_ADC_UNIT ADC_UNIT_1
 #define PRESSURE_SENSOR_ADC_CHANNEL ADC_CHANNEL_0
@@ -192,11 +191,6 @@ static void pressure_sensor_task(void *arg)
     TickType_t last_log_tick = xTaskGetTickCount();
 
     while (1) {
-        if (!config_input_pressure_enabled()) {
-            vTaskDelay(pdMS_TO_TICKS(PRESSURE_SENSOR_SAMPLE_PERIOD_MS));
-            continue;
-        }
-
         pressure_sensor_sample_t sample = {0};
         const esp_err_t ret = pressure_sensor_read(&sample);
         if (ret == ESP_OK) {
