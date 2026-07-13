@@ -1,20 +1,21 @@
 # AIX 脉盔上位机
 
-这是 ESP32-S3 的调试与状态监测上位机。它显示压力数据、OV5640 健康状态、PC DA3 相对深度结果、事件流、CSV 记录，并保留 motion 预留面板。
+这是 ESP32-S3 的调试与状态监测上位机。它显示压力数据、OV5640 健康状态与 Wi-Fi JPEG 画面、PC DA3 相对深度结果、事件流、CSV 记录，并保留 motion 预留面板。
 
-上位机不再提供本机摄像头、手机/IP 摄像头、画面预览、OpenCV 光流分析或视觉事件发送。OV5640 图像只在 ESP32-S3 本地处理。
+上位机不使用本机摄像头、手机/IP 摄像头或 OpenCV 光流分析。它只根据 ESP32-S3 通过串口发布的 `camera_preview` 地址读取最新 OV5640 JPEG；图像字节不经过串口。
 
 ## 当前职责
 
 ```text
-串口读取 pressure / camera_status / vision_depth / motion
+串口读取 pressure / camera_status / camera_preview / vision_depth / motion
 ├─ pressure：压力曲线、状态与 CSV
 ├─ camera_status：OV5640 折叠状态卡和参数详情
+├─ camera_preview：ESP32-S3 Wi-Fi JPEG 地址，右侧视觉卡自动以约 2.5 FPS 更新
 ├─ vision_depth：DA3-SMALL 相对深度、置信度与推理延迟
 └─ motion：保留未来模块接口
 ```
 
-视觉区域默认只显示可点击状态文字：
+视觉区域包含最新 JPEG 预览和可点击的相机状态文字：
 
 - `OV5640：等待状态`：未连接串口。
 - `OV5640：状态正常`：3 秒内收到有效 `camera_status`。
@@ -22,13 +23,15 @@
 
 点击状态文字可就地展开分辨率、格式、FPS、帧大小、成功帧、失败次数、PSRAM 和最后更新时间。
 
+压力事件 `valid:false` 时，上位机显示 `— kPa` 和 raw/mV 诊断值；该样本不会画入曲线或写入 CSV，避免未接传感器时将残留滤波值误判为压力。
+
 ## 目录
 
 ```text
 host_app/
 ├─ aix_host_app/
 │  ├─ app.py             # 主窗口、串口路由、记录
-│  ├─ models.py          # pressure / camera_status / motion
+│  ├─ models.py          # pressure / camera_status / camera_preview / motion
 │  ├─ parsers.py         # 支持协议解析
 │  └─ widgets/           # 压力、motion、OV5640 状态、事件流
 ├─ tests/
@@ -44,6 +47,8 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 ```
 
 项目统一使用 `D:\Projects\IOTCompetition\ProjectFile\.venv`。
+
+Windows 热点必须设为 **2.4 GHz**。固件烧录并连接热点后，保持串口连接即可自动收到预览地址并显示画面。
 
 ## 验证
 

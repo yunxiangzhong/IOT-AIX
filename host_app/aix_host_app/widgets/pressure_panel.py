@@ -80,6 +80,17 @@ class PressurePanel(QtWidgets.QFrame):
         self._set_status("等待气压样本", "muted")
 
     def update_sample(self, sample: PressureSample) -> None:
+        self.detail_label.setText(f"raw {sample.raw} | {sample.mv} mV | seq {sample.seq}")
+        if not sample.valid:
+            self.history.clear()
+            self.kpa_curve.setData([], [])
+            self.filtered_curve.setData([], [])
+            self.plot.setYRange(0, 10, padding=0)
+            self.plot.setXRange(0, 60, padding=0)
+            self.value_label.setText("— kPa")
+            self._set_status("传感器电压异常（可能未接入）", "statusWarn")
+            return
+
         self.history.add(sample)
         self.kpa_curve.setData(self.history.seq_values(), self.history.kpa_values())
         self.filtered_curve.setData(self.history.seq_values(), self.history.filtered_values())
@@ -91,8 +102,6 @@ class PressurePanel(QtWidgets.QFrame):
             self._apply_x_follow()
 
         self.value_label.setText(f"{sample.filtered_kpa:.1f} kPa")
-        self.detail_label.setText(f"raw {sample.raw} | {sample.mv} mV | seq {sample.seq}")
-
         if sample.over_pressure:
             self._set_status("过压预警", "statusDanger")
         elif not sample.valid:

@@ -11,6 +11,10 @@
 #include "vision_uplink.h"
 #endif
 
+#if CONFIG_AIX_ENABLE_CAMERA_PREVIEW
+#include "camera_preview.h"
+#endif
+
 static const char *TAG = "AIX_BOOT";
 
 void app_main(void)
@@ -33,6 +37,15 @@ void app_main(void)
     }
 
 #if CONFIG_AIX_ENABLE_LOCAL_CAMERA
+#if CONFIG_AIX_ENABLE_CAMERA_PREVIEW
+    ret = camera_preview_start();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "camera preview unavailable: %s", esp_err_to_name(ret));
+    } else {
+        camera_local_set_frame_consumer(camera_preview_submit_frame, NULL);
+        ESP_LOGI(TAG, "Wi-Fi camera preview enabled");
+    }
+#endif
 #if CONFIG_AIX_ENABLE_VISION_UPLINK
     ret = vision_uplink_start_task();
     if (ret != ESP_OK) {
@@ -46,7 +59,7 @@ void app_main(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "local OV5640 camera task start failed: %s", esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "Local OV5640 capture enabled; camera status is telemetry only");
+        ESP_LOGI(TAG, "Local OV5640 capture enabled");
     }
 #endif
 

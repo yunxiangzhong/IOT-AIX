@@ -36,6 +36,7 @@ host_app/logs/
 AIX/build/
 AIX/build-*/
 AIX/sdkconfig.old
+AIX/sdkconfig.preview
 AIX/managed_components/
 AIX/.espressif/
 

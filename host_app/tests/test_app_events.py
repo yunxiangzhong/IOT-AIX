@@ -68,6 +68,17 @@ class MainWindowEventRoutingTests(unittest.TestCase):
         window.vision_panel.camera_status_button.click()
         self.assertTrue(window.vision_panel.camera_details.isHidden())
 
+    def test_routes_preview_url_to_vision_panel(self):
+        window = MainWindow()
+
+        window._handle_raw_line(
+            '{"type":"camera_preview","version":1,"valid":true,'
+            '"url":"http://192.168.137.23:8080/capture.jpg",'
+            '"ip":"192.168.137.23","port":8080,"reason":"ready"}'
+        )
+
+        self.assertEqual(window.vision_panel.preview_url, "http://192.168.137.23:8080/capture.jpg")
+
 
 if __name__ == "__main__":
     unittest.main()

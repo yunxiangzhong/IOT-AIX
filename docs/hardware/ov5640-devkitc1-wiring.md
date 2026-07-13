@@ -1,6 +1,6 @@
 # OV5640 直连 ESP32-S3-DevKitC-1（P1）
 
-本页对应 18 针、3.3 V、DVP 并口 OV5640 排针板。P1 只验证 QVGA JPEG 稳定采帧和 `camera_status`；不传 JPEG，不做自动对焦、补光、YOLO、测距或真实执行控制。
+本页对应图示的正点原子 18 针、3.3 V、DVP 并口 OV5640 排针板。该模块自带 24 MHz 有源晶振，排针没有 XCLK，因此 ESP32-S3 不输出外部 XCLK。P1 只验证 QVGA JPEG 稳定采帧和 `camera_status`；不传 JPEG，不做自动对焦、补光、YOLO、测距或真实执行控制。
 
 ## 固定接线
 
@@ -10,19 +10,20 @@
 | GND | GND | 必须共地 |
 | SDA | GPIO4 | SCCB 数据 |
 | SCL | GPIO5 | SCCB 时钟 |
-| XCLK | GPIO6 | 20 MHz 相机时钟 |
+| XCLK | 不接 | 模块自带 24 MHz 有源晶振；GPIO6 悬空 |
 | PCLK | GPIO7 | 像素时钟 |
 | VSYNC | GPIO8 | 帧同步 |
 | HREF | GPIO9 | 行同步 |
 | D0–D7 | GPIO10–GPIO17 | DVP 数据，按顺序一一连接 |
 | PWDN | GPIO18 | 电源休眠控制 |
 | RST | GPIO21 | 硬件复位 |
+| FLASH | 不接 | P1 不使用补光灯控制 |
 
 不要把 GPIO0、GPIO19/20、GPIO35/36/37、GPIO38、GPIO43/44 分配给本摄像头：它们分别涉及启动、USB、板载存储/PSRAM、RGB 或串口等板级功能。
 
 ## 运行配置
 
-固件默认开启本地相机；如需无相机调试，可在 ESP-IDF `menuconfig` 关闭 `AIX_ENABLE_LOCAL_CAMERA`。固定参数：`320×240`、JPEG、20 MHz XCLK、质量 12、DRAM 单缓冲、200 ms 采帧周期（目标 5 FPS）。当前配置不依赖 PSRAM；未经确认前不要开启双缓冲。
+固件默认开启本地相机；如需无相机调试，可在 ESP-IDF `menuconfig` 关闭 `AIX_ENABLE_LOCAL_CAMERA`。固定参数：`320×240`、JPEG、模块内部 24 MHz XCLK、质量 12、DRAM 单缓冲、200 ms 采帧周期（目标 5 FPS）。驱动使用 `pin_xclk = -1`，同时以 `24 MHz` 作为 OV5640 PLL/PCLK 配置依据。当前配置不依赖 PSRAM；未经确认前不要开启双缓冲。
 
 在原生 ESP-IDF PowerShell 中构建：
 

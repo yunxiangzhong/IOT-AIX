@@ -11,6 +11,21 @@ $hostApp = Join-Path $projectRoot "host_app"
 $aix = Join-Path $projectRoot "AIX"
 $main = Join-Path $aix "main"
 $testBin = Join-Path $projectRoot ".test-bin"
+$cameraKconfig = Join-Path $main "Kconfig.projbuild"
+$cameraSource = Join-Path $main "camera_local.c"
+$cameraPreview = Join-Path $main "camera_preview.c"
+
+if (-not (Test-Path -LiteralPath $cameraKconfig)) {
+    throw "Missing ESP-IDF component configuration: $cameraKconfig"
+}
+
+$cameraSourceText = Get-Content -Raw -LiteralPath $cameraSource
+if ($cameraSourceText -notmatch '(?s)#if CONFIG_SPIRAM.*esp_psram_is_initialized.*#else.*psram_enabled = false.*#endif') {
+    throw "camera_local.c must not reference esp_psram_is_initialized when CONFIG_SPIRAM is disabled"
+}
+if (-not (Test-Path -LiteralPath $cameraPreview)) {
+    throw "Missing camera preview source: $cameraPreview"
+}
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw "Missing project virtual environment: $python"
@@ -73,6 +88,13 @@ Invoke-HostCTest "camera_local_test" @(
     (Join-Path $main "camera_local.c"),
     (Join-Path $aix "test\camera_local_test.c")
 )
+Invoke-HostCTest "camera_preview_test" @(
+    (Join-Path $main "camera_preview.c"),
+    (Join-Path $aix "test\camera_preview_test.c")
+)
+Invoke-HostCTest "camera_board_profile_test" @(
+    (Join-Path $aix "test\camera_board_profile_test.c")
+)
 
 if ($BuildFirmware) {
     $idfPython = if ($env:IDF_PYTHON_ENV_PATH) {
@@ -96,14 +118,18 @@ if ($BuildFirmware) {
 
     $buildDir = "build-verify"
     $sdkconfig = "$buildDir/sdkconfig"
+    $sdkconfigDefaults = "sdkconfig.defaults"
+    if (Test-Path -LiteralPath (Join-Path $aix "sdkconfig.preview")) {
+        $sdkconfigDefaults = "sdkconfig.defaults;sdkconfig.preview"
+    }
 
     Invoke-Checked "ESP-IDF firmware build" {
         Push-Location $aix
         try {
             if ($useEspIdfPython) {
-                & $idfPython $idfScript -B $buildDir "-DSDKCONFIG=$sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults" build
+                & $idfPython $idfScript -B $buildDir "-DSDKCONFIG=$sdkconfig" "-DSDKCONFIG_DEFAULTS=$sdkconfigDefaults" build
             } else {
-                & $idf.Source -B $buildDir "-DSDKCONFIG=$sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults" build
+                & $idf.Source -B $buildDir "-DSDKCONFIG=$sdkconfig" "-DSDKCONFIG_DEFAULTS=$sdkconfigDefaults" build
             }
         } finally {
             Pop-Location

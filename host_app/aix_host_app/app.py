@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
-from .models import CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
+from .models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
 from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
 from .simulation import make_simulated_pressure_sample
@@ -148,6 +148,10 @@ class MainWindow(QtWidgets.QMainWindow):
             state = "正常" if event.valid else "异常"
             self.timeline.set_summary(f"OV5640 | {event.width}x{event.height} | {state}")
             self.timeline.add_line(line)
+        elif isinstance(event, CameraPreviewEvent):
+            self.vision_panel.update_camera_preview(event)
+            self.timeline.set_summary("OV5640 画面预览已就绪" if event.valid else "OV5640 画面预览不可用")
+            self.timeline.add_line(line)
         elif isinstance(event, VisionDepthEvent):
             self.vision_panel.update_vision_depth(event)
             state = "正常" if event.valid else "异常"
@@ -159,16 +163,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def _accept_sample(self, sample: PressureSample, raw_line: str | None = None) -> None:
         self.pressure_panel.update_sample(sample)
         self.overview_panel.update_pressure(sample)
-        self.timeline.set_summary(
-            f"seq {sample.seq} | {sample.filtered_kpa:.1f} kPa | {sample.source}"
-        )
+        summary = (f"seq {sample.seq} | {sample.filtered_kpa:.1f} kPa | {sample.source}"
+                   if sample.valid else f"seq {sample.seq} | 压力无效 | {sample.source}")
+        self.timeline.set_summary(summary)
         if raw_line:
             self.timeline.add_line(raw_line)
         else:
             self.timeline.add_line(
                 f"[sim] seq={sample.seq}, filtered={sample.filtered_kpa:.1f}kPa"
             )
-        self._record_sample(sample)
+        if sample.valid:
+            self._record_sample(sample)
 
     def _set_simulation_enabled(self, enabled: bool) -> None:
         if enabled:

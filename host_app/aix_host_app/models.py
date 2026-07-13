@@ -44,6 +44,15 @@ class CameraStatusEvent:
 
 
 @dataclass(frozen=True)
+class CameraPreviewEvent:
+    valid: bool
+    url: str
+    ip: str
+    port: int
+    reason: str
+
+
+@dataclass(frozen=True)
 class VisionDepthEvent:
     frame_seq: int
     capture_ts_ms: int

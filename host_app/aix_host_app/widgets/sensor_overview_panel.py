@@ -59,12 +59,12 @@ class SensorOverviewPanel(QtWidgets.QFrame):
                 layout.addWidget(divider)
 
     def update_pressure(self, sample: PressureSample) -> None:
+        if not sample.valid:
+            self.pressure.set_metric("— kPa", "电压异常", "statusWarn")
+            return
         if sample.over_pressure:
             status = "过压预警"
             object_name = "statusDanger"
-        elif not sample.valid:
-            status = "电压异常"
-            object_name = "statusWarn"
         else:
             status = "反馈正常"
             object_name = "statusOk"

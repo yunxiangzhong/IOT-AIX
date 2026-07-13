@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 
-from ..models import CameraStatusEvent, VisionDepthEvent
+from ..models import CameraPreviewEvent, CameraStatusEvent, VisionDepthEvent
 
 
 class VisionPanel(QtWidgets.QFrame):
@@ -14,6 +14,9 @@ class VisionPanel(QtWidgets.QFrame):
         super().__init__(parent)
         self.setObjectName("panel")
         self._serial_connected = False
+        self.preview_url = ""
+        self._preview_reply: QtNetwork.QNetworkReply | None = None
+        self._last_preview_image: QtGui.QImage | None = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -22,6 +25,22 @@ class VisionPanel(QtWidgets.QFrame):
         title = QtWidgets.QLabel("视觉感知")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
+
+        self.preview_card = QtWidgets.QFrame()
+        self.preview_card.setObjectName("cameraPreview")
+        preview_layout = QtWidgets.QVBoxLayout(self.preview_card)
+        preview_layout.setContentsMargins(8, 8, 8, 8)
+        preview_layout.setSpacing(6)
+        self.preview_image_label = QtWidgets.QLabel("等待 Wi-Fi 画面")
+        self.preview_image_label.setObjectName("cameraPreviewImage")
+        self.preview_image_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.preview_image_label.setMinimumSize(260, 195)
+        self.preview_image_label.setWordWrap(True)
+        self.preview_status_label = QtWidgets.QLabel("串口连接后将自动获取画面地址")
+        self.preview_status_label.setObjectName("muted")
+        preview_layout.addWidget(self.preview_image_label, 1)
+        preview_layout.addWidget(self.preview_status_label)
+        layout.addWidget(self.preview_card)
 
         self.camera_status_button = QtWidgets.QToolButton()
         self.camera_status_button.setObjectName("muted")
@@ -58,6 +77,10 @@ class VisionPanel(QtWidgets.QFrame):
         self.camera_status_timer.setSingleShot(True)
         self.camera_status_timer.setInterval(self.CAMERA_STATUS_TIMEOUT_MS)
         self.camera_status_timer.timeout.connect(self._mark_camera_timeout)
+        self.preview_timer = QtCore.QTimer(self)
+        self.preview_timer.setInterval(400)
+        self.preview_timer.timeout.connect(self._request_preview)
+        self.preview_network = QtNetwork.QNetworkAccessManager(self)
 
     def set_serial_connected(self, connected: bool) -> None:
         self._serial_connected = connected
@@ -65,8 +88,26 @@ class VisionPanel(QtWidgets.QFrame):
         if connected:
             self._set_camera_status("OV5640：等待状态", "muted")
             self.camera_status_timer.start()
+            self._set_preview_status("等待 ESP32-S3 发布 Wi-Fi 画面地址", "muted")
         else:
             self._set_camera_status("OV5640：等待状态", "muted")
+            self.preview_timer.stop()
+            self.preview_url = ""
+            if self._preview_reply is not None:
+                self._preview_reply.abort()
+                self._preview_reply = None
+            self._set_preview_status("等待串口连接", "muted")
+
+    def update_camera_preview(self, event: CameraPreviewEvent) -> None:
+        if not event.valid:
+            self.preview_timer.stop()
+            self.preview_url = ""
+            self._set_preview_status(f"画面预览不可用：{event.reason}", "statusWarn")
+            return
+        self.preview_url = event.url
+        self._set_preview_status("Wi-Fi 画面已连接，正在加载…", "statusOk")
+        self.preview_timer.start()
+        self._request_preview()
 
     def update_camera_status(self, event: CameraStatusEvent) -> None:
         if not self._serial_connected:
@@ -114,3 +155,52 @@ class VisionPanel(QtWidgets.QFrame):
         self.camera_status_button.setObjectName(object_name)
         self.camera_status_button.style().unpolish(self.camera_status_button)
         self.camera_status_button.style().polish(self.camera_status_button)
+
+    def _request_preview(self) -> None:
+        if not self.preview_url or self._preview_reply is not None:
+            return
+        request = QtNetwork.QNetworkRequest(QtCore.QUrl(self.preview_url))
+        request.setAttribute(
+            QtNetwork.QNetworkRequest.Attribute.CacheLoadControlAttribute,
+            QtNetwork.QNetworkRequest.CacheLoadControl.AlwaysNetwork,
+        )
+        self._preview_reply = self.preview_network.get(request)
+        self._preview_reply.finished.connect(self._handle_preview_reply)
+
+    def _handle_preview_reply(self) -> None:
+        reply = self._preview_reply
+        self._preview_reply = None
+        if reply is None:
+            return
+        if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError:
+            self._set_preview_status(f"画面读取失败：{reply.errorString()}", "statusWarn")
+            reply.deleteLater()
+            return
+        image = QtGui.QImage.fromData(bytes(reply.readAll()), "JPG")
+        reply.deleteLater()
+        if image.isNull():
+            self._set_preview_status("画面数据无效，等待下一帧", "statusWarn")
+            return
+        self._last_preview_image = image
+        self._render_preview_image()
+        self._set_preview_status("Wi-Fi 画面实时更新（2.5 FPS）", "statusOk")
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._render_preview_image()
+
+    def _render_preview_image(self) -> None:
+        if self._last_preview_image is None:
+            return
+        pixmap = QtGui.QPixmap.fromImage(self._last_preview_image).scaled(
+            self.preview_image_label.size(),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview_image_label.setPixmap(pixmap)
+
+    def _set_preview_status(self, text: str, object_name: str) -> None:
+        self.preview_status_label.setText(text)
+        self.preview_status_label.setObjectName(object_name)
+        self.preview_status_label.style().unpolish(self.preview_status_label)
+        self.preview_status_label.style().polish(self.preview_status_label)

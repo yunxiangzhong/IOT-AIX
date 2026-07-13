@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.models import CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
+from aix_host_app.models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
 from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
@@ -46,6 +46,25 @@ class CameraStatusParserTests(unittest.TestCase):
     def test_rejects_camera_status_with_missing_fields(self):
         with self.assertRaises(ParseError):
             parse_event_line('{"type":"camera_status","version":1,"seq":1,"ts_ms":1000}')
+
+
+class CameraPreviewParserTests(unittest.TestCase):
+    def test_parses_camera_preview_event(self):
+        event = parse_event_line(
+            '{"type":"camera_preview","version":1,"valid":true,'
+            '"url":"http://192.168.137.23:8080/capture.jpg",'
+            '"ip":"192.168.137.23","port":8080,"reason":"ready"}'
+        )
+        self.assertIsInstance(event, CameraPreviewEvent)
+        self.assertEqual(event.port, 8080)
+        self.assertTrue(event.url.endswith("/capture.jpg"))
+
+    def test_rejects_camera_preview_with_missing_url(self):
+        with self.assertRaises(ParseError):
+            parse_event_line(
+                '{"type":"camera_preview","version":1,"valid":true,'
+                '"ip":"192.168.137.23","port":8080,"reason":"ready"}'
+            )
 
 
 class VisionDepthParserTests(unittest.TestCase):

@@ -17,6 +17,17 @@ def app_stylesheet() -> str:
         border: 1px solid #E2E2DE;
         border-radius: 8px;
     }
+    QFrame#cameraPreview {
+        background: #F1EFE9;
+        border: 1px solid #E2DED2;
+        border-radius: 7px;
+    }
+    QLabel#cameraPreviewImage {
+        background: #242522;
+        color: #E6E4DD;
+        border-radius: 4px;
+        font-size: 12px;
+    }
     QLabel#sectionTitle {
         color: #20201E;
         font-size: 13px;

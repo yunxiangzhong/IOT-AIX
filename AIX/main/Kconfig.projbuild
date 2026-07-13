@@ -13,20 +13,34 @@ config AIX_CAMERA_CAPTURE_PERIOD_MS
     range 100 1000
     depends on AIX_ENABLE_LOCAL_CAMERA
 
+config AIX_ENABLE_CAMERA_PREVIEW
+    bool "Enable Wi-Fi JPEG preview for the host application"
+    default y
+    depends on AIX_ENABLE_LOCAL_CAMERA
+    help
+        Join the configured 2.4 GHz Wi-Fi network and serve the latest OV5640
+        JPEG at /capture.jpg. The preview URL is emitted over serial.
+
+config AIX_CAMERA_PREVIEW_PORT
+    int "Camera preview HTTP port"
+    default 8080
+    range 1024 65535
+    depends on AIX_ENABLE_CAMERA_PREVIEW
+
 config AIX_ENABLE_VISION_UPLINK
     bool "Enable Wi-Fi upload to the PC Depth Anything 3 service"
     default n
-    depends on AIX_ENABLE_LOCAL_CAMERA
+    depends on AIX_ENABLE_LOCAL_CAMERA && !AIX_ENABLE_CAMERA_PREVIEW
 
 config AIX_WIFI_SSID
     string "Wi-Fi SSID"
     default ""
-    depends on AIX_ENABLE_VISION_UPLINK
+    depends on AIX_ENABLE_CAMERA_PREVIEW || AIX_ENABLE_VISION_UPLINK
 
 config AIX_WIFI_PASSWORD
     string "Wi-Fi password"
     default ""
-    depends on AIX_ENABLE_VISION_UPLINK
+    depends on AIX_ENABLE_CAMERA_PREVIEW || AIX_ENABLE_VISION_UPLINK
 
 config AIX_VISION_SERVICE_URL
     string "PC Depth Anything 3 service URL"

@@ -67,7 +67,7 @@ static camera_config_t make_camera_config(void)
         .pin_vsync = AIX_CAMERA_PIN_VSYNC,
         .pin_href = AIX_CAMERA_PIN_HREF,
         .pin_pclk = AIX_CAMERA_PIN_PCLK,
-        .xclk_freq_hz = 20000000,
+        .xclk_freq_hz = AIX_CAMERA_XCLK_FREQ_HZ,
         .ledc_timer = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
         .pixel_format = PIXFORMAT_JPEG,
@@ -118,9 +118,13 @@ esp_err_t camera_local_init(void)
     s_status.valid = true;
     s_status.width = 320;
     s_status.height = 240;
+#if CONFIG_SPIRAM
     s_status.psram_enabled = esp_psram_is_initialized();
+#else
+    s_status.psram_enabled = false;
+#endif
     s_status.consecutive_failures = 0;
-    ESP_LOGI(TAG, "OV5640 ready: 320x240 JPEG, XCLK 20MHz, DRAM single buffer");
+    ESP_LOGI(TAG, "OV5640 ready: 320x240 JPEG, onboard XCLK 24MHz, DRAM single buffer");
     return ESP_OK;
 }
 

@@ -6,10 +6,10 @@
 
 ```text
 XGZP6847A -> ESP32-S3 pressure_sensor -> pressure NDJSON -> PC 上位机
-OV5640 -> ESP32-S3 camera_local -> Wi-Fi HTTP JPEG -> PC DA3-SMALL -> HTTP JSON -> ESP32-S3 vision_depth NDJSON -> PC 上位机
+OV5640 -> ESP32-S3 camera_local -> Wi-Fi latest JPEG preview -> PC 上位机
 ```
 
-JPEG 只通过 ESP32-S3 的 Wi-Fi 链路上传给本机推理服务；串口上位机不接收图像字节，只显示 `camera_status` 与 `vision_depth`。`vision_depth` 是相对深度统计，不是米制距离、碰撞结论或执行器指令。
+JPEG 通过 ESP32-S3 的 Wi-Fi 链路提供给本机上位机；串口只传 `camera_status`、`camera_preview` 等状态，不传图像字节。`vision_depth` 仍保留为可选的相对深度协议，不是米制距离、碰撞结论或执行器指令。
 
 ## 目录
 
@@ -27,7 +27,7 @@ ProjectFile/
 | --- | --- |
 | XGZP6847A 压力采集 | 已实现 |
 | OV5640 QVGA/JPEG 健康采帧与恢复 | 已实现，待实机五分钟验收 |
-| 上位机 OV5640 连接状态与详情 | 已实现 |
+| 上位机 OV5640 连接状态、详情与 Wi-Fi 画面预览 | 已实现，待热点实机验收 |
 | PC 端 DA3-SMALL 相对深度服务 | 已实现，待 OV5640 Wi-Fi 实机闭环验收 |
 | ESP32-S3 端视觉模型 | 不采用；ESP32-S3 负责采帧、上传和结果上报 |
 | JPEG Wi-Fi 上送 | 已实现，待实机网络验收 |
@@ -35,13 +35,21 @@ ProjectFile/
 
 ## 串口协议
 
-支持 `pressure`、`camera_status`，并保留上位机 `motion` 占位协议。
+支持 `pressure`、`camera_status`、`camera_preview`，并保留上位机 `motion` 占位协议。压力事件的 `valid:false` 表示电压异常（可能未接入），上位机只显示 raw/mV 诊断值，不显示或记录 kPa。
 
 ```json
 {"type":"camera_status","version":1,"seq":7,"ts_ms":1200,"sensor":"OV5640","width":320,"height":240,"pixel_format":"jpeg","frame_bytes":18432,"fps":5.0,"frames_ok":12,"capture_failures":0,"psram":false,"valid":true}
 ```
 
 上位机在串口连接后 3 秒内收到 `valid:true` 显示“OV5640：状态正常”；收到无效状态或超时显示“连接异常”。点击状态文字可展开参数详情。
+
+## OV5640 Wi-Fi 画面预览
+
+1. 在 Windows 移动热点的“属性”中将频段选为 **2.4 GHz**，保持热点开启。
+2. 本机私有配置 `AIX/sdkconfig.preview` 保存热点名称和密码；该文件已被 Git 忽略，不能提交。
+3. 编译并烧录后，ESP32-S3 取得 IP 会通过串口发送 `camera_preview` 事件，上位机自动轮询 `http://<ESP-IP>:8080/capture.jpg` 并显示画面。
+
+若上位机显示“画面预览不可用：ssid_empty”，说明本机私有配置缺少热点参数；若持续读取失败，优先确认热点不是 5 GHz 且电脑和 ESP32-S3 在同一热点。
 
 ## 构建与验证
 
@@ -51,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 ```
 
-固件默认启用 OV5640；如需无相机调试，可在 `menuconfig` 关闭 `AIX_ENABLE_LOCAL_CAMERA`。
+固件默认启用 OV5640 和 Wi-Fi 画面预览；如需无相机调试，可在 `menuconfig` 关闭 `AIX_ENABLE_LOCAL_CAMERA`。如需启用原有 DA3 Wi-Fi 上传，先关闭 `AIX_ENABLE_CAMERA_PREVIEW`，两项不能同时启用。
 
 ## DA3 本地模型
 

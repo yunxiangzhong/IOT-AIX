@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
+from .models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
 
 
 class ParseError(ValueError):
@@ -19,13 +19,14 @@ _CAMERA_STATUS_REQUIRED = (
     "seq", "ts_ms", "sensor", "width", "height", "pixel_format", "frame_bytes",
     "fps", "frames_ok", "capture_failures", "psram", "valid",
 )
+_CAMERA_PREVIEW_REQUIRED = ("valid", "url", "ip", "port", "reason")
 _VISION_DEPTH_REQUIRED = (
     "frame_seq", "capture_ts_ms", "model", "depth_kind", "depth_p10", "depth_median",
     "confidence_median", "latency_ms", "valid",
 )
 
 
-def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent | VisionDepthEvent:
+def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -39,6 +40,8 @@ def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEv
         return _parse_motion_payload(payload)
     if event_type == "camera_status":
         return _parse_camera_status_payload(payload)
+    if event_type == "camera_preview":
+        return _parse_camera_preview_payload(payload)
     if event_type == "vision_depth":
         return _parse_vision_depth_payload(payload)
     raise ParseError(f"unsupported json event type: {event_type}")
@@ -106,6 +109,25 @@ def _parse_camera_status_payload(payload: dict[str, Any]) -> CameraStatusEvent:
             capture_failures=_as_int(payload["capture_failures"], "capture_failures"),
             psram=_as_bool(payload["psram"], "psram"), valid=_as_bool(payload["valid"], "valid"),
         )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_camera_preview_payload(payload: dict[str, Any]) -> CameraPreviewEvent:
+    missing = [key for key in _CAMERA_PREVIEW_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"camera_preview missing fields: {', '.join(missing)}")
+    try:
+        valid = _as_bool(payload["valid"], "valid")
+        url = str(payload["url"])
+        ip = str(payload["ip"])
+        port = _as_int(payload["port"], "port")
+        reason = str(payload["reason"])
+        if valid and (not url.startswith("http://") or not url.endswith("/capture.jpg")):
+            raise ValueError("camera_preview url must be an http capture.jpg endpoint")
+        if port < 1 or port > 65535:
+            raise ValueError("camera_preview port is outside 1-65535")
+        return CameraPreviewEvent(valid=valid, url=url, ip=ip, port=port, reason=reason)
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc
 

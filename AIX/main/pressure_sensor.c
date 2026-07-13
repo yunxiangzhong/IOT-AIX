@@ -142,7 +142,12 @@ esp_err_t pressure_sensor_read(pressure_sensor_sample_t *out)
     }
 
     const float pressure_kpa = pressure_sensor_voltage_to_kpa(voltage_mv);
-    if (!s_filter_ready) {
+    const bool valid = (voltage_mv >= PRESSURE_SENSOR_VALID_LOW_MV) &&
+                       (voltage_mv <= PRESSURE_SENSOR_VALID_HIGH_MV);
+    if (!valid) {
+        s_filter_ready = false;
+        s_filtered_kpa = 0.0f;
+    } else if (!s_filter_ready) {
         s_filtered_kpa = pressure_kpa;
         s_filter_ready = true;
     } else {
@@ -155,9 +160,8 @@ esp_err_t pressure_sensor_read(pressure_sensor_sample_t *out)
     out->voltage_mv = voltage_mv;
     out->pressure_kpa = pressure_kpa;
     out->filtered_kpa = s_filtered_kpa;
-    out->over_pressure = pressure_sensor_is_over_pressure(s_filtered_kpa);
-    out->valid = (voltage_mv >= PRESSURE_SENSOR_VALID_LOW_MV) &&
-                 (voltage_mv <= PRESSURE_SENSOR_VALID_HIGH_MV);
+    out->over_pressure = valid && pressure_sensor_is_over_pressure(s_filtered_kpa);
+    out->valid = valid;
     out->sample_count = s_sample_count;
 
     taskENTER_CRITICAL(&s_latest_lock);
