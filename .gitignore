@@ -5,6 +5,7 @@
 venv/
 env/
 ENV/
+.worktrees/
 
 # Python caches and packaging
 __pycache__/
