@@ -7,6 +7,15 @@ env/
 ENV/
 .worktrees/
 
+# Local Depth Anything 3 runtime (service source remains tracked)
+Models/DepthAnything3/source/
+Models/DepthAnything3/env/
+Models/DepthAnything3/weights/
+Models/DepthAnything3/cache/
+Models/DepthAnything3/logs/
+Models/DepthAnything3/samples/
+Models/DepthAnything3/install_manifest.json
+
 # Python caches and packaging
 __pycache__/
 *.py[cod]

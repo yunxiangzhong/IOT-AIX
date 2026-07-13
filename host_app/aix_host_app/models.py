@@ -41,3 +41,16 @@ class CameraStatusEvent:
     capture_failures: int
     psram: bool
     valid: bool
+
+
+@dataclass(frozen=True)
+class VisionDepthEvent:
+    frame_seq: int
+    capture_ts_ms: int
+    model: str
+    depth_kind: str
+    depth_p10: float
+    depth_median: float
+    confidence_median: float
+    latency_ms: float
+    valid: bool

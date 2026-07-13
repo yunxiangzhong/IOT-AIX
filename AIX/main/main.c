@@ -7,6 +7,10 @@
 #include "camera_local.h"
 #endif
 
+#if CONFIG_AIX_ENABLE_VISION_UPLINK
+#include "vision_uplink.h"
+#endif
+
 static const char *TAG = "AIX_BOOT";
 
 void app_main(void)
@@ -29,6 +33,15 @@ void app_main(void)
     }
 
 #if CONFIG_AIX_ENABLE_LOCAL_CAMERA
+#if CONFIG_AIX_ENABLE_VISION_UPLINK
+    ret = vision_uplink_start_task();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "vision uplink start failed: %s", esp_err_to_name(ret));
+    } else {
+        camera_local_set_frame_consumer(vision_uplink_submit_frame, NULL);
+        ESP_LOGI(TAG, "Wi-Fi vision uplink enabled");
+    }
+#endif
     ret = camera_local_start_task();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "local OV5640 camera task start failed: %s", esp_err_to_name(ret));

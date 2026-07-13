@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import CameraStatusEvent, MotionEvent, PressureSample
+from .models import CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
 
 
 class ParseError(ValueError):
@@ -19,9 +19,13 @@ _CAMERA_STATUS_REQUIRED = (
     "seq", "ts_ms", "sensor", "width", "height", "pixel_format", "frame_bytes",
     "fps", "frames_ok", "capture_failures", "psram", "valid",
 )
+_VISION_DEPTH_REQUIRED = (
+    "frame_seq", "capture_ts_ms", "model", "depth_kind", "depth_p10", "depth_median",
+    "confidence_median", "latency_ms", "valid",
+)
 
 
-def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent:
+def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent | VisionDepthEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -35,6 +39,8 @@ def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEv
         return _parse_motion_payload(payload)
     if event_type == "camera_status":
         return _parse_camera_status_payload(payload)
+    if event_type == "vision_depth":
+        return _parse_vision_depth_payload(payload)
     raise ParseError(f"unsupported json event type: {event_type}")
 
 
@@ -99,6 +105,25 @@ def _parse_camera_status_payload(payload: dict[str, Any]) -> CameraStatusEvent:
             frames_ok=_as_int(payload["frames_ok"], "frames_ok"),
             capture_failures=_as_int(payload["capture_failures"], "capture_failures"),
             psram=_as_bool(payload["psram"], "psram"), valid=_as_bool(payload["valid"], "valid"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_vision_depth_payload(payload: dict[str, Any]) -> VisionDepthEvent:
+    missing = [key for key in _VISION_DEPTH_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"vision_depth missing fields: {', '.join(missing)}")
+    try:
+        return VisionDepthEvent(
+            frame_seq=_as_int(payload["frame_seq"], "frame_seq"),
+            capture_ts_ms=_as_int(payload["capture_ts_ms"], "capture_ts_ms"),
+            model=str(payload["model"]), depth_kind=str(payload["depth_kind"]),
+            depth_p10=_as_float(payload["depth_p10"], "depth_p10"),
+            depth_median=_as_float(payload["depth_median"], "depth_median"),
+            confidence_median=_as_float(payload["confidence_median"], "confidence_median"),
+            latency_ms=_as_float(payload["latency_ms"], "latency_ms"),
+            valid=_as_bool(payload["valid"], "valid"),
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc

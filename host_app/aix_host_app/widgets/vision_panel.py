@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtWidgets
 
-from ..models import CameraStatusEvent
+from ..models import CameraStatusEvent, VisionDepthEvent
 
 
 class VisionPanel(QtWidgets.QFrame):
@@ -87,6 +87,20 @@ class VisionPanel(QtWidgets.QFrame):
         else:
             self._set_camera_status("OV5640：连接异常", "statusWarn")
         self.camera_status_timer.start()
+
+    def update_vision_depth(self, event: VisionDepthEvent) -> None:
+        if event.valid:
+            self.detect_label.setText(
+                f"视觉模型：{event.model} 相对深度\n"
+                f"P10：{event.depth_p10:.3f}  中位数：{event.depth_median:.3f}\n"
+                f"置信度：{event.confidence_median:.2f}  推理：{event.latency_ms:.0f} ms"
+            )
+            self.detect_label.setObjectName("statusOk")
+        else:
+            self.detect_label.setText(f"视觉模型：{event.model} 返回无效结果")
+            self.detect_label.setObjectName("statusWarn")
+        self.detect_label.style().unpolish(self.detect_label)
+        self.detect_label.style().polish(self.detect_label)
 
     def toggle_camera_details(self) -> None:
         self.camera_details.setVisible(self.camera_details.isHidden())

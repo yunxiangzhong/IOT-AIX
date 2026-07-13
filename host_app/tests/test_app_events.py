@@ -39,6 +39,17 @@ class MainWindowEventRoutingTests(unittest.TestCase):
 
         self.assertEqual(window.vision_panel.camera_status_button.text(), "OV5640：状态正常")
 
+    def test_routes_vision_depth_to_visual_panel(self):
+        window = MainWindow()
+        window._handle_raw_line(
+            '{"type":"vision_depth","version":1,"frame_seq":7,"capture_ts_ms":1200,'
+            '"model":"DA3-SMALL","depth_kind":"relative","depth_p10":0.42,'
+            '"depth_median":1.37,"confidence_median":0.86,"latency_ms":74.5,"valid":true}'
+        )
+
+        self.assertIn("DA3-SMALL", window.vision_panel.detect_label.text())
+        self.assertIn("1.37", window.vision_panel.detect_label.text())
+
     def test_camera_status_timeout_marks_ov5640_as_abnormal(self):
         window = MainWindow()
         window.vision_panel.set_serial_connected(True)

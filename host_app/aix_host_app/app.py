@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
-from .models import CameraStatusEvent, MotionEvent, PressureSample
+from .models import CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
 from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
 from .simulation import make_simulated_pressure_sample
@@ -147,6 +147,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.vision_panel.update_camera_status(event)
             state = "正常" if event.valid else "异常"
             self.timeline.set_summary(f"OV5640 | {event.width}x{event.height} | {state}")
+            self.timeline.add_line(line)
+        elif isinstance(event, VisionDepthEvent):
+            self.vision_panel.update_vision_depth(event)
+            state = "正常" if event.valid else "异常"
+            self.timeline.set_summary(
+                f"DA3 | 深度中位数 {event.depth_median:.3f} | {event.latency_ms:.0f} ms | {state}"
+            )
             self.timeline.add_line(line)
 
     def _accept_sample(self, sample: PressureSample, raw_line: str | None = None) -> None:

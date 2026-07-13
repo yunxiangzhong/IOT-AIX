@@ -1,15 +1,15 @@
 # AIX 脉盔
 
-这是面向骑行场景的 ESP32-S3 安全头盔原型。当前工程已收敛为真实压力采集和 ESP32-S3 外接 OV5640 健康采帧；视觉模型后续直接部署在 ESP32-S3。
+这是面向骑行场景的 ESP32-S3 安全头盔原型。当前工程包含真实压力采集、OV5640 健康采帧，以及由 PC RTX GPU 执行的 Depth Anything 3 相对深度推理。
 
 ## 当前链路
 
 ```text
 XGZP6847A -> ESP32-S3 pressure_sensor -> pressure NDJSON -> PC 上位机
-OV5640 -> ESP32-S3 camera_local -> camera_status NDJSON -> PC 上位机状态卡
+OV5640 -> ESP32-S3 camera_local -> Wi-Fi HTTP JPEG -> PC DA3-SMALL -> HTTP JSON -> ESP32-S3 vision_depth NDJSON -> PC 上位机
 ```
 
-上位机不再连接本机、手机或 IP 摄像头，不接收 JPEG，也不做光流判断。`camera_status` 只证明相机初始化和采帧健康，不代表目标检测已完成。
+JPEG 只通过 ESP32-S3 的 Wi-Fi 链路上传给本机推理服务；串口上位机不接收图像字节，只显示 `camera_status` 与 `vision_depth`。`vision_depth` 是相对深度统计，不是米制距离、碰撞结论或执行器指令。
 
 ## 目录
 
@@ -28,8 +28,9 @@ ProjectFile/
 | XGZP6847A 压力采集 | 已实现 |
 | OV5640 QVGA/JPEG 健康采帧与恢复 | 已实现，待实机五分钟验收 |
 | 上位机 OV5640 连接状态与详情 | 已实现 |
-| ESP32-S3 端视觉模型 | 未实现 |
-| JPEG 上送、PC/手机摄像头、光流判断 | 已删除 |
+| PC 端 DA3-SMALL 相对深度服务 | 已实现，待 OV5640 Wi-Fi 实机闭环验收 |
+| ESP32-S3 端视觉模型 | 不采用；ESP32-S3 负责采帧、上传和结果上报 |
+| JPEG Wi-Fi 上送 | 已实现，待实机网络验收 |
 | 风险融合、语音、气囊执行链路 | 已删除，等待真实模型与安全方案确定后重建 |
 
 ## 串口协议
@@ -51,6 +52,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 ```
 
 固件默认启用 OV5640；如需无相机调试，可在 `menuconfig` 关闭 `AIX_ENABLE_LOCAL_CAMERA`。
+
+## DA3 本地模型
+
+所有模型资产固定在 [`Models/DepthAnything3`](Models/DepthAnything3)：官方源码、独立 CUDA 环境、本地权重、缓存、服务和日志均不写入项目外部目录。启动 PC 服务：
+
+```powershell
+cd D:\Projects\IOTCompetition\ProjectFile\Models\DepthAnything3
+.\run_service.ps1
+```
+
+在 ESP-IDF `menuconfig` 启用 `AIX_ENABLE_VISION_UPLINK`，设置 Wi-Fi SSID、密码和 PC 服务 URL 后，ESP32-S3 每秒上传一张最新 JPEG。
 
 ## 安全边界
 

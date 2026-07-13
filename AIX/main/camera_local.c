@@ -40,6 +40,8 @@ static bool s_task_started;
 static uint32_t s_status_seq;
 static uint64_t s_last_status_us;
 static uint32_t s_status_frames_ok;
+static camera_local_frame_consumer_t s_frame_consumer;
+static void *s_frame_consumer_context;
 
 static uint64_t now_us(void)
 {
@@ -163,6 +165,12 @@ void camera_local_get_status(camera_local_status_t *status)
     }
 }
 
+void camera_local_set_frame_consumer(camera_local_frame_consumer_t consumer, void *context)
+{
+    s_frame_consumer = consumer;
+    s_frame_consumer_context = context;
+}
+
 static void emit_status(uint64_t current_us)
 {
     const uint64_t elapsed_us = s_last_status_us == 0 ? 0 : current_us - s_last_status_us;
@@ -206,6 +214,16 @@ static void camera_capture_task(void *arg)
                 s_status.width = frame.width;
                 s_status.height = frame.height;
                 s_status.valid = true;
+                if (s_frame_consumer != NULL) {
+                    s_frame_consumer(
+                        frame.data,
+                        frame.length,
+                        frame.width,
+                        frame.height,
+                        s_status.frames_ok,
+                        current_us / 1000U,
+                        s_frame_consumer_context);
+                }
                 camera_local_release_frame(&frame);
             } else {
                 mark_capture_failure();

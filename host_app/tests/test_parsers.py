@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.models import CameraStatusEvent, MotionEvent, PressureSample
+from aix_host_app.models import CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
 from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
@@ -46,6 +46,22 @@ class CameraStatusParserTests(unittest.TestCase):
     def test_rejects_camera_status_with_missing_fields(self):
         with self.assertRaises(ParseError):
             parse_event_line('{"type":"camera_status","version":1,"seq":1,"ts_ms":1000}')
+
+
+class VisionDepthParserTests(unittest.TestCase):
+    def test_parses_relative_depth_event(self):
+        event = parse_event_line(
+            '{"type":"vision_depth","version":1,"frame_seq":7,"capture_ts_ms":1200,'
+            '"model":"DA3-SMALL","depth_kind":"relative","depth_p10":0.42,'
+            '"depth_median":1.37,"confidence_median":0.86,"latency_ms":74.5,"valid":true}'
+        )
+        self.assertIsInstance(event, VisionDepthEvent)
+        self.assertEqual(event.frame_seq, 7)
+        self.assertEqual(event.depth_kind, "relative")
+
+    def test_rejects_vision_depth_with_missing_fields(self):
+        with self.assertRaises(ParseError):
+            parse_event_line('{"type":"vision_depth","version":1,"frame_seq":1}')
 
 
 if __name__ == "__main__":

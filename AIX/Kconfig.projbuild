@@ -13,4 +13,36 @@ config AIX_CAMERA_CAPTURE_PERIOD_MS
     range 100 1000
     depends on AIX_ENABLE_LOCAL_CAMERA
 
+config AIX_ENABLE_VISION_UPLINK
+    bool "Enable Wi-Fi upload to the PC Depth Anything 3 service"
+    default n
+    depends on AIX_ENABLE_LOCAL_CAMERA
+
+config AIX_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+    depends on AIX_ENABLE_VISION_UPLINK
+
+config AIX_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default ""
+    depends on AIX_ENABLE_VISION_UPLINK
+
+config AIX_VISION_SERVICE_URL
+    string "PC Depth Anything 3 service URL"
+    default "http://192.168.137.1:8008/v1/infer"
+    depends on AIX_ENABLE_VISION_UPLINK
+
+config AIX_VISION_UPLOAD_PERIOD_MS
+    int "Vision JPEG upload period (ms)"
+    default 1000
+    range 500 10000
+    depends on AIX_ENABLE_VISION_UPLINK
+
+config AIX_VISION_HTTP_TIMEOUT_MS
+    int "Vision HTTP timeout (ms)"
+    default 3000
+    range 1000 10000
+    depends on AIX_ENABLE_VISION_UPLINK
+
 endmenu
