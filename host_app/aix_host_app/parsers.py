@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
+from .models import CameraPreviewEvent, CameraStatusEvent, DetectionBox, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
 
 
 class ParseError(ValueError):
@@ -24,9 +24,10 @@ _VISION_DEPTH_REQUIRED = (
     "frame_seq", "capture_ts_ms", "model", "depth_kind", "depth_p10", "depth_median",
     "confidence_median", "latency_ms", "valid",
 )
+_RISK_ACK_REQUIRED = ("frame_seq", "risk_score", "risk_band", "valid", "stale")
 
 
-def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent:
+def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -44,6 +45,8 @@ def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEv
         return _parse_camera_preview_payload(payload)
     if event_type == "vision_depth":
         return _parse_vision_depth_payload(payload)
+    if event_type == "risk_ack":
+        return _parse_risk_ack_payload(payload)
     raise ParseError(f"unsupported json event type: {event_type}")
 
 
@@ -146,6 +149,28 @@ def _parse_vision_depth_payload(payload: dict[str, Any]) -> VisionDepthEvent:
             confidence_median=_as_float(payload["confidence_median"], "confidence_median"),
             latency_ms=_as_float(payload["latency_ms"], "latency_ms"),
             valid=_as_bool(payload["valid"], "valid"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_risk_ack_payload(payload: dict[str, Any]) -> RiskAckEvent:
+    missing = [key for key in _RISK_ACK_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"risk_ack missing fields: {', '.join(missing)}")
+    try:
+        score = _as_int(payload["risk_score"], "risk_score")
+        if score < 0 or score > 100:
+            raise ValueError("risk_score must be between 0 and 100")
+        band = str(payload["risk_band"])
+        if band not in {"low", "attention", "high", "critical"}:
+            raise ValueError("risk_band is invalid")
+        return RiskAckEvent(
+            frame_seq=_as_int(payload["frame_seq"], "frame_seq"),
+            risk_score=score,
+            risk_band=band,
+            valid=_as_bool(payload["valid"], "valid"),
+            stale=_as_bool(payload["stale"], "stale"),
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc

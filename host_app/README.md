@@ -23,6 +23,10 @@
 
 点击状态文字可就地展开分辨率、格式、FPS、帧大小、成功帧、失败次数、PSRAM 和最后更新时间。
 
+PC 视觉流水线会在预览之外每秒选取一张最新 JPEG，调用本地 DA3-SMALL + TorchVision SSDLite，生成 `0–100` 相对视觉风险。右侧默认显示检测框，可切换原图；顶部同步显示风险等级、主导目标、推理耗时和 ESP 风险确认状态。风险通过 ESP 的 `POST /risk` 接收，但当前不参与执行器控制。
+
+串口连接成功后自动记录到 `F:\OV5640\YYYYMMDD_HHMMSS`。可以在左侧选择数据根目录；每个会话保存 `frames/`、`vision.ndjson`、`telemetry.ndjson`、`pressure.csv` 和 `session.json`。
+
 压力事件 `valid:false` 时，上位机显示 `— kPa` 和 raw/mV 诊断值；该样本不会画入曲线或写入 CSV，避免未接传感器时将残留滤波值误判为压力。
 
 ## 目录
@@ -63,3 +67,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 - `vision_depth` 不是米制距离，不直接控制风险或气囊。
 - 当前风险和气囊卡片只是未来 UI 占位，不接收旧 risk/actuator 协议。
 - `motion` 协议与面板保留，但当前固件没有运动数据源。
+- 第一版风险是相对视觉风险，不是碰撞概率；后续可加入相机标定、米制深度、TTC/跟踪和骑行数据集微调。

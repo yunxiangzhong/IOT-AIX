@@ -14,10 +14,11 @@ $root = Join-Path $projectRoot "Models\DepthAnything3"
 $source = Join-Path $root "source"
 $environment = Join-Path $root "env"
 $weights = Join-Path $root "weights\DA3-SMALL"
+$detectorWeights = Join-Path $root "weights\SSDLite320-MobileNetV3"
 $cache = Join-Path $root "cache"
 $logs = Join-Path $root "logs"
 
-foreach ($path in @($root, $cache, $logs, $weights)) {
+foreach ($path in @($root, $cache, $logs, $weights, $detectorWeights)) {
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
 
@@ -61,6 +62,13 @@ if ($LASTEXITCODE -ne 0) { throw "inference service dependency installation fail
 & $python (Join-Path $PSScriptRoot "download_weights.py") --repo $modelRepo --revision $modelRevision --output $weights
 if ($LASTEXITCODE -ne 0) { throw "DA3-SMALL weight download failed" }
 
+$detectorUrl = "https://download.pytorch.org/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth"
+$detectorFile = Join-Path $detectorWeights "ssdlite320_mobilenet_v3_large_coco-a79551df.pth"
+if (-not (Test-Path -LiteralPath $detectorFile)) {
+    & $python (Join-Path $PSScriptRoot "download_weights.py") --url $detectorUrl --output-file $detectorFile --sha256-prefix "a79551df"
+    if ($LASTEXITCODE -ne 0) { throw "SSDLite weight download failed" }
+}
+
 $manifest = [ordered]@{
     source_commit = $sourceCommit
     model_repo = $modelRepo
@@ -68,6 +76,7 @@ $manifest = [ordered]@{
     source = $source
     environment = $environment
     weights = $weights
+    detector_weights = $detectorFile
     cache = $cache
     installed_at = (Get-Date).ToString("o")
 }

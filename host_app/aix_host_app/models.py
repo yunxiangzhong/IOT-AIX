@@ -63,3 +63,37 @@ class VisionDepthEvent:
     confidence_median: float
     latency_ms: float
     valid: bool
+
+
+@dataclass(frozen=True)
+class DetectionBox:
+    class_name: str
+    score: float
+    bbox_norm: tuple[float, float, float, float]
+    relative_depth: float
+    risk_score: float
+
+
+@dataclass(frozen=True)
+class VisionRiskEvent:
+    frame_seq: int
+    capture_ts_ms: int
+    depth_p10: float
+    depth_median: float
+    confidence_median: float
+    detections: tuple[DetectionBox, ...]
+    risk_score: int
+    risk_band: str
+    dominant_class: str
+    reason: str
+    latency_ms: float
+    valid: bool
+
+
+@dataclass(frozen=True)
+class RiskAckEvent:
+    frame_seq: int
+    risk_score: int
+    risk_band: str
+    valid: bool
+    stale: bool

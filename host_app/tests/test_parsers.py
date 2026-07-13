@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
+from aix_host_app.models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
 from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
@@ -81,6 +81,24 @@ class VisionDepthParserTests(unittest.TestCase):
     def test_rejects_vision_depth_with_missing_fields(self):
         with self.assertRaises(ParseError):
             parse_event_line('{"type":"vision_depth","version":1,"frame_seq":1}')
+
+
+class RiskAckParserTests(unittest.TestCase):
+    def test_parses_risk_ack_event(self):
+        event = parse_event_line(
+            '{"type":"risk_ack","version":1,"frame_seq":12,"risk_score":68,'
+            '"risk_band":"high","valid":true,"stale":false}'
+        )
+
+        self.assertIsInstance(event, RiskAckEvent)
+        self.assertEqual(event.risk_score, 68)
+
+    def test_rejects_risk_ack_outside_score_range(self):
+        with self.assertRaises(ParseError):
+            parse_event_line(
+                '{"type":"risk_ack","version":1,"frame_seq":12,"risk_score":101,'
+                '"risk_band":"critical","valid":true,"stale":false}'
+            )
 
 
 if __name__ == "__main__":

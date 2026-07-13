@@ -72,6 +72,14 @@ cd D:\Projects\IOTCompetition\ProjectFile\Models\DepthAnything3
 
 在 ESP-IDF `menuconfig` 启用 `AIX_ENABLE_VISION_UPLINK`，设置 Wi-Fi SSID、密码和 PC 服务 URL 后，ESP32-S3 每秒上传一张最新 JPEG。
 
+## PC 本地识别与风险记录
+
+当前默认链路由上位机从 `camera_preview` 拉取最新 JPEG：预览约 2.5 FPS，PC 每秒取一张最新帧交给 DA3-SMALL 和 TorchVision SSDLite。上位机显示 `0–100` 相对视觉风险、检测框和模型耗时，并将精简风险通过 ESP 的 `POST /risk` 接口同步；该风险暂不驱动气囊、蜂鸣器或其他执行器。
+
+串口连接成功后自动创建 `F:\OV5640\YYYYMMDD_HHMMSS` 会话目录。目录包含原始 JPEG、`vision.ndjson`、`telemetry.ndjson`、`pressure.csv` 和 `session.json`。数据根目录可在上位机左侧选择，首次默认 `F:\OV5640`。
+
+第一版风险是“前方近物占比 + 相关目标检测 + 连续帧接近趋势”的相对指标，不是米制距离或碰撞概率。后续升级建议：相机内参标定与 DA3Metric、TTC/目标跟踪、骑行场景数据集微调、更加精确的检测器，以及基于会话回放的参数标定。
+
 ## 安全边界
 
 - 当前是采集与状态监测原型，不是自动避撞或气囊控制系统。

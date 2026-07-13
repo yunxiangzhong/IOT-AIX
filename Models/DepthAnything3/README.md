@@ -15,4 +15,6 @@ logs/       服务运行日志
 
 启动服务：`powershell -ExecutionPolicy Bypass -File .\run_service.ps1`。服务监听 `0.0.0.0:8008`，提供 `GET /healthz` 与 `POST /v1/infer`；请求体为 JPEG，必须携带 `X-Frame-Seq` 和 `X-Capture-Ts-Ms`。
 
-默认模型是 `DA3-SMALL`，输出为相对深度统计，不能视为米制距离或安全控制结论。
+默认模型是 `DA3-SMALL`，输出为相对深度统计，不能视为米制距离或安全控制结论。PC 视觉服务还使用 TorchVision `SSDLite320-MobileNetV3` COCO 权重生成轻量目标检测结果和相对风险；首次安装会把检测权重放到 `weights/SSDLite320-MobileNetV3/`。
+
+`POST /v1/analyze` 是上位机使用的联合分析接口，返回深度、检测框和 `0–100` 相对视觉风险。风险用于显示、记录和同步，不驱动执行器。后续可升级到相机标定、DA3Metric、TTC/跟踪、骑行数据集微调和离线参数标定。

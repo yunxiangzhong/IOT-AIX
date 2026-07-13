@@ -11,6 +11,7 @@ class ConnectionPanel(QtWidgets.QFrame):
     disconnect_requested = QtCore.Signal()
     simulation_changed = QtCore.Signal(bool)
     recording_changed = QtCore.Signal(bool)
+    storage_root_changed = QtCore.Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -27,7 +28,12 @@ class ConnectionPanel(QtWidgets.QFrame):
         self.connect_button = QtWidgets.QPushButton("连接")
         self.connect_button.setProperty("primary", True)
         self.simulation_check = QtWidgets.QCheckBox("模拟数据")
-        self.recording_check = QtWidgets.QCheckBox("记录 CSV")
+        self.recording_check = QtWidgets.QCheckBox("会话自动记录")
+        self.recording_check.setChecked(True)
+        self.recording_check.setEnabled(False)
+        self.storage_root_edit = QtWidgets.QLineEdit(r"F:\OV5640")
+        self.storage_root_edit.setReadOnly(True)
+        self.storage_browse_button = QtWidgets.QPushButton("选择文件夹")
         self.state_label = QtWidgets.QLabel("未连接")
         self.state_label.setObjectName("muted")
 
@@ -48,6 +54,9 @@ class ConnectionPanel(QtWidgets.QFrame):
         layout.addSpacing(8)
         layout.addWidget(self.simulation_check)
         layout.addWidget(self.recording_check)
+        layout.addWidget(QtWidgets.QLabel("数据根目录"))
+        layout.addWidget(self.storage_root_edit)
+        layout.addWidget(self.storage_browse_button)
         layout.addStretch(1)
         layout.addWidget(self.state_label)
 
@@ -55,6 +64,13 @@ class ConnectionPanel(QtWidgets.QFrame):
         self.connect_button.clicked.connect(self._toggle_connection)
         self.simulation_check.toggled.connect(self.simulation_changed.emit)
         self.recording_check.toggled.connect(self.recording_changed.emit)
+        self.storage_browse_button.clicked.connect(self._browse_storage_root)
+
+    def set_storage_root(self, path: str) -> None:
+        self.storage_root_edit.setText(path)
+
+    def storage_root(self) -> str:
+        return self.storage_root_edit.text().strip()
 
     def set_ports(self, ports: list[SerialPortOption]) -> None:
         current_device = self.current_port()
@@ -107,6 +123,12 @@ class ConnectionPanel(QtWidgets.QFrame):
             self.set_status_text("未选择串口", warning=True)
             return
         self.connect_requested.emit(port, self.current_baudrate())
+
+    def _browse_storage_root(self) -> None:
+        selected = QtWidgets.QFileDialog.getExistingDirectory(self, "选择数据根目录", self.storage_root() or r"F:\OV5640")
+        if selected:
+            self.set_storage_root(selected)
+            self.storage_root_changed.emit(selected)
 
     def _refresh_label_style(self, label: QtWidgets.QLabel) -> None:
         label.style().unpolish(label)
