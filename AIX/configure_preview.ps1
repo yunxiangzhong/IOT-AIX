@@ -49,6 +49,10 @@ $content = @(
 )
 $content | Set-Content -LiteralPath $configPath -Encoding ascii
 
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    & (Join-Path $PSScriptRoot "sync_preview_sdkconfig.ps1")
+}
+
 Write-Host "Preview configuration written: $configPath"
 Write-Host "SSID: $Ssid"
 Write-Host "Next: run scripts\verify.ps1 -BuildFirmware, then flash the new firmware."

@@ -50,6 +50,8 @@ ProjectFile/
 3. 使用 `powershell -ExecutionPolicy Bypass -File ./scripts/verify.ps1 -BuildFirmware` 编译；该检查会在缺少热点配置时直接报错，避免烧录一个永远 `ssid_empty` 的固件。
 4. 编译并烧录后，ESP32-S3 取得 IP 会通过串口发送 `camera_preview` 事件，上位机自动轮询 `http://<ESP-IP>:8080/capture.jpg` 并显示画面。
 
+`host_app/start_host_app.cmd` 会在每次启动上位机前自动同步活动 `sdkconfig`、启动 Windows 移动热点并确认热点 SSID。它不会自动烧录 ESP32-S3；热点凭据首次变更后必须手动烧录一次新固件。
+
 若上位机显示“画面预览不可用：ssid_empty”，说明固件没有读取到 `AIX/sdkconfig.preview`；若显示 `wifi_disconnected_<reason>`，说明 SSID/密码、热点频段或信号仍不匹配。电脑和 ESP32-S3 必须连接同一个 2.4 GHz 热点。
 
 ## 构建与验证

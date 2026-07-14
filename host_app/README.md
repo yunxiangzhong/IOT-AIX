@@ -45,7 +45,7 @@ host_app/
 
 ## 运行
 
-直接双击 `start_host_app.cmd` 即可启动上位机；脚本会先检查项目 Python 环境和本地视觉模型环境，缺失时会保留窗口并显示具体路径。
+直接双击 `start_host_app.cmd` 即可启动上位机；脚本会先检查项目 Python 环境和本地视觉模型环境，随后把 `AIX/sdkconfig.preview` 同步到活动固件配置、自动启动 Windows 移动热点并确认 SSID 一致，最后启动上位机。缺失或失败时会保留窗口并显示具体原因。
 
 ```powershell
 cd D:\Projects\IOTCompetition\ProjectFile\host_app
@@ -55,6 +55,8 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 项目统一使用 `D:\Projects\IOTCompetition\ProjectFile\.venv`。
 
 Windows 热点必须设为 **2.4 GHz**。先运行 `./AIX/configure_preview.ps1` 写入热点配置，再重新编译并烧录固件；保持串口连接即可自动收到预览地址并显示画面。若事件流出现 `ssid_empty` 或 `wifi_disconnected_<reason>`，按事件原因检查本机热点配置。
+
+热点自动启动只影响 PC。ESP32-S3 的 SSID 和密码属于编译期配置，因此首次配置或修改热点密码后仍需重新编译并烧录一次；此后 ESP 固件会在启动和断线时自动执行 `esp_wifi_connect()`。
 
 ## 验证
 
