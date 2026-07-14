@@ -5,6 +5,7 @@ import time
 from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 
 from ..models import CameraPreviewEvent, CameraStatusEvent, VisionDepthEvent
+from ..networking import build_get_request
 
 
 class VisionPanel(QtWidgets.QFrame):
@@ -197,11 +198,7 @@ class VisionPanel(QtWidgets.QFrame):
     def _request_preview(self) -> None:
         if not self.preview_url or self._preview_reply is not None:
             return
-        request = QtNetwork.QNetworkRequest(QtCore.QUrl(self.preview_url))
-        request.setAttribute(
-            QtNetwork.QNetworkRequest.Attribute.CacheLoadControlAttribute,
-            QtNetwork.QNetworkRequest.CacheLoadControl.AlwaysNetwork,
-        )
+        request = build_get_request(self.preview_url, timeout_ms=4000)
         self._preview_reply = self.preview_network.get(request)
         self._preview_reply.finished.connect(self._handle_preview_reply)
 
@@ -247,11 +244,12 @@ class VisionPanel(QtWidgets.QFrame):
         self.preview_image_label.setPixmap(pixmap)
 
     @staticmethod
-    def _read_header(reply: QtNetwork.QNetworkReply, name: bytes, fallback: int) -> int:
+    def _read_header(reply: QtNetwork.QNetworkReply, name: bytes | str, fallback: int) -> int:
         try:
-            value = bytes(reply.rawHeader(name)).decode("ascii")
+            header_name = name.decode("ascii") if isinstance(name, bytes) else name
+            value = bytes(reply.rawHeader(header_name)).decode("ascii")
             return int(value)
-        except (UnicodeDecodeError, ValueError):
+        except (TypeError, UnicodeDecodeError, ValueError):
             return fallback
 
     @staticmethod
