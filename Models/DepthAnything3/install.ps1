@@ -8,9 +8,13 @@ $modelRepo = "depth-anything/DA3-SMALL"
 $modelRevision = "e08cab65ca0ec38e7826075418411ab90cab4da3"
 $conda = "D:\APP\Anaconda\install_place\Scripts\conda.exe"
 
-$commonGitDir = (& git -C $PSScriptRoot rev-parse --git-common-dir).Trim()
-$projectRoot = Split-Path -Parent $commonGitDir
-$root = Join-Path $projectRoot "Models\DepthAnything3"
+$projectRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
+$commonGitDir = (& git -C $projectRoot rev-parse --git-common-dir).Trim()
+if (-not [System.IO.Path]::IsPathRooted($commonGitDir)) {
+    $commonGitDir = Join-Path $projectRoot $commonGitDir
+}
+$runtimeRoot = Split-Path -Parent $commonGitDir
+$root = Join-Path $runtimeRoot "Models\DepthAnything3"
 $source = Join-Path $root "source"
 $environment = Join-Path $root "env"
 $weights = Join-Path $root "weights\DA3-SMALL"

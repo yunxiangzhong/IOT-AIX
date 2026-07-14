@@ -202,8 +202,16 @@ static esp_err_t start_http_server(void)
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
+    char reason[32];
+
     (void)arg;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *disconnected = event_data;
+        s_wifi_ready = false;
+        s_wifi_ip[0] = '\0';
+        snprintf(reason, sizeof(reason), "wifi_disconnected_%u",
+                 disconnected != NULL ? (unsigned int)disconnected->reason : 0U);
+        emit_preview_event(false, "", reason);
         ESP_LOGW(TAG, "Wi-Fi disconnected; retrying");
         esp_wifi_connect();
         return;

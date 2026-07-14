@@ -5,8 +5,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
 $commonGitDir = (& git -C $projectRoot rev-parse --git-common-dir).Trim()
+if (-not [System.IO.Path]::IsPathRooted($commonGitDir)) {
+    $commonGitDir = Join-Path $projectRoot $commonGitDir
+}
 $runtimeRoot = Split-Path -Parent $commonGitDir
 $python = Join-Path $runtimeRoot ".venv\Scripts\python.exe"
 $hostApp = Join-Path $projectRoot "host_app"
@@ -141,9 +144,11 @@ if ($BuildFirmware) {
     $buildDir = "build-verify"
     $sdkconfig = "$buildDir/sdkconfig"
     $sdkconfigDefaults = "sdkconfig.defaults"
-    if (Test-Path -LiteralPath (Join-Path $aix "sdkconfig.preview")) {
-        $sdkconfigDefaults = "sdkconfig.defaults;sdkconfig.preview"
+    $previewConfig = Join-Path $aix "sdkconfig.preview"
+    if (-not (Test-Path -LiteralPath $previewConfig)) {
+        throw "Missing $previewConfig. Run .\AIX\configure_preview.ps1 first so the firmware has the hotspot SSID/password."
     }
+    $sdkconfigDefaults = "sdkconfig.defaults;sdkconfig.preview"
 
     Invoke-Checked "ESP-IDF firmware build" {
         Push-Location $aix

@@ -5,9 +5,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$commonGitDir = (& git -C $PSScriptRoot rev-parse --git-common-dir).Trim()
-$projectRoot = Split-Path -Parent $commonGitDir
-$runtimeRoot = Join-Path $projectRoot "Models\DepthAnything3"
+$projectRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
+$commonGitDir = (& git -C $projectRoot rev-parse --git-common-dir).Trim()
+if (-not [System.IO.Path]::IsPathRooted($commonGitDir)) {
+    $commonGitDir = Join-Path $projectRoot $commonGitDir
+}
+$runtimeRoot = Split-Path -Parent $commonGitDir
+$runtimeRoot = Join-Path $runtimeRoot "Models\DepthAnything3"
 $python = Join-Path $runtimeRoot "env\python.exe"
 
 if (-not (Test-Path -LiteralPath $python)) {

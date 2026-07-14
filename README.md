@@ -46,10 +46,11 @@ ProjectFile/
 ## OV5640 Wi-Fi 画面预览
 
 1. 在 Windows 移动热点的“属性”中将频段选为 **2.4 GHz**，保持热点开启。
-2. 本机私有配置 `AIX/sdkconfig.preview` 保存热点名称和密码；该文件已被 Git 忽略，不能提交。
-3. 编译并烧录后，ESP32-S3 取得 IP 会通过串口发送 `camera_preview` 事件，上位机自动轮询 `http://<ESP-IP>:8080/capture.jpg` 并显示画面。
+2. 在项目根目录运行 `powershell -ExecutionPolicy Bypass -File ./AIX/configure_preview.ps1`，按提示输入热点 SSID 和密码。脚本只写入本机被 Git 忽略的 `AIX/sdkconfig.preview`，密码不会显示在屏幕上。
+3. 使用 `powershell -ExecutionPolicy Bypass -File ./scripts/verify.ps1 -BuildFirmware` 编译；该检查会在缺少热点配置时直接报错，避免烧录一个永远 `ssid_empty` 的固件。
+4. 编译并烧录后，ESP32-S3 取得 IP 会通过串口发送 `camera_preview` 事件，上位机自动轮询 `http://<ESP-IP>:8080/capture.jpg` 并显示画面。
 
-若上位机显示“画面预览不可用：ssid_empty”，说明本机私有配置缺少热点参数；若持续读取失败，优先确认热点不是 5 GHz 且电脑和 ESP32-S3 在同一热点。
+若上位机显示“画面预览不可用：ssid_empty”，说明固件没有读取到 `AIX/sdkconfig.preview`；若显示 `wifi_disconnected_<reason>`，说明 SSID/密码、热点频段或信号仍不匹配。电脑和 ESP32-S3 必须连接同一个 2.4 GHz 热点。
 
 ## 构建与验证
 

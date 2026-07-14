@@ -52,7 +52,7 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 
 项目统一使用 `D:\Projects\IOTCompetition\ProjectFile\.venv`。
 
-Windows 热点必须设为 **2.4 GHz**。固件烧录并连接热点后，保持串口连接即可自动收到预览地址并显示画面。
+Windows 热点必须设为 **2.4 GHz**。先运行 `./AIX/configure_preview.ps1` 写入热点配置，再重新编译并烧录固件；保持串口连接即可自动收到预览地址并显示画面。若事件流出现 `ssid_empty` 或 `wifi_disconnected_<reason>`，按事件原因检查本机热点配置。
 
 ## 验证
 
