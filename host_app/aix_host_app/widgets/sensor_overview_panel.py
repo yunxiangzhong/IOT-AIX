@@ -40,7 +40,7 @@ class SensorOverviewPanel(QtWidgets.QFrame):
         self.pressure = _MetricCell("压力", "--.- kPa", "等待样本")
         self.speed = _MetricCell("速度", "-- m/s", "模块未接入")
         self.accel = _MetricCell("加速度", "-- m/s²", "模块未接入")
-        self.risk = _MetricCell("ESP风险", "0", "等待 ESP")
+        self.risk = _MetricCell("PC视觉风险", "--", "等待模型")
         self.airbag = _MetricCell("气囊目标", "0%", "等待动作")
 
         layout = QtWidgets.QHBoxLayout(self)
@@ -75,3 +75,9 @@ class SensorOverviewPanel(QtWidgets.QFrame):
         accel = f"{event.accel_mps2:.2f} m/s²" if event.accel_valid else "-- m/s²"
         self.speed.set_metric(speed, "速度有效" if event.speed_valid else "速度未接入")
         self.accel.set_metric(accel, "加速度有效" if event.accel_valid else "加速度未接入")
+
+    def update_vision_risk(self, payload: dict) -> None:
+        score = int(payload.get("risk_score", 0))
+        band = {"low": "低", "attention": "注意", "high": "高", "critical": "严重"}.get(payload.get("risk_band"), "未知")
+        object_name = "statusDanger" if score >= 80 else "statusWarn" if score >= 30 else "statusOk"
+        self.risk.set_metric(str(score), f"{band} | {payload.get('dominant_class') or '无分类目标'}", object_name)

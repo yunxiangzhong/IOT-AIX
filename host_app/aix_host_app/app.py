@@ -6,11 +6,13 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
-from .models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, VisionDepthEvent
+from .models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
 from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
 from .simulation import make_simulated_pressure_sample
 from .styles import app_stylesheet
+from .session_recorder import SessionRecorder
+from .vision_client import ModelServiceManager, VisionInferenceClient
 from .widgets.connection_panel import ConnectionPanel
 from .widgets.event_timeline import EventTimeline
 from .widgets.motion_panel import MotionPanel
@@ -29,6 +31,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reader: SerialLineReader | None = None
         self.record_file = None
         self.record_writer: csv.writer | None = None
+        settings = QtCore.QSettings("AIX", "HostApp")
+        self.session_recorder = SessionRecorder(Path(settings.value("storage_root", r"F:\OV5640")))
+        self.model_service = ModelServiceManager(self)
+        self.vision_client = VisionInferenceClient(self)
+        self._risk_endpoint = ""
         self.sim_seq = 0
         self.sim_clock = QtCore.QElapsedTimer()
         self.sim_timer = QtCore.QTimer(self)
@@ -44,11 +51,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._build_layout()
         self._wire_signals()
+        self.connection_panel.set_storage_root(str(self.session_recorder.root))
         self.refresh_ports()
         self.statusBar().showMessage("就绪")
 
     def closeEvent(self, event) -> None:
         self._stop_serial()
+        self.model_service.stop()
         self._close_record_file()
         super().closeEvent(event)
 
@@ -89,6 +98,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.connection_panel.disconnect_requested.connect(self._stop_serial)
         self.connection_panel.simulation_changed.connect(self._set_simulation_enabled)
         self.connection_panel.recording_changed.connect(self._set_recording_enabled)
+        self.connection_panel.storage_root_changed.connect(self._set_storage_root)
+        self.vision_panel.frame_received.connect(self.vision_client.submit_frame)
+        self.vision_client.frame_selected.connect(self._record_vision_frame)
+        self.vision_client.risk_received.connect(lambda payload, _data: self._accept_vision_result(payload))
+        self.vision_client.analysis_error.connect(lambda message: self.timeline.add_line(f"[vision] {message}"))
+        self.vision_client.esp_sync_finished.connect(lambda ok, message: self.timeline.add_line(f"[risk] {message}"))
+        self.model_service.ready_changed.connect(self._on_model_service_status)
+        self.vision_panel.preview_endpoint_changed.connect(self._set_risk_endpoint)
 
     def _start_serial(self, port: str, baudrate: int) -> None:
         self._set_simulation_enabled(False)
@@ -103,17 +120,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reader.state_changed.connect(self._handle_reader_state)
         self.reader.start()
         self.vision_panel.set_serial_connected(True)
+        self._begin_session(port, baudrate)
+        self.model_service.start()
 
     def _stop_serial(self) -> None:
         if self.reader is None:
             self.connection_panel.set_connected(False)
             self.vision_panel.set_serial_connected(False)
+            self.session_recorder.close()
+            self.vision_client.set_session_id("")
+            self.model_service.stop()
             return
         self.reader.stop()
         self.reader.wait(1500)
         self.reader = None
         self.connection_panel.set_connected(False)
         self.vision_panel.set_serial_connected(False)
+        self.session_recorder.close()
+        self.vision_client.set_session_id("")
+        self.model_service.stop()
         self.statusBar().showMessage("串口已断开")
 
     def _handle_reader_state(self, state: str) -> None:
@@ -130,6 +155,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(message)
 
     def _handle_raw_line(self, line: str) -> None:
+        self.session_recorder.record_event(line)
         try:
             event = parse_event_line(line)
         except ParseError:
@@ -159,10 +185,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"DA3 | 深度中位数 {event.depth_median:.3f} | {event.latency_ms:.0f} ms | {state}"
             )
             self.timeline.add_line(line)
+        elif isinstance(event, RiskAckEvent):
+            state = "已同步" if event.valid and not event.stale else "已过期"
+            self.vision_panel.risk_label.setText(
+                f"PC视觉风险：{event.risk_score}/100 | ESP {state}（帧 {event.frame_seq}）"
+            )
+            self.timeline.add_line(line)
 
     def _accept_sample(self, sample: PressureSample, raw_line: str | None = None) -> None:
         self.pressure_panel.update_sample(sample)
         self.overview_panel.update_pressure(sample)
+        self.session_recorder.record_pressure(sample)
         summary = (f"seq {sample.seq} | {sample.filtered_kpa:.1f} kPa | {sample.source}"
                    if sample.valid else f"seq {sample.seq} | 压力无效 | {sample.source}")
         self.timeline.set_summary(summary)
@@ -174,6 +207,62 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         if sample.valid:
             self._record_sample(sample)
+
+    def _accept_vision_result(self, payload: dict) -> None:
+        self.vision_panel.update_vision_risk(payload)
+        self.overview_panel.update_vision_risk(payload)
+        self.session_recorder.record_vision(payload)
+        self.timeline.set_summary(
+            f"PC视觉风险 {payload.get('risk_score', 0)}/100 | {payload.get('dominant_class') or '无分类目标'}"
+        )
+        self.timeline.add_line(
+            f"[risk] frame={payload.get('frame_seq')} score={payload.get('risk_score')} reason={payload.get('reason')}"
+        )
+        if self._risk_endpoint:
+            self.vision_client.send_risk_to_esp(
+                self._risk_endpoint,
+                {
+                    "type": "host_risk",
+                    "version": 1,
+                    "frame_seq": int(payload.get("frame_seq", 0)),
+                    "capture_ts_ms": int(payload.get("capture_ts_ms", 0)),
+                    "risk_score": int(payload.get("risk_score", 0)),
+                    "risk_band": str(payload.get("risk_band", "low")),
+                    "dominant_class": str(payload.get("dominant_class", "")),
+                    "valid": bool(payload.get("valid", False)),
+                },
+            )
+
+    def _record_vision_frame(self, data: bytes, frame_seq: int, capture_ts_ms: int) -> None:
+        if self.session_recorder.session_dir is None:
+            return
+        try:
+            self.session_recorder.save_frame(data, frame_seq, capture_ts_ms)
+        except OSError as exc:
+            self.timeline.add_line(f"[record] 图像保存失败：{exc}")
+
+    def _begin_session(self, port: str, baudrate: int) -> None:
+        try:
+            session = self.session_recorder.start(port, baudrate, datetime.now().strftime("%Y%m%d_%H%M%S"))
+        except OSError as exc:
+            self.connection_panel.set_status_text(f"记录目录不可写：{exc}", warning=True)
+            self.timeline.add_line(f"[record] disabled: {exc}")
+            return
+        self.vision_client.set_session_id(session.name)
+        self.timeline.add_line(f"[record] {session}")
+
+    def _set_storage_root(self, path: str) -> None:
+        self.session_recorder.root = Path(path)
+        QtCore.QSettings("AIX", "HostApp").setValue("storage_root", path)
+        if self.reader is not None:
+            self._begin_session(self.reader._port, self.reader._baudrate)
+
+    def _set_risk_endpoint(self, preview_url: str) -> None:
+        self._risk_endpoint = preview_url[:-len("/capture.jpg")] + "/risk" if preview_url.endswith("/capture.jpg") else ""
+
+    def _on_model_service_status(self, ready: bool, message: str) -> None:
+        self.vision_client.set_service_ready(ready)
+        self.timeline.add_line(f"[model] {message}")
 
     def _set_simulation_enabled(self, enabled: bool) -> None:
         if enabled:

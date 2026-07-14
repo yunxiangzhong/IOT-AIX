@@ -19,6 +19,12 @@ class ConnectionPanelTests(unittest.TestCase):
         self.assertFalse(hasattr(panel, "pressure_monitoring_check"))
         self.assertFalse(hasattr(panel, "pressure_state_label"))
 
+    def test_exposes_storage_root_selector(self):
+        panel = ConnectionPanel()
+
+        self.assertTrue(hasattr(panel, "storage_root_edit"))
+        self.assertTrue(panel.storage_root_edit.text())
+
 
 if __name__ == "__main__":
     unittest.main()

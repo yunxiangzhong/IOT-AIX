@@ -6,7 +6,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $projectRoot ".venv\Scripts\python.exe"
+$commonGitDir = (& git -C $projectRoot rev-parse --git-common-dir).Trim()
+$runtimeRoot = Split-Path -Parent $commonGitDir
+$python = Join-Path $runtimeRoot ".venv\Scripts\python.exe"
 $hostApp = Join-Path $projectRoot "host_app"
 $aix = Join-Path $projectRoot "AIX"
 $main = Join-Path $aix "main"
@@ -14,6 +16,9 @@ $testBin = Join-Path $projectRoot ".test-bin"
 $cameraKconfig = Join-Path $main "Kconfig.projbuild"
 $cameraSource = Join-Path $main "camera_local.c"
 $cameraPreview = Join-Path $main "camera_preview.c"
+$modelRoot = Join-Path $runtimeRoot "Models\DepthAnything3"
+$modelService = Join-Path $projectRoot "Models\DepthAnything3\service"
+$modelPython = Join-Path $modelRoot "env\python.exe"
 
 if (-not (Test-Path -LiteralPath $cameraKconfig)) {
     throw "Missing ESP-IDF component configuration: $cameraKconfig"
@@ -79,6 +84,19 @@ Invoke-Checked "Python compileall" {
     }
 }
 
+if (Test-Path -LiteralPath $modelPython) {
+    Invoke-Checked "Depth Anything service tests" {
+        Push-Location $modelService
+        try {
+            & $modelPython -m unittest discover -s tests -v
+        } finally {
+            Pop-Location
+        }
+    }
+} else {
+    Write-Warning "Skipping DA3 service tests because the local model environment is missing: $modelPython"
+}
+
 New-Item -ItemType Directory -Force -Path $testBin | Out-Null
 
 Invoke-HostCTest "pressure_sensor_math_test" @(
@@ -94,6 +112,10 @@ Invoke-HostCTest "camera_preview_test" @(
 )
 Invoke-HostCTest "camera_board_profile_test" @(
     (Join-Path $aix "test\camera_board_profile_test.c")
+)
+Invoke-HostCTest "host_risk_test" @(
+    (Join-Path $main "host_risk.c"),
+    (Join-Path $aix "test\host_risk_test.c")
 )
 
 if ($BuildFirmware) {
@@ -137,4 +159,4 @@ if ($BuildFirmware) {
     }
 }
 
-Write-Output "Verification passed: Python tests, compileall, and pressure/camera host-side C tests."
+Write-Output "Verification passed: host/service Python tests, compileall, and pressure/camera/risk host-side C tests."

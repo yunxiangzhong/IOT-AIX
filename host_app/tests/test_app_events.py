@@ -79,6 +79,33 @@ class MainWindowEventRoutingTests(unittest.TestCase):
 
         self.assertEqual(window.vision_panel.preview_url, "http://192.168.137.23:8080/capture.jpg")
 
+    def test_updates_pc_risk_and_dominant_object(self):
+        window = MainWindow()
+
+        window._accept_vision_result({
+            "type": "vision_risk",
+            "frame_seq": 8,
+            "capture_ts_ms": 1300,
+            "depth_p10": 0.2,
+            "depth_median": 0.7,
+            "confidence_median": 0.9,
+            "detections": [{
+                "class_name": "car", "score": 0.9,
+                "bbox_norm": [0.2, 0.3, 0.8, 0.9],
+                "relative_depth": 0.2, "risk_score": 72.0,
+            }],
+            "risk_score": 72,
+            "risk_band": "high",
+            "dominant_class": "car",
+            "reason": "car_approaching",
+            "latency_ms": 85.0,
+            "valid": True,
+        })
+
+        self.assertIn("72", window.vision_panel.risk_label.text())
+        self.assertIn("car", window.vision_panel.detect_label.text())
+        self.assertEqual(window.overview_panel.risk.value.text(), "72")
+
 
 if __name__ == "__main__":
     unittest.main()
