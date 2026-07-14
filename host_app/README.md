@@ -45,9 +45,11 @@ host_app/
 
 ## 运行
 
+直接双击 `start_host_app.cmd` 即可启动上位机；脚本会先检查项目 Python 环境和本地视觉模型环境，缺失时会保留窗口并显示具体路径。
+
 ```powershell
 cd D:\Projects\IOTCompetition\ProjectFile\host_app
-.\run_host_app.cmd
+.\start_host_app.cmd
 ```
 
 项目统一使用 `D:\Projects\IOTCompetition\ProjectFile\.venv`。

@@ -1,11 +1,16 @@
 [CmdletBinding()]
 param(
     [string]$Ssid,
-    [string]$Password
+    [string]$Password,
+    [string]$OutputPath
 )
 
 $ErrorActionPreference = "Stop"
-$configPath = Join-Path $PSScriptRoot "sdkconfig.preview"
+$configPath = if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    Join-Path $PSScriptRoot "sdkconfig.preview"
+} else {
+    $OutputPath
+}
 
 function Read-SecretText {
     param([string]$Prompt)
@@ -26,13 +31,13 @@ function Escape-KconfigString {
 }
 
 if ([string]::IsNullOrWhiteSpace($Ssid)) {
-    $Ssid = Read-Host "输入 Windows 移动热点 SSID"
+    $Ssid = Read-Host "Windows mobile hotspot SSID"
 }
 if ([string]::IsNullOrWhiteSpace($Password)) {
-    $Password = Read-SecretText "输入热点密码（不会回显）"
+    $Password = Read-SecretText "Hotspot password (hidden)"
 }
 if ([string]::IsNullOrWhiteSpace($Ssid) -or [string]::IsNullOrWhiteSpace($Password)) {
-    throw "SSID 和密码都不能为空。"
+    throw "SSID and password must not be empty."
 }
 
 $content = @(
@@ -44,6 +49,6 @@ $content = @(
 )
 $content | Set-Content -LiteralPath $configPath -Encoding ascii
 
-Write-Host "已写入 $configPath"
+Write-Host "Preview configuration written: $configPath"
 Write-Host "SSID: $Ssid"
-Write-Host "下一步：运行 scripts\verify.ps1 -BuildFirmware，或在 AIX 目录用相同 sdkconfig.defaults;sdkconfig.preview 配置编译。"
+Write-Host "Next: run scripts\verify.ps1 -BuildFirmware, then flash the new firmware."
