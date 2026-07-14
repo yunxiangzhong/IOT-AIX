@@ -74,7 +74,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_ports()
         self.dashboard.settings_requested.connect(self.settings_dialog.show)
         self.chain_client.start()
-        self.statusBar().showMessage("PC 帧服务连接中；模型可在后台加载")
+        self.statusBar().showMessage("上位机帧服务连接中；视觉模型将在后台加载")
 
     def _wire_settings(self) -> None:
         self.connection_panel.refresh_requested.connect(self.refresh_ports)
@@ -89,6 +89,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._capture_model_logs()
         self.session_recorder.close()
         super().closeEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "dashboard"):
+            self.dashboard.set_compact_mode(event.size().height() < 800)
 
     def refresh_ports(self) -> None:
         self.connection_panel.set_ports(list_serial_ports())
@@ -130,11 +135,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _handle_reader_state(self, state: str) -> None:
         connected = state == "connected"
         self.connection_panel.set_connected(connected, "串口双向已连接" if connected else "串口未连接")
-        self.statusBar().showMessage("ESP 串口已连接" if connected else "ESP 串口已断开")
+        self.statusBar().showMessage("头盔设备串口已连接" if connected else "头盔设备串口已断开")
 
     def _handle_error(self, message: str) -> None:
         self.connection_panel.set_status_text(message, warning=True)
-        self.dashboard.protocol_log.appendPlainText(f"serial error: {message}")
+        self.dashboard.protocol_log.appendPlainText(f"串口错误：{message}")
 
     def _handle_raw_line(self, line: str) -> None:
         self._ensure_session()
@@ -143,12 +148,13 @@ class MainWindow(QtWidgets.QMainWindow):
             event = parse_event_line(line)
         except ParseError:
             if line.startswith("{"):
-                self.dashboard.protocol_log.appendPlainText(f"ignored: {line}")
+                self.dashboard.protocol_log.appendPlainText(f"已忽略无法识别的协议消息：{line}")
             return
         if isinstance(event, PressureSample):
             self.session_recorder.record_pressure(event)
             self.dashboard.device_log.appendPlainText(
-                f"pressure seq={event.seq} filtered={event.filtered_kpa:.2f}kPa valid={event.valid}"
+                f"压力数据：序号 {event.seq}，滤波值 {event.filtered_kpa:.2f} 千帕，"
+                f"状态{'有效' if event.valid else '无效'}"
             )
         elif isinstance(event, CameraStatusEvent):
             self.dashboard.apply_camera_status(event)
@@ -166,7 +172,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "rgb_pattern": event.rgb_pattern,
             })
         elif isinstance(event, MotionEvent):
-            self.dashboard.device_log.appendPlainText("speed/acceleration protocol received (diagnostic only; device not connected)")
+            self.dashboard.device_log.appendPlainText("收到运动数据；仅用于诊断，运动设备当前未接入")
 
     def _accept_chain_state(self, state: dict) -> None:
         self._ensure_session()
@@ -198,18 +204,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _accept_pc_frame(self, data: bytes, frame_seq: int, capture_ts_ms: int) -> None:
         if not self.dashboard.apply_frame(data, frame_seq, capture_ts_ms):
-            self.dashboard.protocol_log.appendPlainText("invalid JPEG from PC frame service")
+            self.dashboard.protocol_log.appendPlainText("上位机帧服务返回了无效图像数据")
             return
         self._ensure_session()
         try:
             self.session_recorder.save_frame(data, frame_seq, capture_ts_ms)
         except OSError as exc:
-            self.dashboard.protocol_log.appendPlainText(f"frame record failed: {exc}")
+            self.dashboard.protocol_log.appendPlainText(f"图像帧保存失败：{exc}")
 
     def _accept_health(self, health: dict) -> None:
+        self.dashboard.apply_health(health)
+        compute_label = "显卡" if str(health.get("gpu", "cuda")).lower() == "cuda" else "处理器"
+        model_label = {"ready": "已就绪", "loading": "加载中", "error": "异常"}.get(
+            str(health.get("model_state", "loading")), "状态未知"
+        )
         line = (
-            f"health model_state={health.get('model_state')} gpu={health.get('gpu')} "
-            f"error={health.get('model_error') or '-'}"
+            f"服务状态：模型{model_label}，运算设备{compute_label}，"
+            f"异常信息：{health.get('model_error') or '无'}"
         )
         self.dashboard.chain_log.appendPlainText(line)
         if self.session_recorder.session_dir is not None:
@@ -246,11 +257,11 @@ class MainWindow(QtWidgets.QMainWindow):
             "device_id": previous.get("device_id", self.device_id),
             "boot_id": previous.get("boot_id", ""),
             "upload": {**previous.get("upload", {}), "state": "failed", "fps": 0, "frame_age_ms": self._chain_clock.elapsed()},
-            "model": {**previous.get("model", {}), "state": "error", "error": "PC service unavailable"},
+            "model": {**previous.get("model", {}), "state": "error", "error": "PC 服务不可用"},
             "callback": {**previous.get("callback", {}), "state": "failed"},
             "risk": {**previous.get("risk", {}), "valid": False},
             "action": {**previous.get("action", {}), "state": "fault", "rgb_pattern": "purple_blink_1hz", "stale": True},
-            "last_error": "PC service unavailable for more than 3 seconds",
+            "last_error": "PC 服务超过 3 秒无响应",
         }
         self.dashboard.apply_chain_state(fault_state)
         self._watchdog_fault_shown = True

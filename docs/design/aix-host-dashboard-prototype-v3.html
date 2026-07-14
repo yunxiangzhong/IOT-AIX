@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AIX 主动视觉安全监控台</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg:#07111f; --panel:#0d1828; --surface:#111e2f; --surface-2:#0a1422;
+      --border:#233249; --text:#eaf2fb; --muted:#8fa0b5; --subtle:#718096;
+      --live:#38bdf8; --state:#fb923c; --state-bg:#3b200d;
+      --gap:8px; --radius:8px;
+    }
+    * { box-sizing:border-box; }
+    html,body { width:100%; height:100%; margin:0; overflow:hidden; }
+    body {
+      background:var(--bg); color:var(--text);
+      font-family:"Microsoft YaHei UI","Segoe UI Variable","Segoe UI",sans-serif;
+      font-size:13px;
+    }
+    button,select { font:inherit; }
+    .app {
+      height:100vh; min-width:1180px; padding:10px 12px;
+      display:grid; grid-template-rows:64px 72px minmax(0,1fr) 64px;
+      gap:var(--gap);
+    }
+    .panel { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); }
+    .topbar { display:flex; align-items:center; padding:0 12px 0 18px; }
+    .brand { flex:1; min-width:250px; }
+    .brand h1 { margin:0; font-size:19px; line-height:1.35; letter-spacing:.2px; }
+    .brand p { margin:2px 0 0; color:var(--muted); font-size:11px; }
+    .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid currentColor; border-radius:999px; font-size:11px; font-weight:700; white-space:nowrap; }
+    .pill.state { color:var(--state); background:var(--state-bg); }
+    .telemetry { padding:8px 16px; border-left:1px solid var(--border); color:#c8d4e3; white-space:nowrap; }
+    .actions { display:flex; gap:8px; margin-left:12px; }
+    button,select { min-height:36px; padding:0 13px; color:#c8d4e3; background:var(--surface); border:1px solid #2b3b52; border-radius:6px; cursor:pointer; }
+    button:hover,select:hover { background:#17263a; border-color:#4a607c; color:white; }
+    button:focus-visible,select:focus-visible { outline:2px solid var(--live); outline-offset:2px; }
+    button.active { color:#7dd3fc; background:#0b2940; border-color:var(--live); }
+    .chain { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:8px; background:transparent; border:0; }
+    .stage { min-width:0; padding:9px 13px; background:var(--panel); border:1px solid var(--border); border-radius:7px; }
+    .stage-title { display:flex; align-items:center; gap:8px; font-weight:700; }
+    .index { display:grid; place-items:center; width:20px; height:20px; border-radius:50%; color:#afc0d4; background:#18263a; border:1px solid #304158; font:700 9px Consolas,monospace; }
+    .dot { color:#34d399; font-size:10px; }
+    .stage-meta { margin:5px 0 0 48px; color:var(--muted); font:11px Consolas,"Microsoft YaHei UI",monospace; }
+    main { min-height:0; display:grid; grid-template-columns:minmax(0,7fr) minmax(400px,3fr); gap:8px; }
+    .camera { min-width:0; min-height:0; display:grid; grid-template-rows:43px minmax(0,1fr) 34px; overflow:hidden; }
+    .panel-head { display:flex; align-items:center; gap:10px; padding:0 16px; background:var(--surface); border-bottom:1px solid var(--border); }
+    .panel-title { font-size:15px; font-weight:700; }
+    .live { color:#34d399; background:#0d3029; }
+    .head-meta { margin-left:auto; color:var(--muted); font:11px Consolas,"Microsoft YaHei UI",monospace; }
+    .camera-view { min-height:0; display:grid; place-items:center; background:#02070d; overflow:hidden; }
+    .camera-view img { width:100%; height:100%; object-fit:contain; }
+    .camera-foot { display:flex; gap:22px; align-items:center; padding:0 16px; color:var(--muted); background:var(--surface-2); border-top:1px solid var(--border); font-size:11px; }
+    .decision { min-height:0; padding:13px 15px; display:flex; flex-direction:column; gap:8px; overflow:hidden; }
+    .decision-head { display:flex; align-items:center; justify-content:space-between; }
+    .risk-card,.action-card,.audit,.trend { background:var(--surface); border:1px solid #26364c; border-radius:7px; }
+    .risk-card { padding:12px 15px; }
+    .risk-row { display:flex; align-items:center; gap:15px; }
+    .score { color:var(--state); font:700 60px/1 Consolas,monospace; min-width:84px; }
+    .band { color:var(--state); font-size:20px; font-weight:700; }
+    .caption { margin-top:4px; color:var(--muted); font:11px Consolas,"Microsoft YaHei UI",monospace; }
+    .gauge { height:6px; margin-top:9px; overflow:hidden; border-radius:4px; background:#1a2638; }
+    .gauge i { display:block; width:72%; height:100%; background:var(--state); border-radius:4px; transition:width 180ms ease-out; }
+    .scale { display:grid; grid-template-columns:repeat(4,1fr); margin-top:5px; color:var(--subtle); font-size:9px; }
+    .reason { margin:8px 0 0; color:#afc0d4; font-size:12px; line-height:1.55; }
+    .action-card { min-height:76px; padding:10px 13px; display:grid; grid-template-columns:5px 1fr; gap:12px; }
+    .action-line { background:var(--state); border-radius:3px; }
+    .action-name { font-size:17px; font-weight:700; }
+    .action-pattern { margin-top:3px; color:#d8e4f1; font:12px Consolas,"Microsoft YaHei UI",monospace; }
+    .action-ack { margin-top:4px; color:var(--muted); font-size:10px; }
+    .section-title { color:#afc0d4; font-size:11px; font-weight:700; }
+    .audit { padding:7px 11px; background:var(--surface-2); }
+    .audit-row { display:flex; justify-content:space-between; gap:16px; padding:3px 0; }
+    .audit-row span:first-child { color:#7f91a8; font-size:11px; }
+    .audit-row b { text-align:right; color:#d8e4f1; font:600 11px Consolas,"Microsoft YaHei UI",monospace; }
+    .trend-head { display:flex; justify-content:space-between; align-items:center; }
+    .trend-head small { color:var(--muted); font:10px Consolas,"Microsoft YaHei UI",monospace; }
+    .trend { flex:1; min-height:78px; padding:5px 7px; background:var(--surface-2); }
+    .trend svg { width:100%; height:100%; display:block; }
+    .note { color:var(--subtle); border-top:1px solid var(--border); padding-top:7px; font-size:10px; line-height:1.4; }
+    .metrics { display:grid; grid-template-columns:repeat(6,1fr); overflow:hidden; }
+    .metric { padding:8px 12px; border-right:1px solid var(--border); }
+    .metric:last-child { border:0; }
+    .metric small { display:block; color:var(--muted); font-size:10px; }
+    .metric strong { display:block; margin-top:4px; color:#f3f8fd; font:700 14px Consolas,"Microsoft YaHei UI",monospace; }
+    .diagnostic { position:fixed; z-index:10; left:12px; right:12px; bottom:10px; height:260px; padding:12px; transform:translateY(calc(100% + 16px)); transition:transform 180ms ease-out; box-shadow:0 -16px 40px rgba(0,0,0,.34); }
+    .diagnostic.open { transform:translateY(0); }
+    .diag-head { display:flex; justify-content:space-between; align-items:center; padding-bottom:9px; border-bottom:1px solid var(--border); }
+    .diag-body { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding-top:8px; }
+    .diag-box { min-height:174px; padding:10px; color:#a9bad0; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; font:11px/1.65 Consolas,"Microsoft YaHei UI",monospace; }
+    @media (max-height:780px) {
+      .app { grid-template-rows:58px 66px minmax(0,1fr) 58px; padding-top:8px; padding-bottom:8px; }
+      .topbar .telemetry:nth-of-type(3) { display:none; }
+      .decision { padding:10px 12px; gap:6px; }
+      .risk-card { padding:9px 12px; }
+      .score { font-size:48px; }
+      .reason { margin-top:5px; line-height:1.35; }
+      .action-card { min-height:64px; padding:7px 10px; }
+      .audit-row { padding:2px 0; }
+      .trend-head,.trend,.note { display:none; }
+    }
+    @media (prefers-reduced-motion:reduce) { *,*::before,*::after { transition:none !important; } }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header class="panel topbar">
+    <div class="brand"><h1>AIX 主动视觉安全监控台</h1><p>主动视觉闭环监控</p></div>
+    <span class="pill state" id="systemState">● 闭环运行正常</span>
+    <span class="telemetry">头盔设备 01 · 正常</span>
+    <span class="telemetry">视觉模型 · 显卡加速 · 已就绪</span>
+    <div class="actions">
+      <select id="demoState" aria-label="选择演示状态">
+        <option value="low">低风险</option><option value="attention">需要注意</option>
+        <option value="high" selected>高风险</option><option value="critical">严重风险</option>
+        <option value="loading">模型加载</option><option value="fault">结果失效</option>
+      </select>
+      <button class="active">运行总览</button><button id="diagnosticButton">诊断信息</button><button>系统设置</button>
+    </div>
+  </header>
+
+  <section class="chain" aria-label="视觉闭环链路">
+    <div class="stage"><div class="stage-title"><span class="index">01</span><span class="dot">●</span>相机采集</div><div class="stage-meta">320×240 · 4.95 帧/秒</div></div>
+    <div class="stage"><div class="stage-title"><span class="index">02</span><span class="dot">●</span>图像上传</div><div class="stage-meta">2.42 帧/秒 · 第 1712 帧</div></div>
+    <div class="stage"><div class="stage-title"><span class="index">03</span><span class="dot">●</span>上位机视觉推理</div><div class="stage-meta">已就绪 · 173 毫秒</div></div>
+    <div class="stage"><div class="stage-title"><span class="index">04</span><span class="dot">●</span>动作反馈</div><div class="stage-meta">已确认 · 第 1712 帧</div></div>
+  </section>
+
+  <main>
+    <section class="panel camera">
+      <div class="panel-head"><span class="panel-title">实时视觉画面</span><span class="pill live">● 画面实时更新</span><span class="head-meta">第 00001712 帧 · 采集时间 23022 毫秒</span></div>
+      <div class="camera-view"><img src="assets/ov5640-sample.jpg" alt="头盔相机实机画面"></div>
+      <div class="camera-foot"><span>图像来源 · 头盔相机</span><span>采集状态 · 4.95 帧/秒 · 失败 0 次</span><span>传输状态 · 2.42 帧/秒 · 第 1712 帧</span></div>
+    </section>
+
+    <aside class="panel decision">
+      <div class="decision-head"><span class="panel-title">本帧视觉判定</span><span class="pill state" id="resultState">● 结果有效</span></div>
+      <section class="risk-card">
+        <div class="risk-row"><span class="score" id="score">72</span><div><div class="band" id="band">高风险</div><div class="caption">相对风险 · 满分 100</div></div></div>
+        <div class="gauge"><i id="gauge"></i></div>
+        <div class="scale"><span>低风险 0–29</span><span>注意 30–59</span><span>高风险 60–79</span><span>严重 80–100</span></div>
+        <p class="reason" id="reason">前向场景接近程度升高，系统已根据相对深度生成本帧风险判断。</p>
+      </section>
+      <section class="action-card"><i class="action-line"></i><div><div class="action-name" id="actionName">高风险提示</div><div class="action-pattern" id="actionPattern">板载指示灯 · 橙灯快速闪烁 · 亮度 20%</div><div class="action-ack" id="actionAck">动作已确认 · 第 1712 帧</div></div></section>
+      <div class="section-title">闭环执行摘要</div>
+      <section class="audit">
+        <div class="audit-row"><span>来源帧</span><b>第 00001712 帧 · 启动标识 4868</b></div>
+        <div class="audit-row"><span>视觉模型</span><b>已就绪 · 显卡加速 · 173 毫秒</b></div>
+        <div class="audit-row"><span>结果回传</span><b>已确认 · 224 毫秒 · 尝试 1 次</b></div>
+        <div class="audit-row"><span>数据时效</span><b>96 毫秒 · 2.42 帧/秒</b></div>
+        <div class="audit-row"><span>累计处理</span><b>接收 352 · 分析 299 · 确认 286</b></div>
+      </section>
+      <div class="trend-head"><span class="section-title">最近风险趋势</span><small>最近 48 个有效结果</small></div>
+      <div class="trend"><svg viewBox="0 0 400 72" preserveAspectRatio="none" aria-label="最近视觉风险趋势"><path d="M0 55H400M0 34H400M0 20H400" stroke="#26354a" fill="none"/><path d="M0 57 L25 52 L50 47 L75 50 L100 39 L125 43 L150 32 L175 38 L200 25 L225 29 L250 18 L275 24 L300 20 L325 29 L350 22 L375 18 L400 20 L400 72 L0 72Z" fill="rgba(56,189,248,.13)"/><polyline points="0,57 25,52 50,47 75,50 100,39 125,43 150,32 175,38 200,25 225,29 250,18 275,24 300,20 325,29 350,22 375,18 400,20" stroke="#38bdf8" stroke-width="2" fill="none"/><circle cx="400" cy="20" r="4" fill="#e6f6ff" stroke="#07111f" stroke-width="2"/></svg></div>
+      <div class="note">说明：风险分数表示相对视觉接近程度，不等同于碰撞概率或安全执行器结论。</div>
+    </aside>
+  </main>
+
+  <section class="panel metrics">
+    <div class="metric"><small>上传帧率</small><strong>2.42 帧/秒</strong></div><div class="metric"><small>帧时效</small><strong>96 毫秒</strong></div>
+    <div class="metric"><small>推理耗时</small><strong>173 毫秒</strong></div><div class="metric"><small>回传耗时</small><strong>224 毫秒</strong></div>
+    <div class="metric"><small>动作确认帧</small><strong>第 1712 帧</strong></div><div class="metric"><small>最后错误</small><strong>无</strong></div>
+  </section>
+</div>
+
+<section class="panel diagnostic" id="diagnostic" aria-label="诊断信息">
+  <div class="diag-head"><strong>诊断信息</strong><button id="closeDiagnostic">收起诊断</button></div>
+  <div class="diag-body"><div class="diag-box">链路<br>第 1712 帧：上传正常<br>模型已就绪<br>回传已确认<br>动作反馈正常</div><div class="diag-box">协议<br>风险结果版本 1<br>动作确认版本 1<br>令牌校验通过<br>帧序校验通过</div><div class="diag-box">设备<br>相机采集正常<br>压力传感器未接入<br>运动模块未接入<br>板载指示灯已接入</div><div class="diag-box">会话<br>图像与风险记录已开启<br>帧号去重已开启<br>模型日志记录正常<br>会话状态正常</div></div>
+</section>
+
+<script>
+  const states={
+    low:{score:8,band:'低风险',color:'#34d399',bg:'#0d3029',action:'安全提示',pattern:'绿灯常亮',system:'闭环运行正常',reason:'当前场景接近程度较低，闭环链路运行正常。'},
+    attention:{score:46,band:'需要注意',color:'#fbbf24',bg:'#3a2c0a',action:'注意提示',pattern:'黄灯慢闪',system:'闭环运行正常',reason:'前向场景接近程度上升，建议持续观察画面与环境变化。'},
+    high:{score:72,band:'高风险',color:'#fb923c',bg:'#3b200d',action:'高风险提示',pattern:'橙灯快速闪烁',system:'闭环运行正常',reason:'前向场景接近程度升高，系统已根据相对深度生成本帧风险判断。'},
+    critical:{score:91,band:'严重风险',color:'#f87171',bg:'#3b171c',action:'严重风险提示',pattern:'红灯双脉冲',system:'闭环运行正常',reason:'前向场景接近程度很高，系统已触发最高级别原型提示。'},
+    loading:{score:null,band:'模型加载中',color:'#38bdf8',bg:'#0b2940',action:'启动提示',pattern:'蓝灯慢闪',system:'模型加载中',reason:'视觉模型正在后台加载，上传帧会自动保留最新一张。'},
+    fault:{score:null,band:'结果已失效',color:'#c084fc',bg:'#2c193c',action:'故障提示',pattern:'紫灯慢闪',system:'闭环异常',reason:'超过 3 秒未收到新鲜合法结果，旧风险已隔离，系统等待链路自动恢复。'}
+  };
+  const root=document.documentElement,select=document.querySelector('#demoState');
+  function render(key){const s=states[key];root.style.setProperty('--state',s.color);root.style.setProperty('--state-bg',s.bg);document.querySelector('#score').textContent=s.score===null?'--':String(s.score).padStart(2,'0');document.querySelector('#band').textContent=s.band;document.querySelector('#gauge').style.width=(s.score||0)+'%';document.querySelector('#reason').textContent=s.reason;document.querySelector('#actionName').textContent=s.action;document.querySelector('#actionPattern').textContent='板载指示灯 · '+s.pattern+' · 亮度 20%';document.querySelector('#actionAck').textContent=key==='fault'?'旧结果已隔离 · 等待恢复':'动作已确认 · 第 1712 帧';document.querySelector('#systemState').textContent='● '+s.system;document.querySelector('#resultState').textContent=key==='fault'?'● 结果已失效':key==='loading'?'● 等待模型':'● 结果有效';}
+  select.addEventListener('change',e=>render(e.target.value));render(select.value);
+  const drawer=document.querySelector('#diagnostic');document.querySelector('#diagnosticButton').onclick=()=>drawer.classList.toggle('open');document.querySelector('#closeDiagnostic').onclick=()=>drawer.classList.remove('open');
+</script>
+</body>
+</html>

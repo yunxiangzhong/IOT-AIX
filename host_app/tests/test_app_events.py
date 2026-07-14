@@ -30,7 +30,7 @@ class MainWindowEventRoutingTests(unittest.TestCase):
                 '"psram":false,"valid":true}'
             )
             self.assertIn("320×240", window.dashboard.camera_stage.meta.text())
-            self.assertIn("5.00 FPS", window.dashboard.camera_stage.meta.text())
+            self.assertIn("5.00 帧/秒", window.dashboard.camera_stage.meta.text())
             window.close()
 
     def test_routes_action_status_to_diagnostic_protocol(self):
@@ -41,7 +41,7 @@ class MainWindowEventRoutingTests(unittest.TestCase):
                 '"risk_score":71,"valid":true,"stale":false,'
                 '"action_state":"high","rgb_pattern":"orange_blink_2hz"}'
             )
-            self.assertIn("orange_blink_2hz", window.dashboard.protocol_log.toPlainText())
+            self.assertIn("橙灯快速闪烁", window.dashboard.protocol_log.toPlainText())
             window.close()
 
     def test_legacy_preview_event_does_not_change_pc_frame_source(self):
@@ -70,7 +70,7 @@ class MainWindowEventRoutingTests(unittest.TestCase):
                 "last_error": "",
             })
             self.assertEqual(window.dashboard.risk_score.text(), "72")
-            self.assertIn("frame 18", window.dashboard.action_ack.text())
+            self.assertIn("第 18 帧", window.dashboard.action_ack.text())
             window.close()
 
 
