@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import CameraPreviewEvent, CameraStatusEvent, DetectionBox, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
+from .models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, DetectionBox, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
 
 
 class ParseError(ValueError):
@@ -25,9 +25,12 @@ _VISION_DEPTH_REQUIRED = (
     "confidence_median", "latency_ms", "valid",
 )
 _RISK_ACK_REQUIRED = ("frame_seq", "risk_score", "risk_band", "valid", "stale")
+_ACTION_STATUS_REQUIRED = (
+    "ts_ms", "frame_seq", "risk_score", "valid", "stale", "action_state", "rgb_pattern",
+)
 
 
-def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent:
+def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent | ActionStatusEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -47,6 +50,8 @@ def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEv
         return _parse_vision_depth_payload(payload)
     if event_type == "risk_ack":
         return _parse_risk_ack_payload(payload)
+    if event_type == "action_status":
+        return _parse_action_status_payload(payload)
     raise ParseError(f"unsupported json event type: {event_type}")
 
 
@@ -171,6 +176,36 @@ def _parse_risk_ack_payload(payload: dict[str, Any]) -> RiskAckEvent:
             risk_band=band,
             valid=_as_bool(payload["valid"], "valid"),
             stale=_as_bool(payload["stale"], "stale"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_action_status_payload(payload: dict[str, Any]) -> ActionStatusEvent:
+    missing = [key for key in _ACTION_STATUS_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"action_status missing fields: {', '.join(missing)}")
+    try:
+        score = _as_int(payload["risk_score"], "risk_score")
+        state = str(payload["action_state"])
+        pattern = str(payload["rgb_pattern"])
+        if score < 0 or score > 100:
+            raise ValueError("risk_score must be between 0 and 100")
+        if state not in {"loading", "safe", "attention", "high", "critical", "fault"}:
+            raise ValueError("action_state is invalid")
+        if pattern not in {
+            "blue_blink_1hz", "green_solid", "yellow_blink_1hz",
+            "orange_blink_2hz", "red_double_pulse", "purple_blink_1hz",
+        }:
+            raise ValueError("rgb_pattern is invalid")
+        return ActionStatusEvent(
+            ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+            frame_seq=_as_int(payload["frame_seq"], "frame_seq"),
+            risk_score=score,
+            valid=_as_bool(payload["valid"], "valid"),
+            stale=_as_bool(payload["stale"], "stale"),
+            action_state=state,
+            rgb_pattern=pattern,
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc

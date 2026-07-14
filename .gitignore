@@ -30,13 +30,16 @@ build/
 
 # Host app runtime output
 host_app/logs/
+e2e_report.json
 *.csv
+!AIX/partitions.csv
 
 # ESP-IDF build output
 AIX/build/
 AIX/build-*/
 AIX/sdkconfig.old
 AIX/sdkconfig.preview
+AIX/sdkconfig.runtime
 AIX/managed_components/
 AIX/.espressif/
 

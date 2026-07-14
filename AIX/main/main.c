@@ -1,7 +1,11 @@
 #include <stdio.h>
 #include "esp_err.h"
 #include "esp_log.h"
+#include "action_controller.h"
+#include "device_identity.h"
+#include "network_runtime.h"
 #include "pressure_sensor.h"
+#include "risk_receiver.h"
 
 #if CONFIG_AIX_ENABLE_LOCAL_CAMERA
 #include "camera_local.h"
@@ -17,14 +21,47 @@
 
 static const char *TAG = "AIX_BOOT";
 
+static void network_status_changed(bool connected, void *context)
+{
+    (void)context;
+    action_controller_set_fault(ACTION_FAULT_NETWORK, !connected);
+}
+
+static void camera_status_changed(bool healthy, void *context)
+{
+    (void)context;
+    action_controller_set_fault(ACTION_FAULT_CAMERA, !healthy);
+}
+
 void app_main(void)
 {
+    esp_err_t ret;
+
     ESP_LOGI(TAG, "AIX pulse helmet firmware booted");
     ESP_LOGI(TAG, "Target board: ESP32-S3-DevKitC-1, monitor via J4 USB-UART");
     ESP_LOGI(TAG, "Pressure sensor: XGZP6847A 3.3V, OUT -> GPIO1 / ADC1_CH0");
-    ESP_LOGI(TAG, "Vision source: OV5640 local capture only");
+    ESP_LOGI(TAG, "Vision chain: OV5640 -> PC async inference -> RGB action");
 
-    esp_err_t ret = pressure_sensor_init();
+    ESP_ERROR_CHECK(device_identity_init());
+    ESP_LOGI(TAG, "device=%s boot=%s", device_identity_device_id(), device_identity_boot_id());
+    ESP_ERROR_CHECK(action_controller_start(device_identity_device_id(), device_identity_boot_id()));
+    network_runtime_set_status_callback(network_status_changed, NULL);
+    ret = network_runtime_start();
+    if (ret != ESP_OK) {
+        action_controller_set_fault(ACTION_FAULT_NETWORK, true);
+        ESP_LOGW(TAG, "network runtime unavailable: %s", esp_err_to_name(ret));
+    }
+
+#if CONFIG_AIX_ENABLE_RISK_RECEIVER
+    if (ret == ESP_OK) {
+        esp_err_t risk_ret = risk_receiver_start();
+        if (risk_ret != ESP_OK) {
+            ESP_LOGE(TAG, "risk receiver start failed: %s", esp_err_to_name(risk_ret));
+        }
+    }
+#endif
+
+    ret = pressure_sensor_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "pressure sensor init failed: %s", esp_err_to_name(ret));
         return;
@@ -37,6 +74,7 @@ void app_main(void)
     }
 
 #if CONFIG_AIX_ENABLE_LOCAL_CAMERA
+    camera_local_set_health_callback(camera_status_changed, NULL);
 #if CONFIG_AIX_ENABLE_CAMERA_PREVIEW
     ret = camera_preview_start();
     if (ret != ESP_OK) {
@@ -63,5 +101,5 @@ void app_main(void)
     }
 #endif
 
-    ESP_LOGI(TAG, "AIX pressure sensing and local camera capture started");
+    ESP_LOGI(TAG, "AIX active vision closed loop started");
 }

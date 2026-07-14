@@ -1,60 +1,71 @@
-# AIX 脉盔
+# AIX 主动视觉头盔原型
 
-这是面向骑行场景的 ESP32-S3 安全头盔原型。当前工程包含真实压力采集、OV5640 健康采帧，以及由 PC RTX GPU 执行的 Depth Anything 3 相对深度推理。
-
-## 当前链路
+本工程实现一条可确认动作结果的主动视觉闭环：
 
 ```text
-XGZP6847A -> ESP32-S3 pressure_sensor -> pressure NDJSON -> PC 上位机
-OV5640 -> ESP32-S3 camera_local -> Wi-Fi latest JPEG preview -> PC 上位机
+OV5640 → ESP32-S3 主动上传 JPEG → PC 最新帧缓存 / DA3 + SSDLite 推理
+        → PC 回调 vision_risk → ESP action_policy → GPIO38 板载 RGB
+        → action_ack + 串口 action_status → PySide6 上位机
 ```
 
-JPEG 通过 ESP32-S3 的 Wi-Fi 链路提供给本机上位机；串口只传 `camera_status`、`camera_preview` 等状态，不传图像字节。`vision_depth` 仍保留为可选的相对深度协议，不是米制距离、碰撞结论或执行器指令。
+ESP32-S3 约 5 FPS 采集 QVGA JPEG、每 400 ms 复制最新帧上传；PC 对上传立即返回 HTTP 202，GPU 只分析每个启动周期的最新待处理帧，不形成积压。风险结果 3 秒失效，启动宽限 45 秒。
 
-## 目录
+## 当前实现
 
-```text
-ProjectFile/
-├─ AIX/       # ESP-IDF 固件：压力采集、OV5640 采帧
-├─ host_app/  # PySide6 状态、压力曲线、CSV 与 motion 占位
-├─ docs/      # 接线与项目审阅文档
-└─ scripts/   # 统一验证脚本
-```
-
-## 已实现与未实现
-
-| 项目 | 状态 |
+| 模块 | 状态 |
 | --- | --- |
-| XGZP6847A 压力采集 | 已实现 |
-| OV5640 QVGA/JPEG 健康采帧与恢复 | 已实现，待实机五分钟验收 |
-| 上位机 OV5640 连接状态、详情与 Wi-Fi 画面预览 | 已实现，待热点实机验收 |
-| PC 端 DA3-SMALL 相对深度服务 | 已实现，待 OV5640 Wi-Fi 实机闭环验收 |
-| ESP32-S3 端视觉模型 | 不采用；ESP32-S3 负责采帧、上传和结果上报 |
-| JPEG Wi-Fi 上送 | 已实现，待实机网络验收 |
-| 风险融合、语音、气囊执行链路 | 已删除，等待真实模型与安全方案确定后重建 |
+| OV5640 QVGA/JPEG 采集与失败恢复 | 已实现 |
+| `POST /v1/frames` 主动上传、token 和 256 KiB 限制 | 已实现并自动化测试 |
+| 模型后台加载、最新帧覆盖、单 GPU worker | 已实现并自动化测试 |
+| PC → ESP `/risk` 回调与 200/500/1000 ms 重试 | 已实现并自动化测试 |
+| boot_id、帧序、3 秒 TTL、风险分段校验 | 已实现并主机侧 C 测试 |
+| GPIO38 RGB 六种语义模式与 `action_status` | 已实现并通过 ESP-IDF 全量构建 |
+| PySide6 工业仪表 UI 与诊断抽屉 | 已实现并在 1920×1080、1280×720 验证 |
+| 10 分钟实机闭环及断网/停模恢复 | 需连接目标板后执行最终验收 |
 
-## 串口协议
+## 单一启动入口
 
-支持 `pressure`、`camera_status`、`camera_preview`，并保留上位机 `motion` 占位协议。压力事件的 `valid:false` 表示电压异常（可能未接入），上位机只显示 raw/mV 诊断值，不显示或记录 kPa。
+双击或运行：
 
-```json
-{"type":"camera_status","version":1,"seq":7,"ts_ms":1200,"sensor":"OV5640","width":320,"height":240,"pixel_format":"jpeg","frame_bytes":18432,"fps":5.0,"frames_ok":12,"capture_failures":0,"psram":false,"valid":true}
+```powershell
+cd D:\Projects\IOTCompetition\ProjectFile\host_app
+.\start_host_app.cmd
 ```
 
-上位机在串口连接后 3 秒内收到 `valid:true` 显示“OV5640：状态正常”；收到无效状态或超时显示“连接异常”。点击状态文字可展开参数详情。
+启动器依次执行：
 
-## OV5640 Wi-Fi 画面预览
+1. 从旧 `AIX/sdkconfig.preview` 首次迁移并同步被 Git 忽略的 `AIX/sdkconfig.runtime`；旧文件不会删除。
+2. 配置并核验 Windows 2.4 GHz 移动热点。
+3. 启动 `0.0.0.0:8008` 异步模型服务并保存 stdout/stderr。
+4. 等待 `/healthz` 的 HTTP 层就绪（模型可以仍在后台加载）。
+5. 启动 PySide6 上位机；退出 UI 时停止本次模型服务。
 
-1. 在 Windows 移动热点的“属性”中将频段选为 **2.4 GHz**，保持热点开启。
-2. 在项目根目录运行 `powershell -ExecutionPolicy Bypass -File ./AIX/configure_preview.ps1`，按提示输入热点 SSID 和密码。脚本只写入本机被 Git 忽略的 `AIX/sdkconfig.preview`，密码不会显示在屏幕上。
-3. 使用 `powershell -ExecutionPolicy Bypass -File ./scripts/verify.ps1 -BuildFirmware` 编译；该检查会在缺少热点配置时直接报错，避免烧录一个永远 `ssid_empty` 的固件。
-4. 编译并烧录后，ESP32-S3 取得 IP 会通过串口发送 `camera_preview` 事件，上位机自动轮询 `http://<ESP-IP>:8080/capture.jpg` 并显示画面。
+首次变更热点凭据或 token 后，需要重新构建并烧录固件。运行时配置和 token 不提交 Git。
 
-`host_app/start_host_app.cmd` 会在每次启动上位机前自动同步活动 `sdkconfig`、启动 Windows 移动热点并确认热点 SSID。它不会自动烧录 ESP32-S3；热点凭据首次变更后必须手动烧录一次新固件。
+## PC 服务接口
 
-若上位机显示“画面预览不可用：ssid_empty”，说明固件没有读取到 `AIX/sdkconfig.preview`；若显示 `wifi_disconnected_<reason>`，说明 SSID/密码、热点频段或信号仍不匹配。电脑和 ESP32-S3 必须连接同一个 2.4 GHz 热点。
+- `POST /v1/frames`：ESP 上传 JPEG，成功返回 `frame_ack`（HTTP 202）。
+- `GET /healthz`：HTTP、模型加载、GPU 和错误状态。
+- `GET /v1/frame/latest.jpg?device_id=aix-helmet-01`：上位机读取最新上传帧。
+- `GET /v1/state/latest?device_id=aix-helmet-01`：上传、模型、风险、回调和 RGB 确认的统一 `chain_state`。
+- PC 使用上传请求源 IP 回调 `POST http://<ESP-IP>:8080/risk`，避免客户端注入回调地址。
 
-## 构建与验证
+旧 `/v1/infer` 和 `/v1/analyze` 仅为兼容测试保留，不是默认链路。上位机不再拉取 ESP `/capture.jpg`、不再提交本地同步推理、也不代替 ESP 执行动作策略。
+
+## RGB 语义
+
+| 状态 | GPIO38 板载 RGB（最大 20%） |
+| --- | --- |
+| 启动 / 模型加载 | 蓝色 1 Hz |
+| low 0–29 | 绿色常亮 |
+| attention 30–59 | 黄色 1 Hz |
+| high 60–79 | 橙色 2 Hz |
+| critical 80–100 | 红色双脉冲 |
+| 超时、相机、网络或模型错误 | 紫色 1 Hz |
+
+不接入蜂鸣器、振动、气泵、电磁阀或气囊。
+
+## 验证与构建
 
 ```powershell
 cd D:\Projects\IOTCompetition\ProjectFile
@@ -62,29 +73,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 ```
 
-固件默认启用 OV5640 和 Wi-Fi 画面预览；如需无相机调试，可在 `menuconfig` 关闭 `AIX_ENABLE_LOCAL_CAMERA`。如需启用原有 DA3 Wi-Fi 上传，先关闭 `AIX_ENABLE_CAMERA_PREVIEW`，两项不能同时启用。
+`-BuildFirmware` 会自动进入 ESP-IDF 环境、在子进程内验证 CMake/Ninja/交叉编译器、关闭 ccache、全量构建并生成 `AIX/build-verify/firmware-manifest.json`。清单记录 Git commit/dirty 状态、sdkconfig SHA-256、AIX.bin SHA-256 和大小，不包含 token。
 
-## DA3 本地模型
+## 数据与安全边界
 
-所有模型资产固定在 [`Models/DepthAnything3`](Models/DepthAnything3)：官方源码、独立 CUDA 环境、本地权重、缓存、服务和日志均不写入项目外部目录。启动 PC 服务：
+会话按帧号去重保存 `frames/`、`vision.ndjson`、`telemetry.ndjson`、`action.ndjson`、`pressure.csv`、`model.log` 和 `session.json`。
 
-```powershell
-cd D:\Projects\IOTCompetition\ProjectFile\Models\DepthAnything3
-.\run_service.ps1
-```
+当前模型输出是相对视觉风险，不是米制距离、碰撞概率或安全执行器结论；板载 RGB 只用于原型提示。没有完成 10 分钟实机验收前，不应把本系统描述为自动避撞或安全控制产品。
 
-在 ESP-IDF `menuconfig` 启用 `AIX_ENABLE_VISION_UPLINK`，设置 Wi-Fi SSID、密码和 PC 服务 URL 后，ESP32-S3 每秒上传一张最新 JPEG。
-
-## PC 本地识别与风险记录
-
-当前默认链路由上位机从 `camera_preview` 拉取最新 JPEG：预览约 2.5 FPS，PC 每秒取一张最新帧交给 DA3-SMALL 和 TorchVision SSDLite。上位机显示 `0–100` 相对视觉风险、检测框和模型耗时，并将精简风险通过 ESP 的 `POST /risk` 接口同步；该风险暂不驱动气囊、蜂鸣器或其他执行器。
-
-串口连接成功后自动创建 `F:\OV5640\YYYYMMDD_HHMMSS` 会话目录。目录包含原始 JPEG、`vision.ndjson`、`telemetry.ndjson`、`pressure.csv` 和 `session.json`。数据根目录可在上位机左侧选择，首次默认 `F:\OV5640`。
-
-第一版风险是“前方近物占比 + 相关目标检测 + 连续帧接近趋势”的相对指标，不是米制距离或碰撞概率。后续升级建议：相机内参标定与 DA3Metric、TTC/目标跟踪、骑行场景数据集微调、更加精确的检测器，以及基于会话回放的参数标定。
-
-## 安全边界
-
-- 当前是采集与状态监测原型，不是自动避撞或气囊控制系统。
-- 正常 FPS 不能视为目标识别、距离估算或碰撞判断已经完成。
-- 实机接线、连续采帧和故障恢复验收完成前，不得将 OV5640 标记为已完成硬件验证。
+详细设计见 [主动视觉闭环说明](docs/design/active-vision-closed-loop.md)，固件见 [AIX README](AIX/README.md)，上位机见 [host_app README](host_app/README.md)。

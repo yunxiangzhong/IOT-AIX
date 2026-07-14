@@ -27,4 +27,10 @@ bool vision_uplink_submit_frame(
     void *context);
 #endif
 
-bool vision_uplink_response_matches_frame(const char *json, size_t length, uint32_t frame_seq);
+bool vision_uplink_response_matches_frame(
+    const char *json,
+    size_t length,
+    const char *device_id,
+    const char *boot_id,
+    uint32_t frame_seq);
+bool vision_uplink_response_model_failed(const char *json, size_t length);

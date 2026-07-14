@@ -5,7 +5,7 @@ import sys
 
 def main() -> int:
     try:
-        from PySide6 import QtWidgets
+        from PySide6 import QtGui, QtWidgets
     except ImportError:
         print("缺少 PySide6，请先在 host_app 目录安装 requirements.txt 中的依赖。")
         return 1
@@ -14,6 +14,7 @@ def main() -> int:
 
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("AIX Pulse Helmet Host")
+    app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
     window = MainWindow()
     window.show()
     return app.exec()

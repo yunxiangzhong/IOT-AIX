@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$previewConfig = Join-Path $projectRoot "AIX\sdkconfig.preview"
+$runtimeConfig = Join-Path $projectRoot "AIX\sdkconfig.runtime"
 
 function Read-KconfigString {
     param(
@@ -60,12 +60,12 @@ function Wait-WinRtAction {
     }
 }
 
-if (-not (Test-Path -LiteralPath $previewConfig)) {
-    throw "Missing $previewConfig. Run AIX\configure_preview.ps1 first."
+if (-not (Test-Path -LiteralPath $runtimeConfig)) {
+    throw "Missing $runtimeConfig. Run AIX\sync_runtime_config.ps1 first."
 }
 
-$ssid = Read-KconfigString -Path $previewConfig -Name "CONFIG_AIX_WIFI_SSID"
-$password = Read-KconfigString -Path $previewConfig -Name "CONFIG_AIX_WIFI_PASSWORD"
+$ssid = Read-KconfigString -Path $runtimeConfig -Name "CONFIG_AIX_WIFI_SSID"
+$password = Read-KconfigString -Path $runtimeConfig -Name "CONFIG_AIX_WIFI_PASSWORD"
 if ([string]::IsNullOrWhiteSpace($ssid) -or [string]::IsNullOrWhiteSpace($password)) {
     throw "The preview SSID and password must not be empty."
 }
@@ -74,6 +74,7 @@ Add-Type -AssemblyName System.Runtime.WindowsRuntime
 [Windows.Networking.Connectivity.NetworkInformation, Windows.Networking.Connectivity, ContentType = WindowsRuntime] | Out-Null
 [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime] | Out-Null
 [Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime] | Out-Null
+[Windows.Networking.NetworkOperators.TetheringWiFiBand, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime] | Out-Null
 
 $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
 if ($null -eq $profile) {
@@ -87,7 +88,9 @@ if ($StatusOnly) {
     exit 0
 }
 
-if ($configuration.Ssid -ne $ssid -or $configuration.Passphrase -ne $password) {
+$bandProperty = $configuration.PSObject.Properties["Band"]
+$needsBandChange = $null -ne $bandProperty -and [string]$configuration.Band -ne "TwoPointFourGigahertz"
+if ($configuration.Ssid -ne $ssid -or $configuration.Passphrase -ne $password -or $needsBandChange) {
     if ([string]$manager.TetheringOperationalState -eq "On") {
         $stopResult = Wait-WinRtOperation ($manager.StopTetheringAsync()) ([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult])
         if ([string]$stopResult.Status -ne "Success") {
@@ -96,6 +99,9 @@ if ($configuration.Ssid -ne $ssid -or $configuration.Passphrase -ne $password) {
     }
     $configuration.Ssid = $ssid
     $configuration.Passphrase = $password
+    if ($null -ne $bandProperty) {
+        $configuration.Band = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::TwoPointFourGigahertz
+    }
     Wait-WinRtAction ($manager.ConfigureAccessPointAsync($configuration))
 }
 
@@ -118,4 +124,8 @@ $activeConfiguration = $manager.GetCurrentAccessPointConfiguration()
 if ($activeConfiguration.Ssid -ne $ssid) {
     throw "Mobile Hotspot SSID mismatch: expected $ssid, got $($activeConfiguration.Ssid)"
 }
-Write-Output "wifi_hotspot_ready state=On ssid=$ssid clients=$($manager.ClientCount)"
+if ($null -ne $activeConfiguration.PSObject.Properties["Band"] -and
+    [string]$activeConfiguration.Band -ne "TwoPointFourGigahertz") {
+    throw "Mobile Hotspot is not using 2.4 GHz: $($activeConfiguration.Band)"
+}
+Write-Output "wifi_hotspot_ready state=On band=TwoPointFourGigahertz ssid=$ssid clients=$($manager.ClientCount)"

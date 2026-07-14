@@ -97,3 +97,14 @@ class RiskAckEvent:
     risk_band: str
     valid: bool
     stale: bool
+
+
+@dataclass(frozen=True)
+class ActionStatusEvent:
+    ts_ms: int
+    frame_seq: int
+    risk_score: int
+    valid: bool
+    stale: bool
+    action_state: str
+    rgb_pattern: str

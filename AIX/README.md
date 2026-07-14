@@ -1,53 +1,62 @@
-# AIX ESP32-S3 固件工程
+# AIX ESP32-S3 主动视觉固件
 
-固件负责压力采集、OV5640 健康采帧，以及可选的 Wi-Fi JPEG 上传。Depth Anything 3 在 PC RTX GPU 上运行；固件只接收紧凑 JSON 结果并输出 `vision_depth`。
+目标板为 ESP32-S3-DevKitC-1 v1.1，OV5640 固定为 320×240 JPEG、约 5 FPS；板载 WS2812 兼容 RGB 位于 GPIO38。
 
-## 启动链路
+## 任务装配
 
 ```text
 app_main
-├─ pressure_sensor_start_task()
-│  └─ 每秒输出 pressure NDJSON
-└─ camera_local_start_task()           # CONFIG_AIX_ENABLE_LOCAL_CAMERA=y
-   └─ QVGA/JPEG 采帧、失败恢复、每秒输出 camera_status
-      └─ vision_uplink（可选）-> PC /v1/infer -> vision_depth
+├─ device_identity             每次启动生成 64 位 boot_id
+├─ action_controller           45 s 宽限、3 s TTL、action_status 心跳
+│  └─ rgb_status               led_strip RMT / GPIO38 / 最大亮度 20%
+├─ network_runtime             NVS、事件循环、STA 只初始化一次
+├─ risk_receiver :8080/risk    token / device / boot / seq / band 校验
+├─ vision_uplink               每 400 ms 复制最新 JPEG → PC /v1/frames
+├─ camera_local                OV5640 采集、状态和失败恢复
+└─ pressure_sensor             GPIO1 / ADC1_CH0 压力遥测
 ```
 
-`CONFIG_AIX_ENABLE_LOCAL_CAMERA` 默认开启，可在 ESP-IDF `menuconfig` 中关闭。采帧周期由 `CONFIG_AIX_CAMERA_CAPTURE_PERIOD_MS` 配置；状态上报固定为 1000 ms。
+`camera_preview` 只作为显式开启的诊断兼容模块保留，默认关闭，端口 8081；`/risk` 已从该模块拆出，不与预览生命周期耦合。
 
-## 模块
+## 运行时配置
 
-```text
-AIX/main/
-├─ main.c                         # 任务装配
-├─ pressure_sensor.c/h            # ADC1_CH0 / GPIO1 压力采集
-├─ camera_local.c/h               # OV5640 QVGA JPEG 健康采帧
-├─ camera_board_devkitc1_ov5640.h # DevKitC-1 固定 DVP 接线
-├─ vision_uplink.c/h               # Wi-Fi HTTP 上传与模型响应校验
-└─ idf_component.yml              # esp32-camera 依赖
+```powershell
+.\sync_runtime_config.ps1
 ```
 
-## camera_status
+脚本创建被 Git 忽略的 `sdkconfig.runtime`，首次优先迁移现有 `sdkconfig.preview` 的 Wi-Fi 凭据，不删除旧文件，并补齐：
 
-`camera_status` 不包含 JPEG 字节；JPEG 仅由 `vision_uplink` 通过 Wi-Fi HTTP 请求体发送给 PC。返回的 `vision_depth` 只包含相对深度统计、置信度和延迟，不驱动风险或执行器逻辑。
+- `CONFIG_AIX_DEVICE_ID="aix-helmet-01"`
+- `CONFIG_AIX_LINK_TOKEN="<本机随机 256 位 token>"`
+- `CONFIG_AIX_VISION_SERVICE_URL="http://192.168.137.1:8008/v1/frames"`
+- 主动上传 400 ms、风险接收 8080、预览关闭、RGB 开启。
 
-```json
-{"type":"camera_status","version":1,"seq":7,"ts_ms":1200,"sensor":"OV5640","width":320,"height":240,"pixel_format":"jpeg","frame_bytes":18432,"fps":5.00,"frames_ok":12,"capture_failures":0,"psram":false,"valid":true}
-```
+## 风险校验与动作
+
+`risk_receiver` 仅接受 `vision_risk v1`，并拒绝：错误 token、错误 device_id/boot_id、重复或乱序帧、未来时间戳、超过 3 秒的结果、无效分数以及分数/等级不一致。
+
+成功响应必须是同帧 `action_ack`；串口在动作状态变化时立即输出 `action_status`，并每秒心跳一次。HTTP 200 本身不等于动作确认。
 
 ## 构建
 
+推荐使用项目统一验证，避免 Windows 子进程 PATH 丢失：
+
 ```powershell
-cd D:\Projects\IOTCompetition\ProjectFile\AIX
-idf.py set-target esp32s3
-idf.py build
-idf.py flash monitor
+cd D:\Projects\IOTCompetition\ProjectFile
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 ```
 
-接线与实机验收见 [`../docs/hardware/ov5640-devkitc1-wiring.md`](../docs/hardware/ov5640-devkitc1-wiring.md)。
+固件使用自定义 2 MiB 单应用分区布局，避免新增 HTTP/RGB 组件后挤占默认 1 MiB factory 分区。生成物位于 `AIX/build-verify/`，其中 `firmware-manifest.json` 可用于烧录追溯。
 
-## 当前边界
+手动烧录前确认串口：
 
-- 已实现：压力采集、OV5640 JPEG 健康采帧、状态上报与失败重试。
-- 未实现：米制距离、距离/TTC、JPEG 串口传输、语音、气泵、电磁阀、气囊控制。
-- 实机验收：先配置 Wi-Fi 和 PC 服务 URL，验证五分钟连续采帧、HTTP 回传、断网恢复和 `vision_depth` 串口上报。
+```powershell
+idf.py -p COMxx flash monitor
+```
+
+## 硬件边界
+
+- 已使用：OV5640、XGZP6847A、板载 GPIO38 RGB。
+- 未接入：蜂鸣器、振动马达、气泵、电磁阀、气囊。
+- RGB 是原型语义提示，不是安全执行器。
+- 接线见 [OV5640 DevKitC-1 接线说明](../docs/hardware/ov5640-devkitc1-wiring.md)。

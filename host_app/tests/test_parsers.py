@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.models import CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
+from aix_host_app.models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
 from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
@@ -99,6 +99,19 @@ class RiskAckParserTests(unittest.TestCase):
                 '{"type":"risk_ack","version":1,"frame_seq":12,"risk_score":101,'
                 '"risk_band":"critical","valid":true,"stale":false}'
             )
+
+
+class ActionStatusParserTests(unittest.TestCase):
+    def test_parses_action_status_heartbeat(self):
+        event = parse_event_line(
+            '{"type":"action_status","version":1,"ts_ms":4200,"frame_seq":17,'
+            '"risk_score":71,"valid":true,"stale":false,'
+            '"action_state":"high","rgb_pattern":"orange_blink_2hz"}'
+        )
+
+        self.assertIsInstance(event, ActionStatusEvent)
+        self.assertEqual(event.frame_seq, 17)
+        self.assertEqual(event.rgb_pattern, "orange_blink_2hz")
 
 
 if __name__ == "__main__":

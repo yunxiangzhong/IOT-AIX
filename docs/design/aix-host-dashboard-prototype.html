@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIX 主动视觉控制台 — 高保真原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #F4F3EF;
+      --surface: #FCFBF7;
+      --surface-2: #F0EFEA;
+      --ink: #20201E;
+      --muted: #6F6E68;
+      --line: #D8D6CF;
+      --green: #2E704B;
+      --yellow: #A46B12;
+      --orange: #C45121;
+      --red: #A72F2F;
+      --blue: #315F89;
+      --purple: #704A80;
+      --status: var(--green);
+      --risk: var(--green);
+      --radius: 5px;
+      --sans: "Segoe UI Variable", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      --mono: Consolas, "Cascadia Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-width: 320px; min-height: 100%; background: var(--bg); color: var(--ink); }
+    body { font-family: var(--sans); font-size: 14px; letter-spacing: .01em; }
+    button { font: inherit; color: inherit; }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: 64px auto minmax(410px, 1fr) auto;
+      gap: 12px;
+      padding: 0 18px 18px;
+      max-width: 1920px;
+      margin: 0 auto;
+    }
+
+    .topbar {
+      margin: 0 -18px;
+      padding: 0 18px;
+      display: grid;
+      grid-template-columns: minmax(220px, 1.25fr) repeat(3, minmax(150px, .8fr)) auto;
+      align-items: stretch;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .brand, .top-cell { display: flex; align-items: center; min-width: 0; }
+    .brand { gap: 14px; padding-right: 24px; }
+    .mark { width: 8px; height: 30px; background: var(--status); transition: background .18s; }
+    .brand h1 { margin: 0; font-size: 17px; line-height: 1.1; font-weight: 650; letter-spacing: .04em; }
+    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
+    .top-cell { border-left: 1px solid var(--line); padding: 0 18px; }
+    .label { display: block; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; }
+    .top-value { display: block; margin-top: 5px; font: 12px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .top-actions { display: flex; align-items: center; gap: 8px; padding-left: 14px; }
+    .mode-button, .state-button {
+      border: 1px solid var(--line); background: transparent; border-radius: 4px; min-height: 34px; padding: 0 12px; cursor: pointer;
+    }
+    .mode-button[aria-pressed="true"], .state-button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+
+    .chain {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+    .chain-stage { padding: 13px 16px 12px; position: relative; min-width: 0; }
+    .chain-stage + .chain-stage { border-left: 1px solid var(--line); }
+    .chain-stage:not(:last-child)::after {
+      content: ""; position: absolute; z-index: 2; right: -4px; top: 27px; width: 7px; height: 7px;
+      background: var(--surface); border-top: 1px solid var(--line); border-right: 1px solid var(--line); transform: rotate(45deg);
+    }
+    .stage-row { display: flex; align-items: center; gap: 8px; }
+    .stage-index { font: 11px var(--mono); color: var(--muted); }
+    .stage-dot { width: 8px; height: 8px; border: 1px solid currentColor; background: currentColor; border-radius: 50%; color: var(--status); }
+    .stage-title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .stage-meta { margin: 7px 0 0 26px; font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .workspace { display: grid; grid-template-columns: minmax(0, 7fr) minmax(300px, 3fr); gap: 12px; min-height: 0; }
+    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+    .panel-head { min-height: 44px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .panel-title { font-size: 12px; font-weight: 680; letter-spacing: .08em; text-transform: uppercase; }
+    .telemetry { font: 11px var(--mono); color: var(--muted); }
+
+    .camera-panel { display: grid; grid-template-rows: 44px minmax(0, 1fr) 54px; overflow: hidden; }
+    .camera-stage { position: relative; display: grid; place-items: center; min-height: 300px; background: #DDDCD7; overflow: hidden; }
+    .camera-stage img { width: 100%; height: 100%; object-fit: contain; image-rendering: auto; }
+    .reticle { position: absolute; inset: 13% 20%; border: 1px solid rgba(252, 251, 247, .72); pointer-events: none; }
+    .reticle::before, .reticle::after { content: ""; position: absolute; background: rgba(252, 251, 247, .72); }
+    .reticle::before { width: 24px; height: 1px; left: calc(50% - 12px); top: 50%; }
+    .reticle::after { height: 24px; width: 1px; left: 50%; top: calc(50% - 12px); }
+    .frame-stamp { position: absolute; left: 12px; bottom: 12px; padding: 6px 8px; background: rgba(32, 32, 30, .82); color: #FCFBF7; font: 11px var(--mono); border-radius: 3px; }
+    .camera-foot { display: grid; grid-template-columns: repeat(4, 1fr); }
+    .metric { padding: 9px 12px; min-width: 0; }
+    .metric + .metric { border-left: 1px solid var(--line); }
+    .metric-value { margin-top: 4px; font: 13px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .decision { display: grid; grid-template-rows: 44px minmax(0, 1fr); }
+    .decision-body { display: flex; flex-direction: column; padding: 20px; min-height: 0; }
+    .risk-label { color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; }
+    .risk-score { margin-top: 8px; display: flex; align-items: baseline; gap: 7px; color: var(--risk); }
+    .risk-score strong { font: 700 48px/1 var(--mono); letter-spacing: -.04em; }
+    .risk-score span { font: 12px var(--mono); color: var(--muted); }
+    .risk-band { margin-top: 8px; font-size: 20px; font-weight: 650; color: var(--risk); }
+    .reason { margin-top: 6px; color: var(--muted); line-height: 1.55; min-height: 44px; }
+    .rule { height: 1px; background: var(--line); margin: 18px 0; }
+    .action-block { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 12px; align-items: start; }
+    .rgb { width: 14px; height: 14px; margin-top: 3px; background: var(--status); border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, var(--status) 16%, transparent); }
+    .action-name { font-size: 16px; font-weight: 650; }
+    .action-pattern { margin-top: 5px; color: var(--muted); font: 11px var(--mono); }
+    .ack { margin-top: auto; border-top: 1px solid var(--line); padding-top: 14px; display: flex; justify-content: space-between; gap: 16px; }
+    .ack-value { text-align: right; font: 11px var(--mono); color: var(--green); }
+
+    .bottom { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    .bottom .metric { min-height: 56px; }
+
+    .diagnostics { display: none; grid-column: 1 / -1; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+    .app[data-mode="diagnostic"] { grid-template-rows: 64px auto minmax(340px, 1fr) auto auto; }
+    .app[data-mode="diagnostic"] .diagnostics { display: grid; grid-template-columns: 180px 1fr; min-height: 188px; }
+    .diag-nav { border-right: 1px solid var(--line); padding: 10px; }
+    .diag-tab { width: 100%; border: 0; border-left: 2px solid transparent; background: transparent; text-align: left; padding: 9px 10px; cursor: pointer; color: var(--muted); }
+    .diag-tab.active { color: var(--ink); border-left-color: var(--status); background: var(--surface-2); }
+    .diag-content { padding: 14px 16px; min-width: 0; }
+    .diag-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); }
+    .diag-grid .metric { min-height: 62px; }
+    .state-simulator { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 14px; }
+    .state-simulator .label { margin-right: 4px; }
+    .state-button { min-height: 30px; padding: 0 9px; font-size: 11px; }
+
+    @media (max-width: 1380px) {
+      .app { padding-left: 12px; padding-right: 12px; gap: 9px; }
+      .topbar { margin-left: -12px; margin-right: -12px; padding: 0 12px; grid-template-columns: minmax(210px, 1.2fr) repeat(3, minmax(125px, .7fr)) auto; }
+      .top-cell { padding: 0 12px; }
+      .workspace { grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 9px; }
+      .bottom { grid-template-columns: repeat(3, 1fr); }
+      .bottom .metric:nth-child(4) { border-left: 0; border-top: 1px solid var(--line); }
+      .bottom .metric:nth-child(n+5) { border-top: 1px solid var(--line); }
+      .decision-body { padding: 16px; }
+    }
+
+    @media (max-width: 1000px) {
+      .topbar { grid-template-columns: 1fr auto; }
+      .top-cell { display: none; }
+      .workspace { grid-template-columns: 1fr; }
+      .decision { min-height: 330px; }
+      .camera-stage { min-height: 360px; }
+      .diag-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main class="app" id="app" data-mode="display" data-state="healthy">
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <div><h1>AIX 主动视觉控制台</h1><p>Active vision instrument / v1</p></div>
+      </div>
+      <div class="top-cell"><div><span class="label">设备</span><span class="top-value">aix-helmet-01 · 在线</span></div></div>
+      <div class="top-cell"><div><span class="label">热点</span><span class="top-value">192.168.137.0/24 · 2.4 GHz</span></div></div>
+      <div class="top-cell"><div><span class="label">模型</span><span class="top-value" id="modelTop">DA3-SMALL · CUDA · 就绪</span></div></div>
+      <div class="top-actions">
+        <button class="mode-button" id="displayMode" aria-pressed="true">展示</button>
+        <button class="mode-button" id="diagnosticMode" aria-pressed="false">诊断</button>
+      </div>
+    </header>
+
+    <section class="chain" aria-label="主动视觉链路">
+      <article class="chain-stage"><div class="stage-row"><span class="stage-index">01</span><span class="stage-dot"></span><span class="stage-title">OV5640 采集</span></div><p class="stage-meta" id="cameraMeta">320×240 JPEG · 4.92 FPS</p></article>
+      <article class="chain-stage"><div class="stage-row"><span class="stage-index">02</span><span class="stage-dot"></span><span class="stage-title">ESP 主动上传</span></div><p class="stage-meta" id="uploadMeta">2.48 FPS · ACK 99.2%</p></article>
+      <article class="chain-stage"><div class="stage-row"><span class="stage-index">03</span><span class="stage-dot"></span><span class="stage-title">PC 异步推理</span></div><p class="stage-meta" id="modelMeta">最新帧优先 · 1635 ms</p></article>
+      <article class="chain-stage"><div class="stage-row"><span class="stage-index">04</span><span class="stage-dot"></span><span class="stage-title">ESP 动作确认</span></div><p class="stage-meta" id="actionMeta">frame 00901337 · 84 ms</p></article>
+    </section>
+
+    <section class="workspace">
+      <article class="panel camera-panel">
+        <header class="panel-head"><span class="panel-title">实时视野</span><span class="telemetry" id="frameAge">frame 00901337 · age 128 ms</span></header>
+        <div class="camera-stage">
+          <img src="assets/ov5640-sample.jpg" alt="OV5640 实机采集样例画面">
+          <div class="reticle" aria-hidden="true"></div>
+          <div class="frame-stamp">OV5640 · QVGA · JPEG · SOURCE FRAME</div>
+        </div>
+        <footer class="camera-foot">
+          <div class="metric"><span class="label">采集</span><div class="metric-value">4.92 FPS</div></div>
+          <div class="metric"><span class="label">上传</span><div class="metric-value">2.48 FPS</div></div>
+          <div class="metric"><span class="label">帧大小</span><div class="metric-value">6.1 KiB</div></div>
+          <div class="metric"><span class="label">启动周期</span><div class="metric-value">9f81…e2ac</div></div>
+        </footer>
+      </article>
+
+      <aside class="panel decision">
+        <header class="panel-head"><span class="panel-title">风险与动作</span><span class="telemetry" id="decisionStatus">链路闭合</span></header>
+        <div class="decision-body">
+          <span class="risk-label">相对视觉风险</span>
+          <div class="risk-score"><strong id="riskScore">08</strong><span>/ 100</span></div>
+          <div class="risk-band" id="riskBand">低风险</div>
+          <div class="reason" id="riskReason">前向场景未检测到显著接近目标。结果仅表示相对视觉风险。</div>
+          <div class="rule"></div>
+          <div class="action-block">
+            <span class="rgb" aria-hidden="true"></span>
+            <div><div class="action-name" id="actionName">安全提示</div><div class="action-pattern" id="actionPattern">GPIO38 · GREEN_SOLID · 20%</div></div>
+          </div>
+          <div class="ack"><div><span class="label">动作确认</span><div class="metric-value">frame 00901337</div></div><div class="ack-value" id="ackValue">ACTION_ACK<br>84 ms</div></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="bottom" aria-label="运行指标">
+      <div class="metric"><span class="label">会话</span><div class="metric-value">00:10:24</div></div>
+      <div class="metric"><span class="label">已接收</span><div class="metric-value">1,548 frames</div></div>
+      <div class="metric"><span class="label">接受率</span><div class="metric-value">99.2%</div></div>
+      <div class="metric"><span class="label">推理 P95</span><div class="metric-value">1,742 ms</div></div>
+      <div class="metric"><span class="label">回调 P95</span><div class="metric-value">126 ms</div></div>
+      <div class="metric"><span class="label">最后错误</span><div class="metric-value" id="lastError">—</div></div>
+    </section>
+
+    <section class="diagnostics" aria-label="诊断抽屉">
+      <nav class="diag-nav"><button class="diag-tab active">链路</button><button class="diag-tab">协议</button><button class="diag-tab">设备</button><button class="diag-tab">会话</button></nav>
+      <div class="diag-content">
+        <div class="diag-grid">
+          <div class="metric"><span class="label">HTTP 服务</span><div class="metric-value">0.0.0.0:8008</div></div>
+          <div class="metric"><span class="label">回调端点</span><div class="metric-value">ESP:8080/risk</div></div>
+          <div class="metric"><span class="label">待推理队列</span><div class="metric-value">1 latest-only</div></div>
+          <div class="metric"><span class="label">RGB 心跳</span><div class="metric-value">1.0 Hz serial</div></div>
+        </div>
+        <div class="state-simulator">
+          <span class="label">状态模拟</span>
+          <button class="state-button" data-state="loading">加载</button>
+          <button class="state-button" data-state="healthy" aria-pressed="true">健康</button>
+          <button class="state-button" data-state="attention">注意</button>
+          <button class="state-button" data-state="high">高风险</button>
+          <button class="state-button" data-state="critical">严重</button>
+          <button class="state-button" data-state="stale">失效</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const states = {
+      loading: { color: '#315F89', score: '--', band: '模型加载中', reason: 'HTTP 服务已就绪，后台正在加载 DA3 与 SSDLite；最新 JPEG 已进入覆盖缓存。', action: '启动提示', pattern: 'GPIO38 · BLUE_BLINK_1HZ · 20%', status: '等待首个结果', ack: 'WAITING', model: 'DA3-SMALL · CUDA · 加载中', error: '—' },
+      healthy: { color: '#2E704B', score: '08', band: '低风险', reason: '前向场景未检测到显著接近目标。结果仅表示相对视觉风险。', action: '安全提示', pattern: 'GPIO38 · GREEN_SOLID · 20%', status: '链路闭合', ack: 'ACTION_ACK<br>84 ms', model: 'DA3-SMALL · CUDA · 就绪', error: '—' },
+      attention: { color: '#A46B12', score: '44', band: '需要注意', reason: '前向区域接近像素比例上升，建议降低移动速度并持续观察。', action: '注意提示', pattern: 'GPIO38 · YELLOW_BLINK_1HZ · 20%', status: '动作已确认', ack: 'ACTION_ACK<br>101 ms', model: 'DA3-SMALL · CUDA · 就绪', error: '—' },
+      high: { color: '#C45121', score: '71', band: '高风险', reason: '前向目标相对深度显著接近，视觉风险进入高位区间。', action: '高风险提示', pattern: 'GPIO38 · ORANGE_BLINK_2HZ · 20%', status: '动作已确认', ack: 'ACTION_ACK<br>112 ms', model: 'DA3-SMALL · CUDA · 就绪', error: '—' },
+      critical: { color: '#A72F2F', score: '88', band: '严重风险', reason: '前向区域出现持续接近特征；这是原型视觉提示，不等同于碰撞概率。', action: '严重提示', pattern: 'GPIO38 · RED_DOUBLE_PULSE · 20%', status: '动作已确认', ack: 'ACTION_ACK<br>126 ms', model: 'DA3-SMALL · CUDA · 就绪', error: '—' },
+      stale: { color: '#704A80', score: '--', band: '结果失效', reason: '超过 3 秒未收到新鲜合法结果。旧风险已被隔离，等待链路自动恢复。', action: '故障提示', pattern: 'GPIO38 · PURPLE_BLINK_1HZ · 20%', status: '闭环中断', ack: 'STALE<br>NO ACTION', model: 'DA3-SMALL · 状态未知', error: 'vision result stale > 3000 ms' }
+    };
+    const app = document.querySelector('#app');
+    const displayMode = document.querySelector('#displayMode');
+    const diagnosticMode = document.querySelector('#diagnosticMode');
+
+    function setMode(mode) {
+      app.dataset.mode = mode;
+      displayMode.setAttribute('aria-pressed', String(mode === 'display'));
+      diagnosticMode.setAttribute('aria-pressed', String(mode === 'diagnostic'));
+    }
+    function setState(name) {
+      const state = states[name];
+      app.dataset.state = name;
+      document.documentElement.style.setProperty('--status', state.color);
+      document.documentElement.style.setProperty('--risk', state.color);
+      document.querySelector('#riskScore').textContent = state.score;
+      document.querySelector('#riskBand').textContent = state.band;
+      document.querySelector('#riskReason').textContent = state.reason;
+      document.querySelector('#actionName').textContent = state.action;
+      document.querySelector('#actionPattern').textContent = state.pattern;
+      document.querySelector('#decisionStatus').textContent = state.status;
+      document.querySelector('#ackValue').innerHTML = state.ack;
+      document.querySelector('#modelTop').textContent = state.model;
+      document.querySelector('#lastError').textContent = state.error;
+      document.querySelectorAll('.state-button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.state === name)));
+    }
+    displayMode.addEventListener('click', () => setMode('display'));
+    diagnosticMode.addEventListener('click', () => setMode('diagnostic'));
+    document.querySelectorAll('.state-button').forEach(button => button.addEventListener('click', () => setState(button.dataset.state)));
+    document.querySelectorAll('.diag-tab').forEach(tab => tab.addEventListener('click', () => {
+      document.querySelectorAll('.diag-tab').forEach(item => item.classList.remove('active'));
+      tab.classList.add('active');
+    }));
+  </script>
+</body>
+</html>

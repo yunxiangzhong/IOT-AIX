@@ -39,6 +39,7 @@ typedef bool (*camera_local_frame_consumer_t)(
     uint32_t frame_seq,
     uint64_t capture_ts_ms,
     void *context);
+typedef void (*camera_local_health_callback_t)(bool healthy, void *context);
 
 bool camera_local_frame_is_valid_jpeg(const uint8_t *data, size_t length);
 
@@ -49,4 +50,5 @@ esp_err_t camera_local_acquire_frame(camera_local_frame_t *frame);
 void camera_local_release_frame(camera_local_frame_t *frame);
 void camera_local_get_status(camera_local_status_t *status);
 void camera_local_set_frame_consumer(camera_local_frame_consumer_t consumer, void *context);
+void camera_local_set_health_callback(camera_local_health_callback_t callback, void *context);
 #endif

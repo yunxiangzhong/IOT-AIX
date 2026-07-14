@@ -13,8 +13,8 @@ logs/       服务运行日志
 
 安装或修复环境：`powershell -ExecutionPolicy Bypass -File .\install.ps1`。
 
-启动服务：`powershell -ExecutionPolicy Bypass -File .\run_service.ps1`。服务监听 `0.0.0.0:8008`，提供 `GET /healthz` 与 `POST /v1/infer`；请求体为 JPEG，必须携带 `X-Frame-Seq` 和 `X-Capture-Ts-Ms`。
+推荐通过 `host_app/start_host_app.cmd` 启动完整链路。服务监听 `0.0.0.0:8008`，进程先开放 HTTP，再在后台加载 DA3 与 SSDLite；冷启动期间 `POST /v1/frames` 仍会立即接收并覆盖缓存最新 JPEG。
 
 默认模型是 `DA3-SMALL`，输出为相对深度统计，不能视为米制距离或安全控制结论。PC 视觉服务还使用 TorchVision `SSDLite320-MobileNetV3` COCO 权重生成轻量目标检测结果和相对风险；首次安装会把检测权重放到 `weights/SSDLite320-MobileNetV3/`。
 
-`POST /v1/analyze` 是上位机使用的联合分析接口，返回深度、检测框和 `0–100` 相对视觉风险。风险用于显示、记录和同步，不驱动执行器。后续可升级到相机标定、DA3Metric、TTC/跟踪、骑行数据集微调和离线参数标定。
+默认接口为 `POST /v1/frames`、`GET /v1/frame/latest.jpg`、`GET /v1/state/latest` 和 `GET /healthz`。单 GPU worker 只分析最新待处理帧，并把 `vision_risk` 回调 ESP；旧 `/v1/infer`、`/v1/analyze` 只为兼容保留。风险只用于原型 RGB 提示，不是碰撞概率。

@@ -15,7 +15,7 @@ config AIX_CAMERA_CAPTURE_PERIOD_MS
 
 config AIX_ENABLE_CAMERA_PREVIEW
     bool "Enable Wi-Fi JPEG preview for the host application"
-    default y
+    default n
     depends on AIX_ENABLE_LOCAL_CAMERA
     help
         Join the configured 2.4 GHz Wi-Fi network and serve the latest OV5640
@@ -23,40 +23,62 @@ config AIX_ENABLE_CAMERA_PREVIEW
 
 config AIX_CAMERA_PREVIEW_PORT
     int "Camera preview HTTP port"
-    default 8080
+    default 8081
     range 1024 65535
     depends on AIX_ENABLE_CAMERA_PREVIEW
 
 config AIX_ENABLE_VISION_UPLINK
     bool "Enable Wi-Fi upload to the PC Depth Anything 3 service"
-    default n
-    depends on AIX_ENABLE_LOCAL_CAMERA && !AIX_ENABLE_CAMERA_PREVIEW
+    default y
+    depends on AIX_ENABLE_LOCAL_CAMERA
+
+config AIX_ENABLE_RISK_RECEIVER
+    bool "Enable PC vision risk callback receiver"
+    default y
+
+config AIX_ENABLE_ONBOARD_RGB
+    bool "Enable DevKitC-1 onboard RGB action indicator on GPIO38"
+    default y
 
 config AIX_WIFI_SSID
     string "Wi-Fi SSID"
     default ""
-    depends on AIX_ENABLE_CAMERA_PREVIEW || AIX_ENABLE_VISION_UPLINK
+    depends on AIX_ENABLE_CAMERA_PREVIEW || AIX_ENABLE_VISION_UPLINK || AIX_ENABLE_RISK_RECEIVER
 
 config AIX_WIFI_PASSWORD
     string "Wi-Fi password"
     default ""
-    depends on AIX_ENABLE_CAMERA_PREVIEW || AIX_ENABLE_VISION_UPLINK
+    depends on AIX_ENABLE_CAMERA_PREVIEW || AIX_ENABLE_VISION_UPLINK || AIX_ENABLE_RISK_RECEIVER
+
+config AIX_DEVICE_ID
+    string "AIX device identifier"
+    default "aix-helmet-01"
+
+config AIX_LINK_TOKEN
+    string "PC/ESP link token"
+    default ""
+
+config AIX_RISK_RECEIVER_PORT
+    int "Vision risk callback port"
+    default 8080
+    range 1024 65535
+    depends on AIX_ENABLE_RISK_RECEIVER
 
 config AIX_VISION_SERVICE_URL
     string "PC Depth Anything 3 service URL"
-    default "http://192.168.137.1:8008/v1/infer"
+    default "http://192.168.137.1:8008/v1/frames"
     depends on AIX_ENABLE_VISION_UPLINK
 
 config AIX_VISION_UPLOAD_PERIOD_MS
     int "Vision JPEG upload period (ms)"
-    default 1000
-    range 500 10000
+    default 400
+    range 200 10000
     depends on AIX_ENABLE_VISION_UPLINK
 
 config AIX_VISION_HTTP_TIMEOUT_MS
     int "Vision HTTP timeout (ms)"
-    default 3000
-    range 1000 10000
+    default 1500
+    range 500 10000
     depends on AIX_ENABLE_VISION_UPLINK
 
 endmenu

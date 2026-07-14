@@ -42,6 +42,8 @@ static uint64_t s_last_status_us;
 static uint32_t s_status_frames_ok;
 static camera_local_frame_consumer_t s_frame_consumer;
 static void *s_frame_consumer_context;
+static camera_local_health_callback_t s_health_callback;
+static void *s_health_callback_context;
 
 static uint64_t now_us(void)
 {
@@ -175,6 +177,12 @@ void camera_local_set_frame_consumer(camera_local_frame_consumer_t consumer, voi
     s_frame_consumer_context = context;
 }
 
+void camera_local_set_health_callback(camera_local_health_callback_t callback, void *context)
+{
+    s_health_callback = callback;
+    s_health_callback_context = context;
+}
+
 static void emit_status(uint64_t current_us)
 {
     const uint64_t elapsed_us = s_last_status_us == 0 ? 0 : current_us - s_last_status_us;
@@ -183,6 +191,9 @@ static void emit_status(uint64_t current_us)
     s_last_status_us = current_us;
     s_status_frames_ok = s_status.frames_ok;
     s_status_seq++;
+    if (s_health_callback != NULL) {
+        s_health_callback(s_status.valid && s_status.initialized, s_health_callback_context);
+    }
 
     printf("{\"type\":\"camera_status\",\"version\":1,\"seq\":%lu,\"ts_ms\":%llu,"
            "\"sensor\":\"OV5640\",\"width\":%u,\"height\":%u,\"pixel_format\":\"jpeg\","
