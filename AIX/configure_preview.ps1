@@ -35,13 +35,14 @@ if ([string]::IsNullOrWhiteSpace($Ssid) -or [string]::IsNullOrWhiteSpace($Passwo
     throw "SSID 和密码都不能为空。"
 }
 
-@"
-# Generated locally by AIX/configure_preview.ps1; do not commit.
-CONFIG_AIX_ENABLE_CAMERA_PREVIEW=y
-CONFIG_AIX_ENABLE_VISION_UPLINK=n
-CONFIG_AIX_WIFI_SSID="$(Escape-KconfigString $Ssid)"
-CONFIG_AIX_WIFI_PASSWORD="$(Escape-KconfigString $Password)"
-"@ | Set-Content -LiteralPath $configPath -Encoding ascii
+$content = @(
+    '# Generated locally by AIX/configure_preview.ps1; do not commit.'
+    'CONFIG_AIX_ENABLE_CAMERA_PREVIEW=y'
+    'CONFIG_AIX_ENABLE_VISION_UPLINK=n'
+    ('CONFIG_AIX_WIFI_SSID="{0}"' -f (Escape-KconfigString $Ssid))
+    ('CONFIG_AIX_WIFI_PASSWORD="{0}"' -f (Escape-KconfigString $Password))
+)
+$content | Set-Content -LiteralPath $configPath -Encoding ascii
 
 Write-Host "已写入 $configPath"
 Write-Host "SSID: $Ssid"
