@@ -3,9 +3,10 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from aix_host_app.app import MainWindow
+from aix_host_app.models import ActionStatusEvent
 from aix_host_app.widgets.active_dashboard import ActiveVisionDashboard
 
 
@@ -120,6 +121,7 @@ class ActiveVisionDashboardTests(unittest.TestCase):
 
     def test_main_window_uses_pc_chain_client_and_minimum_dashboard_size(self):
         window = MainWindow()
+        self.assertIn("Noto Sans SC", QtGui.QFontDatabase.families())
         self.assertTrue(hasattr(window, "chain_client"))
         self.assertFalse(hasattr(window, "vision_client"))
         self.assertGreaterEqual(window.minimumWidth(), 1280)
@@ -143,6 +145,64 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertFalse(dashboard.risk_trend.isHidden())
         self.assertFalse(dashboard.safety_note.isHidden())
         dashboard.close()
+
+    def test_serial_action_status_does_not_overwrite_pc_risk_card(self):
+        dashboard = ActiveVisionDashboard()
+        dashboard.apply_chain_state({
+            "revision": 4,
+            "device_id": "aix-helmet-01",
+            "boot_id": "0123456789abcdef",
+            "upload": {"state": "healthy", "last_frame_seq": 18, "fps": 1.0, "frame_age_ms": 120},
+            "model": {"state": "ready", "latency_ms": 180.0, "gpu": "cuda", "error": ""},
+            "callback": {"state": "confirmed", "latency_ms": 40.0},
+            "risk": {"valid": True, "score": 71, "band": "high", "reason": "car_proximity", "frame_seq": 18},
+            "action": {"confirmed": True, "state": "high", "rgb_pattern": "orange_blink_2hz", "frame_seq": 18, "stale": False, "e2e_latency_ms": 512},
+            "display": {"ready": True, "boot_id": "0123456789abcdef", "frame_seq": 18, "capture_ts_ms": 7200, "detections": []},
+            "last_error": "",
+        })
+
+        dashboard.apply_action_status(ActionStatusEvent(
+            ts_ms=9000,
+            frame_seq=17,
+            risk_score=5,
+            valid=True,
+            stale=False,
+            action_state="safe",
+            rgb_pattern="green_solid",
+        ))
+
+        self.assertEqual(dashboard.risk_score.text(), "71")
+        self.assertIn("第 18 帧", dashboard.action_ack.text())
+        self.assertIn("端到端 512 毫秒", dashboard.action_ack.text())
+
+    def test_snapshot_updates_image_and_matching_risk_together(self):
+        dashboard = ActiveVisionDashboard()
+        image = QtGui.QImage(320, 240, QtGui.QImage.Format.Format_RGB32)
+        image.fill(QtGui.QColor("#345678"))
+        buffer = QtCore.QBuffer()
+        buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        self.assertTrue(image.save(buffer, "JPG"))
+        state = {
+            "revision": 7,
+            "device_id": "aix-helmet-01", "boot_id": "0123456789abcdef",
+            "upload": {"state": "healthy", "last_frame_seq": 20, "fps": 1.0, "frame_age_ms": 80},
+            "model": {"state": "ready", "latency_ms": 210.0, "gpu": "cuda", "error": ""},
+            "callback": {"state": "confirmed", "latency_ms": 30.0},
+            "risk": {"valid": True, "score": 42, "band": "attention", "reason": "car_proximity", "frame_seq": 20},
+            "action": {"confirmed": True, "state": "attention", "rgb_pattern": "yellow_blink_1hz", "frame_seq": 20, "stale": False},
+            "display": {
+                "ready": True, "boot_id": "0123456789abcdef", "frame_seq": 20,
+                "capture_ts_ms": 8000,
+                "detections": [{"class_name": "car", "score": 0.91, "bbox_norm": [0.1, 0.2, 0.5, 0.8], "risk_score": 42}],
+            },
+            "last_error": "",
+        }
+
+        self.assertTrue(dashboard.apply_snapshot(bytes(buffer.data()), 20, 8000, state))
+
+        self.assertEqual(dashboard.risk_score.text(), "42")
+        self.assertIn("第 00000020 帧", dashboard.frame_telemetry.text())
+        self.assertEqual(dashboard.camera_image.detections[0]["class_name"], "car")
 
 
 if __name__ == "__main__":

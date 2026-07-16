@@ -88,7 +88,7 @@ config AIX_VISION_SERVICE_URL
 
 config AIX_VISION_UPLOAD_PERIOD_MS
     int "Vision JPEG upload period (ms)"
-    default 400
+    default 1000
     range 200 10000
     depends on AIX_ENABLE_VISION_UPLINK
 

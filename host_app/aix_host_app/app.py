@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtWidgets
 
 from .chain_client import PcChainClient
+from .fonts import ensure_cjk_font
 from .models import ActionStatusEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample
 from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
@@ -22,6 +23,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        ensure_cjk_font()
         self.setWindowTitle("AIX 主动视觉控制台")
         self.setMinimumSize(1280, 720)
         self.resize(1440, 900)
@@ -57,7 +59,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.chain_client = PcChainClient(self.service_url, self.device_id, self)
         self.chain_client.state_received.connect(self._accept_chain_state)
-        self.chain_client.frame_received.connect(self._accept_pc_frame)
+        self.chain_client.snapshot_received.connect(self._accept_pc_snapshot)
         self.chain_client.health_received.connect(self._accept_health)
         self.chain_client.error_changed.connect(self._accept_chain_error)
         self.chain_client.pneumatic_config_received.connect(self._accept_pneumatic_config)
@@ -245,10 +247,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dashboard.pneumatic_panel.show_error(message)
         self.dashboard.protocol_log.appendPlainText(message)
 
-    def _accept_pc_frame(self, data: bytes, frame_seq: int, capture_ts_ms: int) -> None:
-        if not self.dashboard.apply_frame(data, frame_seq, capture_ts_ms):
+    def _accept_pc_snapshot(self, data: bytes, frame_seq: int, capture_ts_ms: int, state: dict) -> None:
+        if not self.dashboard.apply_snapshot(data, frame_seq, capture_ts_ms, state):
             self.dashboard.protocol_log.appendPlainText("上位机帧服务返回了无效图像数据")
             return
+        self._accept_chain_state(state)
         self._ensure_session()
         try:
             self.session_recorder.save_frame(data, frame_seq, capture_ts_ms)

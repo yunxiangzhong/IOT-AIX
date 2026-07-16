@@ -42,6 +42,16 @@ class LatestFrameStoreTests(unittest.TestCase):
         self.assertEqual(pending.frame_seq, 2)
         self.assertEqual(store.latest("aix-helmet-01").jpeg, JPEG_B)
 
+    def test_uploaded_frame_is_not_a_processed_snapshot_until_committed(self) -> None:
+        store = LatestFrameStore()
+        item = frame(3)
+
+        store.put(item)
+        self.assertIsNone(store.latest_processed("aix-helmet-01"))
+
+        store.commit_processed(item)
+        self.assertEqual(store.latest_processed("aix-helmet-01"), item)
+
 
 class FrameApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -88,6 +98,13 @@ class FrameApiTests(unittest.TestCase):
         self.assertEqual(state["upload"]["last_frame_seq"], 12)
         self.assertEqual(state["model"]["state"], "loading")
 
+    def test_does_not_expose_uploaded_frame_as_processed_before_analysis(self) -> None:
+        self.client.post("/v1/frames", content=JPEG_A, headers=self.headers)
+
+        response = self.client.get("/v1/frame/processed.jpg?device_id=aix-helmet-01")
+
+        self.assertEqual(response.status_code, 404)
+
 
 class RiskCallbackTests(unittest.TestCase):
     def test_retries_then_requires_matching_action_ack(self) -> None:
@@ -133,6 +150,19 @@ class RiskCallbackTests(unittest.TestCase):
         self.assertIsNone(ack)
         self.assertEqual(attempts, [4])
 
+    def test_rejects_negative_e2e_latency_in_action_ack(self) -> None:
+        def transport(url, token, payload, timeout_s):
+            return {
+                "type": "action_ack", "version": 1, "frame_seq": 4,
+                "accepted": True, "stale": False, "action_state": "low",
+                "rgb_pattern": "green_solid", "e2e_latency_ms": -1,
+            }
+
+        client = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
+
+        self.assertIsNone(client.send(frame(4), {"frame_seq": 4}, is_current=lambda: True))
+        self.assertIn("e2e_latency_ms", client.last_error)
+
 
 class AsyncPipelineTests(unittest.TestCase):
     def test_accepts_during_load_then_analyzes_latest_and_records_action_ack(self) -> None:
@@ -148,6 +178,7 @@ class AsyncPipelineTests(unittest.TestCase):
                     "frame_seq": frame_seq, "capture_ts_ms": capture_ts_ms,
                     "risk_score": 44, "risk_band": "attention",
                     "dominant_class": "", "reason": "scene_proximity",
+                    "detections": [{"class_name": "car", "score": 0.9, "bbox_norm": [0.1, 0.2, 0.4, 0.7]}],
                     "latency_ms": 12.0, "valid": True,
                 }
 
@@ -159,7 +190,7 @@ class AsyncPipelineTests(unittest.TestCase):
             return {
                 "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
                 "accepted": True, "stale": False, "action_state": "attention",
-                "rgb_pattern": "yellow_blink_1hz",
+                "rgb_pattern": "yellow_blink_1hz", "e2e_latency_ms": 188,
             }
 
         callback = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
@@ -188,6 +219,16 @@ class AsyncPipelineTests(unittest.TestCase):
             self.assertEqual(state["risk"]["score"], 44)
             self.assertEqual(state["action"]["frame_seq"], 21)
             self.assertEqual(state["action"]["rgb_pattern"], "yellow_blink_1hz")
+            self.assertEqual(state["action"]["e2e_latency_ms"], 188)
+            self.assertGreater(state["revision"], 0)
+            self.assertEqual(state["display"]["frame_seq"], 21)
+            self.assertEqual(state["display"]["detections"][0]["class_name"], "car")
+
+            processed = client.get("/v1/frame/processed.jpg?device_id=aix-helmet-01")
+            self.assertEqual(processed.status_code, 200)
+            self.assertEqual(processed.content, JPEG_A)
+            self.assertEqual(processed.headers["x-frame-seq"], str(state["display"]["frame_seq"]))
+            self.assertEqual(processed.headers["x-boot-id"], state["display"]["boot_id"])
 
 
 if __name__ == "__main__":

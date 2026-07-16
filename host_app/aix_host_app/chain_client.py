@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 from PySide6 import QtCore, QtNetwork
 
@@ -13,8 +14,11 @@ def normalize_service_url(url: str) -> str:
 
 def frame_identity_from_state(state: dict) -> tuple[str, int] | None:
     try:
-        boot_id = str(state["boot_id"])
-        frame_seq = int(state["upload"]["last_frame_seq"])
+        display = state["display"]
+        if display.get("ready") is not True:
+            return None
+        boot_id = str(display["boot_id"])
+        frame_seq = int(display["frame_seq"])
     except (KeyError, TypeError, ValueError):
         return None
     if len(boot_id) != 16 or frame_seq < 0:
@@ -25,7 +29,7 @@ def frame_identity_from_state(state: dict) -> tuple[str, int] | None:
 class PcChainClient(QtCore.QObject):
     health_received = QtCore.Signal(dict)
     state_received = QtCore.Signal(dict)
-    frame_received = QtCore.Signal(bytes, int, int)
+    snapshot_received = QtCore.Signal(bytes, int, int, dict)
     pneumatic_config_received = QtCore.Signal(dict)
     pneumatic_command_finished = QtCore.Signal(dict)
     pneumatic_error = QtCore.Signal(str)
@@ -42,6 +46,9 @@ class PcChainClient(QtCore.QObject):
         self._state_reply: QtNetwork.QNetworkReply | None = None
         self._frame_reply: QtNetwork.QNetworkReply | None = None
         self._last_frame_identity: tuple[str, int] | None = None
+        self._requested_identity: tuple[str, int] | None = None
+        self._requested_state: dict | None = None
+        self._queued_snapshot: tuple[tuple[str, int], dict] | None = None
         self._pneumatic_config_reply: QtNetwork.QNetworkReply | None = None
         self._poll_count = 0
 
@@ -49,6 +56,9 @@ class PcChainClient(QtCore.QObject):
         self.service_url = normalize_service_url(service_url)
         self.device_id = device_id
         self._last_frame_identity = None
+        self._requested_identity = None
+        self._requested_state = None
+        self._queued_snapshot = None
 
     def start(self) -> None:
         if not self._timer.isActive():
@@ -61,6 +71,9 @@ class PcChainClient(QtCore.QObject):
             if reply is not None:
                 reply.abort()
         self._state_reply = self._frame_reply = None
+        self._requested_identity = None
+        self._requested_state = None
+        self._queued_snapshot = None
         if self._pneumatic_config_reply is not None:
             self._pneumatic_config_reply.abort()
             self._pneumatic_config_reply = None
@@ -133,10 +146,15 @@ class PcChainClient(QtCore.QObject):
         if not isinstance(payload, dict) or payload.get("type") != "chain_state":
             self.error_changed.emit("PC 链路状态协议不匹配")
             return
-        self.state_received.emit(payload)
         identity = frame_identity_from_state(payload)
-        if identity is not None and identity != self._last_frame_identity and self._frame_reply is None:
-            self._request_frame(identity)
+        if identity is None or identity == self._last_frame_identity:
+            self.state_received.emit(payload)
+        elif self._frame_reply is None:
+            self._request_frame(identity, payload)
+        elif identity == self._requested_identity:
+            self._requested_state = deepcopy(payload)
+        else:
+            self._queued_snapshot = (identity, deepcopy(payload))
 
     def _handle_pneumatic_config(self) -> None:
         reply = self._pneumatic_config_reply
@@ -172,24 +190,35 @@ class PcChainClient(QtCore.QObject):
         finally:
             reply.deleteLater()
 
-    def _request_frame(self, identity: tuple[str, int]) -> None:
-        url = QtCore.QUrl(f"{self.service_url}/v1/frame/latest.jpg")
+    def _request_frame(self, identity: tuple[str, int], state: dict) -> None:
+        url = QtCore.QUrl(f"{self.service_url}/v1/frame/processed.jpg")
         query = QtCore.QUrlQuery()
         query.addQueryItem("device_id", self.device_id)
         url.setQuery(query)
         self._frame_reply = self._network.get(build_get_request(url.toString(), timeout_ms=1200))
-        self._frame_reply.setProperty("boot_id", identity[0])
-        self._frame_reply.setProperty("expected_seq", identity[1])
+        self._requested_identity = identity
+        self._requested_state = deepcopy(state)
         self._frame_reply.finished.connect(self._handle_frame)
+
+    def _start_queued_snapshot(self) -> None:
+        queued = self._queued_snapshot
+        self._queued_snapshot = None
+        if queued is not None and queued[0] != self._last_frame_identity:
+            self._request_frame(*queued)
 
     def _handle_frame(self) -> None:
         reply = self._frame_reply
         self._frame_reply = None
+        expected = self._requested_identity
+        state = self._requested_state
+        self._requested_identity = None
+        self._requested_state = None
         if reply is None:
             return
         if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError:
             self.error_changed.emit(f"PC 最新帧读取失败：{reply.errorString()}")
             reply.deleteLater()
+            self._start_queued_snapshot()
             return
         try:
             frame_seq = int(bytes(reply.rawHeader("X-Frame-Seq")).decode("ascii"))
@@ -198,16 +227,19 @@ class PcChainClient(QtCore.QObject):
         except (UnicodeDecodeError, ValueError):
             self.error_changed.emit("PC 最新帧响应头无效")
             reply.deleteLater()
+            self._start_queued_snapshot()
             return
-        expected = (str(reply.property("boot_id")), int(reply.property("expected_seq")))
-        if (boot_id, frame_seq) != expected:
+        if expected is None or (boot_id, frame_seq) != expected:
             self.error_changed.emit("PC 最新帧与链路状态不一致，已丢弃")
             reply.deleteLater()
+            self._start_queued_snapshot()
             return
         data = bytes(reply.readAll())
         reply.deleteLater()
         if len(data) < 4 or data[:2] != b"\xff\xd8" or data[-2:] != b"\xff\xd9":
             self.error_changed.emit("PC 最新帧不是合法 JPEG")
+            self._start_queued_snapshot()
             return
         self._last_frame_identity = expected
-        self.frame_received.emit(data, frame_seq, capture_ts_ms)
+        self.snapshot_received.emit(data, frame_seq, capture_ts_ms, state or {})
+        self._start_queued_snapshot()

@@ -18,7 +18,7 @@ $root = Join-Path $runtimeRoot "Models\DepthAnything3"
 $source = Join-Path $root "source"
 $environment = Join-Path $root "env"
 $weights = Join-Path $root "weights\DA3-SMALL"
-$detectorWeights = Join-Path $root "weights\SSDLite320-MobileNetV3"
+$detectorWeights = Join-Path $root "weights\YOLO26m"
 $cache = Join-Path $root "cache"
 $logs = Join-Path $root "logs"
 
@@ -60,30 +60,27 @@ if ($LASTEXITCODE -ne 0) { throw "xformers installation failed" }
 if ($LASTEXITCODE -ne 0) { throw "Depth Anything 3 installation failed" }
 & $python -m pip install addict
 if ($LASTEXITCODE -ne 0) { throw "Depth Anything 3 missing runtime dependency installation failed" }
-& $python -m pip install fastapi uvicorn
+& $python -m pip install fastapi uvicorn "ultralytics==8.4.96" "onnx==1.22.0" "onnxslim==0.1.94"
 if ($LASTEXITCODE -ne 0) { throw "inference service dependency installation failed" }
 
 & $python (Join-Path $PSScriptRoot "download_weights.py") --repo $modelRepo --revision $modelRevision --output $weights
 if ($LASTEXITCODE -ne 0) { throw "DA3-SMALL weight download failed" }
 
-$detectorUrl = "https://download.pytorch.org/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth"
-$detectorFile = Join-Path $detectorWeights "ssdlite320_mobilenet_v3_large_coco-a79551df.pth"
+$env:YOLO_CONFIG_DIR = Join-Path $cache "ultralytics"
+$env:MPLCONFIGDIR = Join-Path $cache "matplotlib"
+$detectorFile = Join-Path $detectorWeights "yolo26m.pt"
+$detectorEngine = Join-Path $detectorWeights "yolo26m.engine"
+& $python (Join-Path $PSScriptRoot "setup_yolo.py") --weights-dir $detectorWeights
+$engineExported = $LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $detectorEngine)
 if (-not (Test-Path -LiteralPath $detectorFile)) {
-    & $python (Join-Path $PSScriptRoot "download_weights.py") --url $detectorUrl --output-file $detectorFile --sha256-prefix "a79551df"
-    if ($LASTEXITCODE -ne 0) { throw "SSDLite weight download failed" }
+    throw "YOLO26m weight download failed"
+}
+if (-not $engineExported) {
+    Write-Warning "TensorRT FP16 export was unavailable; service will use CUDA FP16 yolo26m.pt."
 }
 
-$manifest = [ordered]@{
-    source_commit = $sourceCommit
-    model_repo = $modelRepo
-    model_revision = $modelRevision
-    source = $source
-    environment = $environment
-    weights = $weights
-    detector_weights = $detectorFile
-    cache = $cache
-    installed_at = (Get-Date).ToString("o")
-}
-$manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "install_manifest.json") -Encoding UTF8
+& $python (Join-Path $PSScriptRoot "write_install_manifest.py") `
+    --runtime-root $root --source-commit $sourceCommit --model-repo $modelRepo --model-revision $modelRevision
+if ($LASTEXITCODE -ne 0) { throw "installation manifest generation failed" }
 
 Write-Output "DA3 installation complete: $root"

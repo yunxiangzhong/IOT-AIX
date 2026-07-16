@@ -6,7 +6,7 @@ def app_stylesheet() -> str:
     QWidget {
         background: #07111F;
         color: #EAF2FB;
-        font-family: "Microsoft YaHei UI", "Segoe UI Variable", "Segoe UI", sans-serif;
+        font-family: "Noto Sans SC", "Microsoft YaHei", "Microsoft YaHei UI", "Segoe UI Variable", "Segoe UI", sans-serif;
         font-size: 13px;
     }
     QMainWindow, QWidget#activeDashboard { background: #07111F; }
@@ -86,7 +86,7 @@ def app_stylesheet() -> str:
         font-size: 15px;
         font-weight: 700;
     }
-    QLabel#activeCamera {
+    QWidget#activeCamera {
         background: #02070D;
         color: #718096;
         border: none;

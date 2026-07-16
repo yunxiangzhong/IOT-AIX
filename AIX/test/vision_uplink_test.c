@@ -13,6 +13,11 @@ int main(void)
     const char bad_boot[] = "{\"type\":\"frame_ack\",\"version\":1,\"device_id\":\"aix-helmet-01\",\"boot_id\":\"fedcba9876543210\",\"frame_seq\":7,\"accepted\":true}";
     const char model_error[] = "{\"type\":\"frame_ack\",\"version\":1,\"model_state\":\"error\"}";
 
+    if (vision_uplink_default_period_ms() != 1000U) {
+        printf("FAIL: default upload period is not 1000 ms\n");
+        failures++;
+    }
+
     if (!vision_uplink_response_matches_frame(valid, strlen(valid), "aix-helmet-01", "0123456789abcdef", 7)) {
         printf("FAIL: valid vision response rejected\n");
         failures++;

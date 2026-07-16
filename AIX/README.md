@@ -6,8 +6,8 @@
 
 | 功能 | 当前代码状态 | 注意事项 |
 | --- | --- | --- |
-| OV5640 320×240 JPEG 采集、失败恢复、约 5 FPS | 已实现 | 采集到的最新 JPEG 每 400 ms 上传给 PC |
-| Wi-Fi、设备标识、token、PC 上传和风险回调 | 已实现 | /risk 对 device、boot_id、帧序、TTL、分数和等级做校验 |
+| OV5640 320×240 JPEG 采集、失败恢复、约 5 FPS | 已实现 | 相机仍可约 5 FPS 采集，但只把最新 JPEG 每 1000 ms 上传给 PC，不积压历史帧 |
+| Wi-Fi、设备标识、token、PC 上传和风险回调 | 已实现 | /risk 对 device、boot_id、帧序、3000 ms TTL、分数和等级做校验；action_ack 回传采集至确认的 e2e_latency_ms |
 | RGB 与 action_status | 已实现 | GPIO38 最大亮度 20%，只表示原型状态 |
 | XGZP6847A 压力遥测 | 已实现 | 用于遥测和气动策略的输入有效性检查，最终气路仍需标定 |
 | MPU6050 | I2C 驱动、motion v2 串口事件、运动检测与 C 测试已实现 | 未完成实物模块接线、静置校准和现场阈值验证 |

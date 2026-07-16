@@ -22,6 +22,8 @@ $env:DA3_ROOT = $runtimeRoot
 $env:HF_HOME = Join-Path $runtimeRoot "cache\huggingface"
 $env:HF_HUB_CACHE = Join-Path $env:HF_HOME "hub"
 $env:TORCH_HOME = Join-Path $runtimeRoot "cache\torch"
+$env:YOLO_CONFIG_DIR = Join-Path $runtimeRoot "cache\ultralytics"
+$env:MPLCONFIGDIR = Join-Path $runtimeRoot "cache\matplotlib"
 
 Push-Location $PSScriptRoot
 try {

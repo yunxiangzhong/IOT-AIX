@@ -1,6 +1,7 @@
 #include "risk_receiver.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 bool risk_receiver_token_matches(const char *expected, const char *provided)
@@ -20,10 +21,48 @@ bool risk_receiver_token_matches(const char *expected, const char *provided)
     return difference == 0U;
 }
 
+bool risk_receiver_e2e_latency_ms(uint64_t capture_ts_ms, uint64_t now_ms, uint64_t *latency_ms)
+{
+    if (latency_ms == NULL || capture_ts_ms > now_ms) {
+        return false;
+    }
+    *latency_ms = now_ms - capture_ts_ms;
+    return true;
+}
+
+int risk_receiver_format_action_ack(
+    char *buffer,
+    size_t capacity,
+    uint32_t frame_seq,
+    bool accepted,
+    bool stale,
+    uint64_t e2e_latency_ms,
+    const char *action_state,
+    const char *rgb_pattern,
+    const char *error)
+{
+    if (buffer == NULL || capacity == 0U || action_state == NULL || rgb_pattern == NULL) {
+        return -1;
+    }
+    int written = snprintf(
+        buffer,
+        capacity,
+        "{\"type\":\"action_ack\",\"version\":1,\"frame_seq\":%lu,\"accepted\":%s,"
+        "\"stale\":%s,\"action_state\":\"%s\",\"rgb_pattern\":\"%s\","
+        "\"e2e_latency_ms\":%llu,\"error\":\"%s\"}",
+        (unsigned long)frame_seq,
+        accepted ? "true" : "false",
+        stale ? "true" : "false",
+        action_state,
+        rgb_pattern,
+        (unsigned long long)e2e_latency_ms,
+        error != NULL ? error : "");
+    return written >= 0 && (size_t)written < capacity ? written : -1;
+}
+
 #ifdef ESP_PLATFORM
 
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -68,21 +107,23 @@ static esp_err_t send_ack(
     uint32_t frame_seq,
     bool accepted,
     bool stale,
+    uint64_t e2e_latency_ms,
     const action_decision_t *decision,
     const char *error)
 {
-    char body[320];
-    snprintf(
-        body,
-        sizeof(body),
-        "{\"type\":\"action_ack\",\"version\":1,\"frame_seq\":%lu,\"accepted\":%s,"
-        "\"stale\":%s,\"action_state\":\"%s\",\"rgb_pattern\":\"%s\",\"error\":\"%s\"}",
-        (unsigned long)frame_seq,
-        accepted ? "true" : "false",
-        stale ? "true" : "false",
-        action_state_name(decision->state),
-        rgb_pattern_name(decision->rgb_pattern),
-        error != NULL ? error : "");
+    char body[384];
+    if (risk_receiver_format_action_ack(
+            body,
+            sizeof(body),
+            frame_seq,
+            accepted,
+            stale,
+            e2e_latency_ms,
+            action_state_name(decision->state),
+            rgb_pattern_name(decision->rgb_pattern),
+            error) < 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
     httpd_resp_set_type(request, "application/json");
     return httpd_resp_sendstr(request, body);
 }
@@ -97,6 +138,7 @@ static esp_err_t risk_handler(httpd_req_t *request)
     vision_risk_input_t risk = {0};
     risk_accept_result_t result;
     uint64_t current_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+    uint64_t e2e_latency_ms = 0;
 
     if (!token_matches(request)) {
         httpd_resp_set_status(request, "401 Unauthorized");
@@ -160,6 +202,7 @@ static esp_err_t risk_handler(httpd_req_t *request)
     risk.dominant_class = dominant->valuestring;
     risk.reason = reason->valuestring;
     risk.valid = true;
+    (void)risk_receiver_e2e_latency_ms(risk.capture_ts_ms, current_ms, &e2e_latency_ms);
     result = action_controller_apply_risk(&risk, current_ms, &decision);
     cJSON_Delete(root);
 
@@ -170,10 +213,11 @@ static esp_err_t risk_handler(httpd_req_t *request)
             risk.frame_seq,
             false,
             result == RISK_REJECT_STALE,
+            e2e_latency_ms,
             &decision,
             risk_accept_result_name(result));
     }
-    return send_ack(request, risk.frame_seq, true, false, &decision, "");
+    return send_ack(request, risk.frame_seq, true, false, e2e_latency_ms, &decision, "");
 }
 
 static bool device_and_boot_match(const cJSON *device, const cJSON *boot)

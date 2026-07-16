@@ -48,3 +48,17 @@ class InferenceApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 415)
+
+    def test_health_reports_detector_and_actual_backend(self) -> None:
+        class Analyzer:
+            depth_model_name = "DA3-SMALL"
+            detector_model_name = "YOLO26m-COCO"
+            device = "cuda"
+            backend = "pytorch-cuda-fp16"
+
+        with TestClient(create_app(None, analyzer=Analyzer())) as client:
+            payload = client.get("/healthz").json()
+
+        self.assertTrue(payload["model_ready"])
+        self.assertEqual(payload["detector"], "YOLO26m-COCO")
+        self.assertEqual(payload["backend"], "pytorch-cuda-fp16")

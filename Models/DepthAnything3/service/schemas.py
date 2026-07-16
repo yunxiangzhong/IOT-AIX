@@ -44,6 +44,7 @@ def build_vision_risk_response(
     dominant_class: str,
     reason: str,
     latency_ms: float,
+    detector_model: str = "YOLO26m-COCO",
 ) -> dict:
     measurements = (depth_p10, depth_median, confidence_median, latency_ms)
     if frame_seq < 0 or capture_ts_ms < 0 or not all(math.isfinite(value) for value in measurements):
@@ -55,7 +56,7 @@ def build_vision_risk_response(
         "version": 1,
         "frame_seq": frame_seq,
         "capture_ts_ms": capture_ts_ms,
-        "models": {"depth": "DA3-SMALL", "detector": "SSDLite320-MobileNetV3-COCO"},
+        "models": {"depth": "DA3-SMALL", "detector": detector_model},
         "depth_kind": "relative",
         "depth_p10": depth_p10,
         "depth_median": depth_median,
