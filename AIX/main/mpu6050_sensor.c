@@ -21,6 +21,7 @@
 #define MPU6050_TASK_PRIORITY 6
 #define MPU6050_LOG_PERIOD_MS 100
 
+#define MPU6050_REG_SMPLRT_DIV 0x19
 #define MPU6050_REG_ACCEL_XOUT_H 0x3B
 #define MPU6050_REG_CONFIG 0x1A
 #define MPU6050_REG_GYRO_CONFIG 0x1B
@@ -159,6 +160,7 @@ static esp_err_t configure_mpu6050(void)
     }
     ESP_RETURN_ON_ERROR(write_register(MPU6050_REG_PWR_MGMT_1, 0x00), TAG, "wake MPU6050 failed");
     ESP_RETURN_ON_ERROR(write_register(MPU6050_REG_CONFIG, 0x03), TAG, "set DLPF failed");
+    ESP_RETURN_ON_ERROR(write_register(MPU6050_REG_SMPLRT_DIV, (uint8_t)MPU6050_SAMPLE_RATE_DIVIDER), TAG, "set sample rate failed");
     ESP_RETURN_ON_ERROR(write_register(MPU6050_REG_GYRO_CONFIG, 0x18), TAG, "set gyro range failed");
     ESP_RETURN_ON_ERROR(write_register(MPU6050_REG_ACCEL_CONFIG, 0x18), TAG, "set accel range failed");
     ESP_RETURN_ON_ERROR(write_register(MPU6050_REG_INT_PIN_CFG, 0x00), TAG, "set interrupt pin failed");

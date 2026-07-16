@@ -138,6 +138,9 @@ Invoke-HostCTest "motion_detector_test" @(
     (Join-Path $main "motion_detector.c"),
     (Join-Path $aix "test\motion_detector_test.c")
 ) @("-lm")
+Invoke-HostCTest "mpu6050_config_test" @(
+    (Join-Path $aix "test\mpu6050_config_test.c")
+)
 
 if ($BuildFirmware) {
     if (-not $env:IDF_PATH) {
