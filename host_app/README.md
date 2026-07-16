@@ -1,53 +1,78 @@
-# AIX 工业仪表上位机
+# AIX PC 服务与上位机
 
-PySide6 上位机只消费 PC 主动帧服务，不再拉取 ESP `/capture.jpg`，也不再从 UI 提交同步模型推理或向 ESP 发送风险。
+本目录包含 PySide6 上位机和其启动脚本。它消费 PC 主动帧服务，不再从 ESP 拉取 capture.jpg，也不会在 UI 内执行同步模型推理。气动标定页已实现，但它只是经 PC 服务转发受限命令；默认固件关闭气动控制，且本项目还没有真实泵、阀和气囊的验收记录。
 
-## 默认展示页
+## 已实现的功能
 
-- 顶部：设备、热点、模型与展示/诊断/设置入口。
-- 四段链路：OV5640 采集 → ESP 上传 → PC 推理 → ESP 动作确认。
-- 主区：70% 最新帧、30% 风险与 GPIO38 动作。
-- 底部：上传 FPS、帧年龄、推理/回调延迟、确认帧和最后错误。
-- 诊断抽屉：链路、协议、设备、会话四页。
+| 功能 | 已实现内容 | 当前边界 |
+| --- | --- | --- |
+| 视觉闭环展示 | 显示 PC 服务的最新帧、风险、上传/推理/回调延迟和 RGB 确认 | 展示的是原型视觉风险，不是安全判断 |
+| 串口遥测 | 解析并记录 pressure、motion v2、camera_status、action_status、pneumatic_status | 新增的 MPU6050 与气动硬件尚未实机接线验证 |
+| 气动标定页 | 读取配置、发送短充气脉冲/泄压/急停/故障复位/保存限制，并显示返回状态 | UI 不能开启自动模式，不能跳过 ESP 的 token、压力、时长或故障保护 |
+| PC 气动代理 | PC 服务以最近上传帧的来源 IP 转发到 ESP :8080，而不是由 UI 填写 ESP 地址 | 没有最近设备帧、token 不匹配或 ESP 控制关闭时，命令会失败/被拒绝 |
+| 会话记录 | 自动保存帧、视觉、遥测、动作、气动命令与配置 | 文件记录不是实物安全验收报告 |
+| UI 测试 | 上位机组件、串口解析、气动协议和会话记录有主机侧测试 | 测试数据不驱动真实 GPIO 或负载 |
 
-速度、加速度和气囊不出现在默认页；诊断设备页明确标记为“未接入”。串口、波特率、存储目录和模拟开关位于设置弹窗。
+## 数据源与默认页面
 
-## 数据源
+- PC HTTP：/healthz、/v1/frame/latest.jpg、/v1/state/latest、/v1/pneumatic/config、/v1/pneumatic/command。
+- ESP 串口：pressure、motion、camera_status、action_status、pneumatic_status。
+- 默认页展示相机、视觉风险与 RGB 链路；气动控制放在诊断/标定区域，不与默认视觉提示混为“已自动保护”。
+- 设备首次上报新的 boot_id 后，上位机才请求该设备的气动配置。
 
-- PC HTTP：`/healthz`、`/v1/frame/latest.jpg`、`/v1/state/latest`。
-- ESP 串口：`pressure`、`camera_status`、`action_status`；旧 `camera_preview`/`vision_depth` 即使出现也不会改变默认 PC 帧源。
+PC 服务的气动代理会把请求转到最近一帧来源地址的 ESP 端口 8080。ESP 仍是最终裁决者：只有编译时启用了气动控制时，才可能接受受限命令；自动模式默认关闭，UI 没有开启它的能力。
 
-## 会话
+## 哪些内容是模拟或兼容用途
 
-首次收到链路或串口数据后自动创建会话，按帧号去重保存：
+- 设置中的“模拟数据”只会生成模拟压力样本，用于验证界面、图表和会话记录。启用模拟后不会伪造 MPU6050 事件、不会调用 PC 气动代理，也不会触发 GPIO。
+- HTTP、串口和气动相关的自动化测试使用测试夹具/模拟传输；通过测试不代表 MOSFET、SS54、泵、阀、电池、气囊已工作。
+- camera_preview 和 vision_depth 仍可被解析，用于旧记录或诊断兼容；默认界面的帧源始终是 PC 主动帧服务。
+- 旧 /v1/infer 与 /v1/analyze 仅供兼容测试，不是启动器运行的默认链路。
 
-```text
+## 尚未实现或尚未验收
+
+- 没有实机证明 UI 气动命令能驱动泵或阀；当前默认固件会拒绝这类命令。
+- 没有 MPU6050 的串口实测、气囊压力标定、三通阀断电泄压或 SS54 反电动势保护的验收数据。
+- 没有完成自动触发、断网、模型失效、压力无效、急停和长时间运行的整机测试。
+- 上位机不是安全控制器，也不能把视觉风险或模拟压力数据解释为安全指令。
+
+## 会话内容
+
+收到链路或串口数据后自动创建会话，按帧号去重保存：
+
+~~~text
 frames/
 vision.ndjson
 telemetry.ndjson
 action.ndjson
+pneumatic.ndjson
 pressure.csv
 model.log
 session.json
-```
+~~~
 
-模型服务 stdout/stderr 由统一启动器写入 `host_app/logs/`，上位机按增量同步到当前会话 `model.log`。
+pneumatic.ndjson 记录已发送命令、ESP 返回确认和气动状态；session.json 记录读取到的气动配置。它们用于追溯软件链路，并不能替代万用表、压力表或气路测试。
 
 ## 启动
 
-```powershell
+唯一推荐入口：
+
+~~~powershell
+cd D:\Projects\IOTCompetition\ProjectFile\host_app
 .\start_host_app.cmd
-```
+~~~
 
-这是唯一推荐入口，会依次同步运行时配置、检查 2.4 GHz 热点、启动异步模型服务、检查 HTTP 健康并启动 UI。旧 `run_host_app.cmd` 不作为链路入口。
+启动器会同步运行时配置、检查 2.4 GHz 热点、启动异步模型服务、等待 HTTP 健康状态，再启动 UI。旧 run_host_app.cmd 不是当前链路入口。
 
-## 设计与验证
+运行时 Wi-Fi、token、串口、存储路径和模拟开关都在本机配置中；凭据与 token 不会提交到 Git。
 
-高保真 HTML 原型位于 [aix-host-dashboard-prototype.html](../docs/design/aix-host-dashboard-prototype.html)，使用真实 OV5640 样例帧。界面采用暖灰 `#F4F3EF`、工作面 `#FCFBF7`、石墨文字 `#20201E`，状态色只表达语义，无装饰渐变或玻璃效果。
+## 验证与相关文档
 
-```powershell
+~~~powershell
 cd D:\Projects\IOTCompetition\ProjectFile
 powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
-```
+~~~
 
-当前视觉结果是相对风险，板载 RGB 仅是原型提示，不应解释为碰撞概率或安全执行器动作。
+- [仓库总览](../README.md)：跨模块的已实现、模拟、未完成和默认安全配置。
+- [固件说明](../AIX/README.md)：固件 Kconfig 开关、接口与实物边界。
+- [气泵、三通电磁阀与 MPU6050 接线说明](../docs/hardware/pneumatic-mpu6050-wiring.md)：接线、气路和验收顺序。
