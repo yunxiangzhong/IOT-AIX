@@ -38,8 +38,8 @@ class SensorOverviewPanel(QtWidgets.QFrame):
         self.setObjectName("panel")
 
         self.pressure = _MetricCell("压力", "--.- kPa", "等待样本")
-        self.speed = _MetricCell("速度", "-- m/s", "模块未接入")
-        self.accel = _MetricCell("加速度", "-- m/s²", "模块未接入")
+        self.accel = _MetricCell("加速度模长", "-- g", "模块未接入")
+        self.tilt = _MetricCell("倾角", "-- °", "模块未接入")
         self.risk = _MetricCell("PC视觉风险", "--", "等待模型")
         self.airbag = _MetricCell("气囊目标", "0%", "等待动作")
 
@@ -47,7 +47,7 @@ class SensorOverviewPanel(QtWidgets.QFrame):
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(12)
         
-        cells = (self.pressure, self.speed, self.accel, self.risk, self.airbag)
+        cells = (self.pressure, self.accel, self.tilt, self.risk, self.airbag)
         for idx, cell in enumerate(cells):
             layout.addWidget(cell, 1)
             if idx < len(cells) - 1:
@@ -71,10 +71,10 @@ class SensorOverviewPanel(QtWidgets.QFrame):
         self.pressure.set_metric(f"{sample.filtered_kpa:.1f} kPa", status, object_name)
 
     def update_motion(self, event: MotionEvent) -> None:
-        speed = f"{event.speed_mps:.2f} m/s" if event.speed_valid else "-- m/s"
-        accel = f"{event.accel_mps2:.2f} m/s²" if event.accel_valid else "-- m/s²"
-        self.speed.set_metric(speed, "速度有效" if event.speed_valid else "速度未接入")
-        self.accel.set_metric(accel, "加速度有效" if event.accel_valid else "加速度未接入")
+        accel = f"{event.accel_norm_g:.2f} g" if event.accel_norm_g is not None else "-- g"
+        tilt = f"{event.tilt_deg:.1f} °" if event.tilt_deg is not None else "-- °"
+        self.accel.set_metric(accel, "MPU6050 已校准" if event.calibrated else "MPU6050 未校准")
+        self.tilt.set_metric(tilt, "危险事件锁存" if event.danger_latched else "运动诊断")
 
     def update_vision_risk(self, payload: dict) -> None:
         score = int(payload.get("risk_score", 0))

@@ -15,6 +15,7 @@ class SessionRecorder:
         self._telemetry = None
         self._vision = None
         self._action = None
+        self._pneumatic = None
         self._model_log = None
         self._pressure = None
         self._pressure_writer = None
@@ -39,11 +40,13 @@ class SessionRecorder:
             "started_at": datetime.now().astimezone().isoformat(),
             "ended_at": None,
             "status": "recording",
+            "pneumatic_config": None,
         }
         self._write_metadata()
         self._telemetry = (session_dir / "telemetry.ndjson").open("w", encoding="utf-8")
         self._vision = (session_dir / "vision.ndjson").open("w", encoding="utf-8")
         self._action = (session_dir / "action.ndjson").open("w", encoding="utf-8")
+        self._pneumatic = (session_dir / "pneumatic.ndjson").open("w", encoding="utf-8")
         self._model_log = (session_dir / "model.log").open("w", encoding="utf-8")
         self._pressure = (session_dir / "pressure.csv").open("w", newline="", encoding="utf-8")
         self._pressure_writer = csv.writer(self._pressure)
@@ -85,6 +88,17 @@ class SessionRecorder:
         self._saved_actions.add(identity)
         self._write_line(self._action, {"wall_time": datetime.now().astimezone().isoformat(), **payload})
 
+    def record_pneumatic(self, payload: dict[str, Any]) -> None:
+        if self._pneumatic is None:
+            return
+        self._write_line(self._pneumatic, {"wall_time": datetime.now().astimezone().isoformat(), **payload})
+
+    def record_pneumatic_config(self, payload: dict[str, Any]) -> None:
+        if self._metadata is not None:
+            self._metadata["pneumatic_config"] = payload
+            self._write_metadata()
+        self.record_pneumatic(payload)
+
     def append_model_log(self, line: str) -> None:
         if self._model_log is None:
             return
@@ -101,10 +115,10 @@ class SessionRecorder:
         self._pressure.flush()
 
     def close(self) -> None:
-        for handle in (self._telemetry, self._vision, self._action, self._model_log, self._pressure):
+        for handle in (self._telemetry, self._vision, self._action, self._pneumatic, self._model_log, self._pressure):
             if handle is not None:
                 handle.close()
-        self._telemetry = self._vision = self._action = self._model_log = self._pressure = None
+        self._telemetry = self._vision = self._action = self._pneumatic = self._model_log = self._pressure = None
         self._pressure_writer = None
         self._saved_frames.clear()
         self._saved_actions.clear()

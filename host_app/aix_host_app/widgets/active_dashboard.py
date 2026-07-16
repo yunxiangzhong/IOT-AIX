@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..models import ActionStatusEvent, CameraStatusEvent
+from ..models import ActionStatusEvent, CameraStatusEvent, PneumaticStatusEvent
+from .pneumatic_calibration_panel import PneumaticCalibrationPanel
 
 
 STATUS_COLORS = {
@@ -383,9 +384,12 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.action_pattern.setObjectName("metricMono")
         self.action_ack = QtWidgets.QLabel("等待动作确认")
         self.action_ack.setObjectName("monoMuted")
+        self.pneumatic_summary = QtWidgets.QLabel("气动执行器 · 未从设备读取")
+        self.pneumatic_summary.setObjectName("monoMuted")
         action_text.addWidget(self.action_name)
         action_text.addWidget(self.action_pattern)
         action_text.addWidget(self.action_ack)
+        action_text.addWidget(self.pneumatic_summary)
         action_hero_layout.addLayout(action_text, 1)
         decision_layout.addWidget(risk_hero)
         decision_layout.addWidget(action_hero)
@@ -471,7 +475,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         tabs.setObjectName("diagnostics")
         self.chain_log = QtWidgets.QPlainTextEdit()
         self.protocol_log = QtWidgets.QPlainTextEdit()
-        self.device_log = QtWidgets.QPlainTextEdit("压力传感器：等待串口\n速度：未接入\n加速度：未接入\n气囊/气泵：未接入")
+        self.device_log = QtWidgets.QPlainTextEdit("压力传感器：等待串口\nMPU6050：等待串口\n气动模块：未从设备读取")
         self.session_log = QtWidgets.QPlainTextEdit("会话尚未开始")
         for widget in (self.chain_log, self.protocol_log, self.device_log, self.session_log):
             widget.setReadOnly(True)
@@ -479,6 +483,8 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         tabs.addTab(self.chain_log, "链路")
         tabs.addTab(self.protocol_log, "协议")
         tabs.addTab(self.device_log, "设备")
+        self.pneumatic_panel = PneumaticCalibrationPanel()
+        tabs.addTab(self.pneumatic_panel, "气动标定")
         tabs.addTab(self.session_log, "会话")
         tabs.setMaximumHeight(220)
         return tabs
@@ -625,6 +631,13 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.action_ack.setText(f"串口动作状态 · 第 {event.frame_seq} 帧")
         self.action_stage.set_state(f"串口已确认 · 第 {event.frame_seq} 帧", color)
         self._set_system_status("闭环异常" if band == "fault" else "闭环运行正常", band)
+
+    def apply_pneumatic_status(self, event: PneumaticStatusEvent) -> None:
+        self.pneumatic_panel.apply_status(event)
+        self.pneumatic_summary.setText(
+            f"气动执行器 · {event.state} · 泵{'开' if event.pump_on else '关'} · "
+            f"阀{'通电' if event.valve_on else '断电泄压'} · 故障 {event.fault}"
+        )
 
     def apply_chain_state(self, state: dict) -> None:
         self._last_state = state

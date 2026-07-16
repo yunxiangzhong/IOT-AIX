@@ -19,7 +19,8 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertTrue(dashboard.diagnostics.isHidden())
         dashboard.set_diagnostic_mode(True)
         self.assertFalse(dashboard.diagnostics.isHidden())
-        self.assertEqual(dashboard.diagnostics.count(), 4)
+        self.assertEqual(dashboard.diagnostics.count(), 5)
+        self.assertIn("未从设备读取", dashboard.pneumatic_panel.threshold_snapshot.toPlainText())
         dashboard.set_diagnostic_mode(False)
         self.assertTrue(dashboard.diagnostics.isHidden())
 

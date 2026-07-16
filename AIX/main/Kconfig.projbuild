@@ -36,6 +36,23 @@ config AIX_ENABLE_RISK_RECEIVER
     bool "Enable PC vision risk callback receiver"
     default y
 
+config AIX_ENABLE_PNEUMATIC_CONTROL
+    bool "Enable pump and solenoid-valve control hardware"
+    default n
+    help
+        Configure GPIO40 (pump MOSFET) and GPIO41 (valve MOSFET). Both outputs
+        start low, which stops the pump and vents through the specified 3-port
+        valve routing. This option is intentionally disabled by default.
+
+config AIX_ENABLE_PNEUMATIC_AUTOMATIC
+    bool "Enable automatic pneumatic response after saved calibration"
+    default n
+    depends on AIX_ENABLE_PNEUMATIC_CONTROL
+    help
+        This firmware-build option is the only way to enable automatic response
+        to PC visual HIGH/CRITICAL or MPU impact/rapid-tilt events. The host UI
+        cannot enable it. A valid calibration must also be saved in NVS.
+
 config AIX_ENABLE_ONBOARD_RGB
     bool "Enable DevKitC-1 onboard RGB action indicator on GPIO38"
     default y

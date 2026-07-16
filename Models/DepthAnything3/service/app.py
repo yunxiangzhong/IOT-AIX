@@ -12,6 +12,7 @@ from fastapi.responses import Response
 
 from frame_pipeline import AnalysisWorker, ChainStateRepository, FrameEnvelope, LatestFrameStore, RiskCallbackClient
 from inference import PredictionSummary
+from pneumatic_proxy import PneumaticProtocolError, PneumaticProxy, PneumaticProxyError, StaleDeviceError
 from schemas import build_vision_depth_response
 
 
@@ -33,11 +34,13 @@ def create_app(
     token: str = "",
     analyzer_loader=None,
     callback_client: RiskCallbackClient | None = None,
+    pneumatic_proxy: PneumaticProxy | None = None,
     start_worker: bool = True,
 ) -> FastAPI:
     store = LatestFrameStore()
     states = ChainStateRepository("ready" if analyzer is not None else "loading")
     callback = callback_client or RiskCallbackClient(token=token)
+    pneumatic = pneumatic_proxy or PneumaticProxy(store, token=token)
     worker = AnalysisWorker(store, states, callback, analyzer=analyzer)
     if analyzer is not None:
         states.set_model(
@@ -67,6 +70,7 @@ def create_app(
     app.state.frame_store = store
     app.state.chain_states = states
     app.state.analysis_worker = worker
+    app.state.pneumatic_proxy = pneumatic
 
     @app.get("/healthz")
     def healthz() -> dict[str, str | bool]:
@@ -158,6 +162,34 @@ def create_app(
         if state is None:
             raise HTTPException(status_code=404, detail="no state for device")
         return state
+
+    @app.post("/v1/pneumatic/command")
+    async def pneumatic_command(device_id: str, request: Request) -> dict:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="pneumatic command must be JSON") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="pneumatic command must be a JSON object")
+        try:
+            return pneumatic.command(device_id, payload)
+        except StaleDeviceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PneumaticProtocolError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except PneumaticProxyError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/v1/pneumatic/config")
+    def pneumatic_config(device_id: str) -> dict:
+        try:
+            return pneumatic.config(device_id)
+        except StaleDeviceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PneumaticProtocolError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except PneumaticProxyError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/v1/infer")
     async def infer(

@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, DetectionBox, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
+from .models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, DetectionBox, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, VisionDepthEvent
 
 
 class ParseError(ValueError):
@@ -15,6 +15,12 @@ _LEGACY_PREFIX_RE = re.compile(r"\((?P<ts_ms>\d+)\).*PRESSURE,(?P<body>.*)$")
 _LEGACY_BODY_RE = re.compile(r"PRESSURE,(?P<body>.*)$")
 _PRESSURE_REQUIRED = ("seq", "ts_ms", "raw", "mv", "kpa", "filtered_kpa", "over_pressure", "valid")
 _MOTION_REQUIRED = ("seq", "ts_ms", "speed_mps", "accel_mps2", "speed_valid", "accel_valid")
+_MOTION_V2_REQUIRED = ("seq", "ts_ms", "accel_g", "gyro_dps", "accel_norm_g", "tilt_deg", "impact", "rapid_tilt", "danger_latched", "calibrated")
+_PNEUMATIC_STATUS_REQUIRED = (
+    "ts_ms", "state", "fault", "trigger", "operation", "pump_on", "valve_on", "pressure_kpa",
+    "pressure_valid", "pressure_age_ms", "vision_state", "vision_fresh", "mpu_available", "mpu_calibrated",
+    "impact", "rapid_tilt",
+)
 _CAMERA_STATUS_REQUIRED = (
     "seq", "ts_ms", "sensor", "width", "height", "pixel_format", "frame_bytes",
     "fps", "frames_ok", "capture_failures", "psram", "valid",
@@ -30,7 +36,7 @@ _ACTION_STATUS_REQUIRED = (
 )
 
 
-def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent | ActionStatusEvent:
+def parse_event_line(line: str) -> PressureSample | MotionEvent | PneumaticStatusEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent | ActionStatusEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -42,6 +48,8 @@ def parse_event_line(line: str) -> PressureSample | MotionEvent | CameraStatusEv
         return _parse_pressure_payload(payload)
     if event_type == "motion":
         return _parse_motion_payload(payload)
+    if event_type == "pneumatic_status":
+        return _parse_pneumatic_status_payload(payload)
     if event_type == "camera_status":
         return _parse_camera_status_payload(payload)
     if event_type == "camera_preview":
@@ -89,6 +97,31 @@ def _parse_pressure_payload(payload: dict[str, Any]) -> PressureSample:
 
 
 def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
+    if payload.get("version") == 2:
+        missing = [key for key in _MOTION_V2_REQUIRED if key not in payload]
+        if missing:
+            raise ParseError(f"motion v2 json missing fields: {', '.join(missing)}")
+        accel = payload["accel_g"]
+        gyro = payload["gyro_dps"]
+        if not isinstance(accel, dict) or not isinstance(gyro, dict):
+            raise ParseError("motion v2 axes must be objects")
+        try:
+            return MotionEvent(
+                seq=_as_int(payload["seq"], "seq"), ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+                speed_mps=_as_float(payload.get("speed_mps", 0.0), "speed_mps"),
+                accel_mps2=_as_float(payload["accel_norm_g"], "accel_norm_g") * 9.80665,
+                speed_valid=_as_bool(payload.get("speed_valid", False), "speed_valid"), accel_valid=True,
+                accel_x_g=_as_float(accel.get("x"), "accel_g.x"), accel_y_g=_as_float(accel.get("y"), "accel_g.y"),
+                accel_z_g=_as_float(accel.get("z"), "accel_g.z"), gyro_x_dps=_as_float(gyro.get("x"), "gyro_dps.x"),
+                gyro_y_dps=_as_float(gyro.get("y"), "gyro_dps.y"), gyro_z_dps=_as_float(gyro.get("z"), "gyro_dps.z"),
+                accel_norm_g=_as_float(payload["accel_norm_g"], "accel_norm_g"),
+                tilt_deg=_as_float(payload["tilt_deg"], "tilt_deg"), impact=_as_bool(payload["impact"], "impact"),
+                rapid_tilt=_as_bool(payload["rapid_tilt"], "rapid_tilt"),
+                danger_latched=_as_bool(payload["danger_latched"], "danger_latched"),
+                calibrated=_as_bool(payload["calibrated"], "calibrated"), source="json-v2",
+            )
+        except (TypeError, ValueError) as exc:
+            raise ParseError(str(exc)) from exc
     missing = [key for key in _MOTION_REQUIRED if key not in payload]
     if missing:
         raise ParseError(f"motion json missing fields: {', '.join(missing)}")
@@ -98,6 +131,30 @@ def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
             speed_mps=_as_float(payload["speed_mps"], "speed_mps"), accel_mps2=_as_float(payload["accel_mps2"], "accel_mps2"),
             speed_valid=_as_bool(payload["speed_valid"], "speed_valid"),
             accel_valid=_as_bool(payload["accel_valid"], "accel_valid"), source="json",
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_pneumatic_status_payload(payload: dict[str, Any]) -> PneumaticStatusEvent:
+    missing = [key for key in _PNEUMATIC_STATUS_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"pneumatic_status missing fields: {', '.join(missing)}")
+    try:
+        state = str(payload["state"])
+        if state not in {"disabled", "vented", "prime_valve", "inflating", "holding", "venting", "cooldown", "fault_vent"}:
+            raise ValueError("pneumatic state is invalid")
+        return PneumaticStatusEvent(
+            ts_ms=_as_int(payload["ts_ms"], "ts_ms"), state=state, fault=str(payload["fault"]),
+            trigger=str(payload["trigger"]), operation=_as_int(payload["operation"], "operation"),
+            pump_on=_as_bool(payload["pump_on"], "pump_on"), valve_on=_as_bool(payload["valve_on"], "valve_on"),
+            pressure_kpa=_as_float(payload["pressure_kpa"], "pressure_kpa"),
+            pressure_valid=_as_bool(payload["pressure_valid"], "pressure_valid"),
+            pressure_age_ms=_as_int(payload["pressure_age_ms"], "pressure_age_ms"),
+            vision_state=str(payload["vision_state"]), vision_fresh=_as_bool(payload["vision_fresh"], "vision_fresh"),
+            mpu_available=_as_bool(payload["mpu_available"], "mpu_available"),
+            mpu_calibrated=_as_bool(payload["mpu_calibrated"], "mpu_calibrated"),
+            impact=_as_bool(payload["impact"], "impact"), rapid_tilt=_as_bool(payload["rapid_tilt"], "rapid_tilt"),
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc

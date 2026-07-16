@@ -163,6 +163,7 @@ esp_err_t pressure_sensor_read(pressure_sensor_sample_t *out)
     out->over_pressure = valid && pressure_sensor_is_over_pressure(s_filtered_kpa);
     out->valid = valid;
     out->sample_count = s_sample_count;
+    out->timestamp_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
 
     taskENTER_CRITICAL(&s_latest_lock);
     s_latest_sample = *out;

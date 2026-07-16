@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtWidgets
 
 from .chain_client import PcChainClient
-from .models import ActionStatusEvent, CameraStatusEvent, MotionEvent, PressureSample
+from .models import ActionStatusEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample
 from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
 from .session_recorder import SessionRecorder
@@ -38,6 +38,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chain_clock = QtCore.QElapsedTimer()
         self._chain_clock.start()
         self._watchdog_fault_shown = False
+        self._last_pneumatic_boot = ""
 
         self.dashboard = ActiveVisionDashboard()
         wrapper = QtWidgets.QWidget()
@@ -59,6 +60,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chain_client.frame_received.connect(self._accept_pc_frame)
         self.chain_client.health_received.connect(self._accept_health)
         self.chain_client.error_changed.connect(self._accept_chain_error)
+        self.chain_client.pneumatic_config_received.connect(self._accept_pneumatic_config)
+        self.chain_client.pneumatic_command_finished.connect(self._accept_pneumatic_command)
+        self.chain_client.pneumatic_error.connect(self._accept_pneumatic_error)
 
         self.sim_seq = 0
         self.sim_clock = QtCore.QElapsedTimer()
@@ -82,6 +86,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.connection_panel.disconnect_requested.connect(self._stop_serial)
         self.connection_panel.simulation_changed.connect(self._set_simulation_enabled)
         self.connection_panel.storage_root_changed.connect(self._set_storage_root)
+        self.dashboard.pneumatic_panel.command_requested.connect(self.chain_client.send_pneumatic_command)
+        self.dashboard.pneumatic_panel.config_requested.connect(self.chain_client.request_pneumatic_config)
 
     def closeEvent(self, event) -> None:
         self.chain_client.stop()
@@ -172,7 +178,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 "rgb_pattern": event.rgb_pattern,
             })
         elif isinstance(event, MotionEvent):
-            self.dashboard.device_log.appendPlainText("收到运动数据；仅用于诊断，运动设备当前未接入")
+            if event.accel_norm_g is not None:
+                self.dashboard.device_log.appendPlainText(
+                    f"MPU6050：加速度 {event.accel_norm_g:.2f} g，倾角 {event.tilt_deg:.1f}°，"
+                    f"冲击{'是' if event.impact else '否'}，快速倾斜{'是' if event.rapid_tilt else '否'}"
+                )
+            else:
+                self.dashboard.device_log.appendPlainText("收到旧版运动诊断数据；不显示速度")
+        elif isinstance(event, PneumaticStatusEvent):
+            self.dashboard.apply_pneumatic_status(event)
+            self.session_recorder.record_pneumatic({
+                "type": "pneumatic_status", "version": 1, "ts_ms": event.ts_ms,
+                "state": event.state, "fault": event.fault, "trigger": event.trigger,
+                "operation": event.operation, "pump_on": event.pump_on, "valve_on": event.valve_on,
+                "pressure_kpa": event.pressure_kpa, "pressure_valid": event.pressure_valid,
+                "pressure_age_ms": event.pressure_age_ms, "vision_state": event.vision_state,
+                "vision_fresh": event.vision_fresh, "mpu_available": event.mpu_available,
+                "mpu_calibrated": event.mpu_calibrated, "impact": event.impact, "rapid_tilt": event.rapid_tilt,
+            })
 
     def _accept_chain_state(self, state: dict) -> None:
         self._ensure_session()
@@ -180,6 +203,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chain_clock.restart()
         self._watchdog_fault_shown = False
         self.dashboard.apply_chain_state(state)
+        boot_id = str(state.get("boot_id") or "")
+        if len(boot_id) == 16 and boot_id != self._last_pneumatic_boot:
+            self._last_pneumatic_boot = boot_id
+            self.chain_client.request_pneumatic_config()
         risk = state.get("risk", {})
         try:
             identity = (str(state.get("boot_id", "")), int(risk.get("frame_seq", -1)))
@@ -201,6 +228,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 "callback_latency_ms": state.get("callback", {}).get("latency_ms"),
                 "valid": True,
             })
+
+    def _accept_pneumatic_config(self, config: dict) -> None:
+        self.dashboard.pneumatic_panel.apply_config(config)
+        self._ensure_session()
+        self.session_recorder.record_pneumatic_config(config)
+
+    def _accept_pneumatic_command(self, payload: dict) -> None:
+        self.dashboard.pneumatic_panel.apply_command_result(payload)
+        self._ensure_session()
+        self.session_recorder.record_pneumatic(payload)
+        if payload.get("accepted") and payload.get("command_id"):
+            self.chain_client.request_pneumatic_config()
+
+    def _accept_pneumatic_error(self, message: str) -> None:
+        self.dashboard.pneumatic_panel.show_error(message)
+        self.dashboard.protocol_log.appendPlainText(message)
 
     def _accept_pc_frame(self, data: bytes, frame_seq: int, capture_ts_ms: int) -> None:
         if not self.dashboard.apply_frame(data, frame_seq, capture_ts_ms):

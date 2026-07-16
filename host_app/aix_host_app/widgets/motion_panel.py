@@ -12,21 +12,21 @@ class MotionPanel(QtWidgets.QFrame):
 
         title = QtWidgets.QLabel("运动模块")
         title.setObjectName("sectionTitle")
-        self.speed_value = QtWidgets.QLabel("-- m/s")
-        self.speed_value.setObjectName("metricSmallValue")
-        self.accel_value = QtWidgets.QLabel("-- m/s²")
+        self.accel_value = QtWidgets.QLabel("-- g")
         self.accel_value.setObjectName("metricSmallValue")
-        self.status_label = QtWidgets.QLabel("速度 / 加速度模块未接入")
+        self.tilt_value = QtWidgets.QLabel("-- °")
+        self.tilt_value.setObjectName("metricSmallValue")
+        self.status_label = QtWidgets.QLabel("MPU6050 模块未接入")
         self.status_label.setObjectName("muted")
         self.status_label.setWordWrap(True)
 
         grid = QtWidgets.QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(8)
-        grid.addWidget(QtWidgets.QLabel("速度"), 0, 0)
-        grid.addWidget(self.speed_value, 1, 0)
-        grid.addWidget(QtWidgets.QLabel("加速度"), 0, 1)
-        grid.addWidget(self.accel_value, 1, 1)
+        grid.addWidget(QtWidgets.QLabel("加速度模长"), 0, 0)
+        grid.addWidget(self.accel_value, 1, 0)
+        grid.addWidget(QtWidgets.QLabel("倾角"), 0, 1)
+        grid.addWidget(self.tilt_value, 1, 1)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -37,13 +37,14 @@ class MotionPanel(QtWidgets.QFrame):
         layout.addStretch(1)
 
     def update_motion(self, event: MotionEvent) -> None:
-        self.speed_value.setText(f"{event.speed_mps:.2f} m/s" if event.speed_valid else "-- m/s")
-        self.accel_value.setText(f"{event.accel_mps2:.2f} m/s²" if event.accel_valid else "-- m/s²")
-        if event.speed_valid or event.accel_valid:
-            self.status_label.setText(f"motion seq {event.seq}")
+        self.accel_value.setText(f"{event.accel_norm_g:.2f} g" if event.accel_norm_g is not None else "-- g")
+        self.tilt_value.setText(f"{event.tilt_deg:.1f} °" if event.tilt_deg is not None else "-- °")
+        if event.calibrated:
+            events = "冲击" if event.impact else "快速倾斜" if event.rapid_tilt else "无危险事件"
+            self.status_label.setText(f"MPU6050 seq {event.seq} · {events}")
             self.status_label.setObjectName("statusOk")
         else:
-            self.status_label.setText("速度 / 加速度模块未接入")
+            self.status_label.setText("MPU6050 校准中或未接入")
             self.status_label.setObjectName("muted")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)

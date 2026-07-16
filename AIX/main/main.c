@@ -4,6 +4,8 @@
 #include "action_controller.h"
 #include "device_identity.h"
 #include "network_runtime.h"
+#include "mpu6050_sensor.h"
+#include "pneumatic_controller.h"
 #include "pressure_sensor.h"
 #include "risk_receiver.h"
 
@@ -36,6 +38,7 @@ static void camera_status_changed(bool healthy, void *context)
 void app_main(void)
 {
     esp_err_t ret;
+    bool network_ready;
 
     ESP_LOGI(TAG, "AIX pulse helmet firmware booted");
     ESP_LOGI(TAG, "Target board: ESP32-S3-DevKitC-1, monitor via J4 USB-UART");
@@ -47,19 +50,11 @@ void app_main(void)
     ESP_ERROR_CHECK(action_controller_start(device_identity_device_id(), device_identity_boot_id()));
     network_runtime_set_status_callback(network_status_changed, NULL);
     ret = network_runtime_start();
+    network_ready = ret == ESP_OK;
     if (ret != ESP_OK) {
         action_controller_set_fault(ACTION_FAULT_NETWORK, true);
         ESP_LOGW(TAG, "network runtime unavailable: %s", esp_err_to_name(ret));
     }
-
-#if CONFIG_AIX_ENABLE_RISK_RECEIVER
-    if (ret == ESP_OK) {
-        esp_err_t risk_ret = risk_receiver_start();
-        if (risk_ret != ESP_OK) {
-            ESP_LOGE(TAG, "risk receiver start failed: %s", esp_err_to_name(risk_ret));
-        }
-    }
-#endif
 
     ret = pressure_sensor_init();
     if (ret != ESP_OK) {
@@ -72,6 +67,27 @@ void app_main(void)
         ESP_LOGE(TAG, "pressure sensor task start failed: %s", esp_err_to_name(ret));
         return;
     }
+
+    ret = mpu6050_sensor_start();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "MPU6050 unavailable; visual protection remains available: %s", esp_err_to_name(ret));
+    }
+
+#if CONFIG_AIX_ENABLE_PNEUMATIC_CONTROL
+    ret = pneumatic_controller_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "pneumatic controller start failed; outputs remain disabled: %s", esp_err_to_name(ret));
+    }
+#endif
+
+#if CONFIG_AIX_ENABLE_RISK_RECEIVER
+    if (network_ready) {
+        esp_err_t risk_ret = risk_receiver_start();
+        if (risk_ret != ESP_OK) {
+            ESP_LOGE(TAG, "risk receiver start failed: %s", esp_err_to_name(risk_ret));
+        }
+    }
+#endif
 
 #if CONFIG_AIX_ENABLE_LOCAL_CAMERA
     camera_local_set_health_callback(camera_status_changed, NULL);

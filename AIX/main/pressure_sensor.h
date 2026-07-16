@@ -17,6 +17,7 @@ typedef struct {
     bool over_pressure;
     bool valid;
     uint32_t sample_count;
+    uint64_t timestamp_ms;
 } pressure_sensor_sample_t;
 
 static inline float pressure_sensor_voltage_to_kpa(int voltage_mv)

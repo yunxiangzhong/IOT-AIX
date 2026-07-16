@@ -129,6 +129,15 @@ Invoke-HostCTest "risk_receiver_test" @(
     (Join-Path $main "risk_receiver.c"),
     (Join-Path $aix "test\risk_receiver_test.c")
 )
+Invoke-HostCTest "pneumatic_policy_test" @(
+    (Join-Path $main "action_policy.c"),
+    (Join-Path $main "pneumatic_policy.c"),
+    (Join-Path $aix "test\pneumatic_policy_test.c")
+)
+Invoke-HostCTest "motion_detector_test" @(
+    (Join-Path $main "motion_detector.c"),
+    (Join-Path $aix "test\motion_detector_test.c")
+) @("-lm")
 
 if ($BuildFirmware) {
     if (-not $env:IDF_PATH) {
@@ -220,4 +229,4 @@ if ($BuildFirmware) {
     Write-Output "Firmware manifest: $manifestPath"
 }
 
-Write-Output "Verification passed: host/service Python tests, compileall, and pressure/camera/action/uplink host-side C tests."
+Write-Output "Verification passed: host/service Python tests, compileall, and host-side C safety tests."

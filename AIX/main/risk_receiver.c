@@ -30,9 +30,12 @@ bool risk_receiver_token_matches(const char *expected, const char *provided)
 #include "action_controller.h"
 #include "cJSON.h"
 #include "device_identity.h"
+#include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "mpu6050_sensor.h"
+#include "pneumatic_controller.h"
 
 #ifndef CONFIG_AIX_LINK_TOKEN
 #define CONFIG_AIX_LINK_TOKEN ""
@@ -42,6 +45,7 @@ bool risk_receiver_token_matches(const char *expected, const char *provided)
 #endif
 
 #define RISK_BODY_MAX 2048U
+#define PNEUMATIC_BODY_MAX 1024U
 
 static const char *TAG = "AIX_RISK_RX";
 static httpd_handle_t s_server;
@@ -172,6 +176,196 @@ static esp_err_t risk_handler(httpd_req_t *request)
     return send_ack(request, risk.frame_seq, true, false, &decision, "");
 }
 
+static bool device_and_boot_match(const cJSON *device, const cJSON *boot)
+{
+    return cJSON_IsString(device) && cJSON_IsString(boot) &&
+           strcmp(device->valuestring, device_identity_device_id()) == 0 &&
+           strcmp(boot->valuestring, device_identity_boot_id()) == 0;
+}
+
+static esp_err_t send_pneumatic_ack(
+    httpd_req_t *request,
+    const char *command_id,
+    const pneumatic_command_result_t *result)
+{
+    const pneumatic_status_t *status = &result->status;
+    char body[640];
+    snprintf(
+        body,
+        sizeof(body),
+        "{\"type\":\"pneumatic_ack\",\"version\":1,\"boot_id\":\"%s\",\"command_id\":\"%s\","
+        "\"accepted\":%s,\"duplicate\":%s,\"error\":\"%s\","
+        "\"state\":\"%s\",\"fault\":\"%s\",\"pump_on\":%s,\"valve_on\":%s}",
+        device_identity_boot_id(),
+        command_id,
+        result->accepted ? "true" : "false",
+        result->duplicate ? "true" : "false",
+        result->error,
+        pneumatic_state_name(status->output.state),
+        pneumatic_fault_name(status->output.fault),
+        status->output.pump_on ? "true" : "false",
+        status->output.valve_on ? "true" : "false");
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, body);
+}
+
+static bool parse_pneumatic_command_type(const char *value, pneumatic_command_type_t *out)
+{
+    if (strcmp(value, "inflate_pulse") == 0) {
+        *out = PNEUMATIC_COMMAND_INFLATE_PULSE;
+    } else if (strcmp(value, "vent") == 0) {
+        *out = PNEUMATIC_COMMAND_VENT;
+    } else if (strcmp(value, "emergency_stop") == 0) {
+        *out = PNEUMATIC_COMMAND_EMERGENCY_STOP;
+    } else if (strcmp(value, "reset_fault") == 0) {
+        *out = PNEUMATIC_COMMAND_RESET_FAULT;
+    } else if (strcmp(value, "save_calibration") == 0) {
+        *out = PNEUMATIC_COMMAND_SAVE_CALIBRATION;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static esp_err_t pneumatic_command_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        httpd_resp_set_status(request, "401 Unauthorized");
+        return httpd_resp_sendstr(request, "invalid link token");
+    }
+    if (!pneumatic_controller_is_started()) {
+        httpd_resp_set_status(request, "503 Service Unavailable");
+        return httpd_resp_sendstr(request, "pneumatic controller disabled");
+    }
+    if (request->content_len <= 0 || request->content_len > (int)PNEUMATIC_BODY_MAX) {
+        httpd_resp_set_status(request, "413 Payload Too Large");
+        return httpd_resp_sendstr(request, "pneumatic payload too large");
+    }
+
+    char *body = calloc(1U, (size_t)request->content_len + 1U);
+    if (body == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    int received = 0;
+    while (received < request->content_len) {
+        const int chunk = httpd_req_recv(request, body + received, request->content_len - received);
+        if (chunk <= 0) {
+            free(body);
+            httpd_resp_set_status(request, "400 Bad Request");
+            return httpd_resp_sendstr(request, "pneumatic payload read failed");
+        }
+        received += chunk;
+    }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (root == NULL) {
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_sendstr(request, "invalid JSON");
+    }
+
+    cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "version");
+    cJSON *device = cJSON_GetObjectItemCaseSensitive(root, "device_id");
+    cJSON *boot = cJSON_GetObjectItemCaseSensitive(root, "boot_id");
+    cJSON *command_id = cJSON_GetObjectItemCaseSensitive(root, "command_id");
+    cJSON *command_name = cJSON_GetObjectItemCaseSensitive(root, "command");
+    const bool basic_schema_ok = cJSON_IsString(type) && strcmp(type->valuestring, "pneumatic_command") == 0 &&
+                                 cJSON_IsNumber(version) && version->valueint == 1 &&
+                                 device_and_boot_match(device, boot) && cJSON_IsString(command_id) &&
+                                 command_id->valuestring[0] != '\0' &&
+                                 strlen(command_id->valuestring) < PNEUMATIC_COMMAND_ID_CAPACITY &&
+                                 cJSON_IsString(command_name);
+    if (!basic_schema_ok) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_sendstr(request, "invalid pneumatic command schema or device identity");
+    }
+
+    pneumatic_command_t command = {0};
+    if (!parse_pneumatic_command_type(command_name->valuestring, &command.type)) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_sendstr(request, "unsupported pneumatic command");
+    }
+    snprintf(command.command_id, sizeof(command.command_id), "%s", command_id->valuestring);
+    if (command.type == PNEUMATIC_COMMAND_SAVE_CALIBRATION) {
+        cJSON *target = cJSON_GetObjectItemCaseSensitive(root, "target_kpa");
+        cJSON *maximum = cJSON_GetObjectItemCaseSensitive(root, "max_kpa");
+        cJSON *inflate = cJSON_GetObjectItemCaseSensitive(root, "max_inflate_ms");
+        if (!cJSON_IsNumber(target) || !isfinite(target->valuedouble) ||
+            !cJSON_IsNumber(maximum) || !isfinite(maximum->valuedouble) ||
+            !cJSON_IsNumber(inflate) || inflate->valuedouble < 0 || inflate->valuedouble > UINT32_MAX) {
+            cJSON_Delete(root);
+            httpd_resp_set_status(request, "400 Bad Request");
+            return httpd_resp_sendstr(request, "invalid calibration values");
+        }
+        command.target_kpa = (float)target->valuedouble;
+        command.max_kpa = (float)maximum->valuedouble;
+        command.max_inflate_ms = (uint32_t)inflate->valuedouble;
+    }
+    cJSON_Delete(root);
+
+    pneumatic_command_result_t result = {0};
+    const esp_err_t ret = pneumatic_controller_execute(&command, &result);
+    if (ret != ESP_OK && !result.accepted) {
+        httpd_resp_set_status(request, "409 Conflict");
+    }
+    return send_pneumatic_ack(request, command.command_id, &result);
+}
+
+static esp_err_t pneumatic_config_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        httpd_resp_set_status(request, "401 Unauthorized");
+        return httpd_resp_sendstr(request, "invalid link token");
+    }
+    pneumatic_status_t status = {0};
+    if (!pneumatic_controller_get_status(&status)) {
+        httpd_resp_set_status(request, "503 Service Unavailable");
+        return httpd_resp_sendstr(request, "pneumatic controller disabled");
+    }
+    char body[1024];
+    snprintf(
+        body,
+        sizeof(body),
+        "{\"type\":\"pneumatic_config\",\"version\":1,\"device_id\":\"%s\",\"boot_id\":\"%s\","
+        "\"automatic_enabled\":%s,\"calibration_valid\":%s,\"target_kpa\":%.2f,"
+        "\"max_kpa\":%.2f,\"max_inflate_ms\":%lu,\"pressure_stale_ms\":%llu,"
+        "\"calibration_pulse_ms\":%llu,\"calibration_ceiling_kpa\":%.1f,"
+        "\"hold_max_ms\":%llu,\"clear_confirm_ms\":%llu,\"vent_timeout_ms\":%llu,"
+        "\"cooldown_ms\":%llu,\"pump_gpio\":%d,\"valve_gpio\":%d,"
+        "\"mpu\":{\"sda_gpio\":%d,\"scl_gpio\":%d,\"int_gpio\":%d,"
+        "\"sample_hz\":100,\"impact_g\":%.1f,\"impact_samples\":%u,"
+        "\"rapid_tilt_deg\":%.1f,\"rapid_tilt_dps\":%.1f,\"rapid_tilt_ms\":%llu,\"clear_ms\":%llu}}",
+        device_identity_device_id(),
+        device_identity_boot_id(),
+        status.config.automatic_enabled ? "true" : "false",
+        status.config.calibration_valid ? "true" : "false",
+        status.config.target_kpa,
+        status.config.max_kpa,
+        (unsigned long)status.config.max_inflate_ms,
+        (unsigned long long)PNEUMATIC_PRESSURE_STALE_MS,
+        (unsigned long long)PNEUMATIC_CALIBRATION_PULSE_MS,
+        PNEUMATIC_CALIBRATION_CEILING_KPA,
+        (unsigned long long)PNEUMATIC_HOLD_MAX_MS,
+        (unsigned long long)PNEUMATIC_CLEAR_CONFIRM_MS,
+        (unsigned long long)PNEUMATIC_VENT_TIMEOUT_MS,
+        (unsigned long long)PNEUMATIC_COOLDOWN_MS,
+        PNEUMATIC_PUMP_GPIO,
+        PNEUMATIC_VALVE_GPIO,
+        MPU6050_I2C_SDA_GPIO,
+        MPU6050_I2C_SCL_GPIO,
+        MPU6050_INT_GPIO,
+        MOTION_DETECTOR_IMPACT_THRESHOLD_G,
+        MOTION_DETECTOR_IMPACT_SAMPLES,
+        MOTION_DETECTOR_RAPID_TILT_DEG,
+        MOTION_DETECTOR_RAPID_TILT_DPS,
+        (unsigned long long)MOTION_DETECTOR_RAPID_TILT_MS,
+        (unsigned long long)MOTION_DETECTOR_CLEAR_MS);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, body);
+}
+
 esp_err_t risk_receiver_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -181,16 +375,31 @@ esp_err_t risk_receiver_start(void)
         .handler = risk_handler,
         .user_ctx = NULL,
     };
+    httpd_uri_t pneumatic_command_uri = {
+        .uri = "/pneumatic/command",
+        .method = HTTP_POST,
+        .handler = pneumatic_command_handler,
+        .user_ctx = NULL,
+    };
+    httpd_uri_t pneumatic_config_uri = {
+        .uri = "/pneumatic/config",
+        .method = HTTP_GET,
+        .handler = pneumatic_config_handler,
+        .user_ctx = NULL,
+    };
     config.server_port = CONFIG_AIX_RISK_RECEIVER_PORT;
     esp_err_t ret = httpd_start(&s_server, &config);
     if (ret != ESP_OK) {
         return ret;
     }
     ret = httpd_register_uri_handler(s_server, &uri);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "vision risk receiver listening on port %d", CONFIG_AIX_RISK_RECEIVER_PORT);
+    if (ret != ESP_OK) {
+        return ret;
     }
-    return ret;
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &pneumatic_command_uri), TAG, "register pneumatic command failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &pneumatic_config_uri), TAG, "register pneumatic config failed");
+    ESP_LOGI(TAG, "vision and pneumatic receiver listening on port %d", CONFIG_AIX_RISK_RECEIVER_PORT);
+    return ESP_OK;
 }
 
 #endif

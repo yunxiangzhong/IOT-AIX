@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, MotionEvent, PressureSample, RiskAckEvent, VisionDepthEvent
+from aix_host_app.models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, VisionDepthEvent
 from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
@@ -30,6 +30,34 @@ class MotionParserTests(unittest.TestCase):
         )
         self.assertIsInstance(event, MotionEvent)
         self.assertEqual(event.speed_mps, 4.5)
+
+    def test_parses_motion_v2_acceleration_and_event_diagnostics(self):
+        event = parse_event_line(
+            '{"type":"motion","version":2,"seq":2,"ts_ms":1000,'
+            '"accel_g":{"x":0.1,"y":0.2,"z":0.97},'
+            '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+            '"accel_norm_g":1.0,"tilt_deg":12.3,"impact":false,'
+            '"rapid_tilt":true,"danger_latched":true,"calibrated":true,'
+            '"speed_mps":0.0,"speed_valid":false}'
+        )
+        self.assertTrue(event.rapid_tilt)
+        self.assertAlmostEqual(event.accel_norm_g, 1.0)
+        self.assertFalse(event.speed_valid)
+
+
+class PneumaticStatusParserTests(unittest.TestCase):
+    def test_parses_pneumatic_status(self):
+        event = parse_event_line(
+            '{"type":"pneumatic_status","version":1,"ts_ms":1000,'
+            '"state":"holding","fault":"none","trigger":"vision_high",'
+            '"operation":1,"pump_on":false,"valve_on":true,'
+            '"pressure_kpa":2.1,"pressure_valid":true,"pressure_age_ms":20,'
+            '"vision_state":"high","vision_fresh":true,"mpu_available":true,'
+            '"mpu_calibrated":true,"impact":false,"rapid_tilt":false}'
+        )
+        self.assertIsInstance(event, PneumaticStatusEvent)
+        self.assertEqual(event.state, "holding")
+        self.assertTrue(event.valve_on)
 
 
 class CameraStatusParserTests(unittest.TestCase):

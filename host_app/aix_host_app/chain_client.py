@@ -26,6 +26,9 @@ class PcChainClient(QtCore.QObject):
     health_received = QtCore.Signal(dict)
     state_received = QtCore.Signal(dict)
     frame_received = QtCore.Signal(bytes, int, int)
+    pneumatic_config_received = QtCore.Signal(dict)
+    pneumatic_command_finished = QtCore.Signal(dict)
+    pneumatic_error = QtCore.Signal(str)
     error_changed = QtCore.Signal(str)
 
     def __init__(self, service_url: str, device_id: str, parent=None) -> None:
@@ -39,6 +42,7 @@ class PcChainClient(QtCore.QObject):
         self._state_reply: QtNetwork.QNetworkReply | None = None
         self._frame_reply: QtNetwork.QNetworkReply | None = None
         self._last_frame_identity: tuple[str, int] | None = None
+        self._pneumatic_config_reply: QtNetwork.QNetworkReply | None = None
         self._poll_count = 0
 
     def configure(self, service_url: str, device_id: str) -> None:
@@ -57,6 +61,32 @@ class PcChainClient(QtCore.QObject):
             if reply is not None:
                 reply.abort()
         self._state_reply = self._frame_reply = None
+        if self._pneumatic_config_reply is not None:
+            self._pneumatic_config_reply.abort()
+            self._pneumatic_config_reply = None
+
+    def request_pneumatic_config(self) -> None:
+        if not self.service_url or not self.device_id or self._pneumatic_config_reply is not None:
+            return
+        url = QtCore.QUrl(f"{self.service_url}/v1/pneumatic/config")
+        query = QtCore.QUrlQuery()
+        query.addQueryItem("device_id", self.device_id)
+        url.setQuery(query)
+        self._pneumatic_config_reply = self._network.get(build_get_request(url.toString(), timeout_ms=1500))
+        self._pneumatic_config_reply.finished.connect(self._handle_pneumatic_config)
+
+    def send_pneumatic_command(self, payload: dict) -> None:
+        if not self.service_url or not self.device_id:
+            self.pneumatic_error.emit("未配置 PC 服务地址或设备标识")
+            return
+        url = QtCore.QUrl(f"{self.service_url}/v1/pneumatic/command")
+        query = QtCore.QUrlQuery()
+        query.addQueryItem("device_id", self.device_id)
+        url.setQuery(query)
+        request = build_get_request(url.toString(), timeout_ms=1800)
+        request.setHeader(QtNetwork.QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
+        reply = self._network.post(request, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        reply.finished.connect(lambda current=reply: self._handle_pneumatic_command(current))
 
     def _poll(self) -> None:
         if not self.service_url or not self.device_id or self._state_reply is not None:
@@ -107,6 +137,40 @@ class PcChainClient(QtCore.QObject):
         identity = frame_identity_from_state(payload)
         if identity is not None and identity != self._last_frame_identity and self._frame_reply is None:
             self._request_frame(identity)
+
+    def _handle_pneumatic_config(self) -> None:
+        reply = self._pneumatic_config_reply
+        self._pneumatic_config_reply = None
+        if reply is None:
+            return
+        try:
+            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError:
+                self.pneumatic_error.emit(f"读取气动阈值失败：{reply.errorString()}")
+                return
+            payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
+            if not isinstance(payload, dict) or payload.get("type") != "pneumatic_config":
+                self.pneumatic_error.emit("气动阈值协议不匹配")
+                return
+            self.pneumatic_config_received.emit(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self.pneumatic_error.emit(f"气动阈值响应无效：{exc}")
+        finally:
+            reply.deleteLater()
+
+    def _handle_pneumatic_command(self, reply: QtNetwork.QNetworkReply) -> None:
+        try:
+            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError:
+                self.pneumatic_error.emit(f"气动命令失败：{reply.errorString()}")
+                return
+            payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
+            if not isinstance(payload, dict) or payload.get("type") != "pneumatic_ack":
+                self.pneumatic_error.emit("气动命令响应协议不匹配")
+                return
+            self.pneumatic_command_finished.emit(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self.pneumatic_error.emit(f"气动命令响应无效：{exc}")
+        finally:
+            reply.deleteLater()
 
     def _request_frame(self, identity: tuple[str, int]) -> None:
         url = QtCore.QUrl(f"{self.service_url}/v1/frame/latest.jpg")
