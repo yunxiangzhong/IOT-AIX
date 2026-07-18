@@ -19,11 +19,14 @@ class ConnectionPanelTests(unittest.TestCase):
         self.assertFalse(hasattr(panel, "pressure_monitoring_check"))
         self.assertFalse(hasattr(panel, "pressure_state_label"))
 
-    def test_exposes_storage_root_selector(self):
+    def test_device_sheet_excludes_session_and_display_preferences(self):
         panel = ConnectionPanel()
-
-        self.assertTrue(hasattr(panel, "storage_root_edit"))
-        self.assertTrue(panel.storage_root_edit.text())
+        self.assertFalse(hasattr(panel, "storage_root_edit"))
+        self.assertFalse(hasattr(panel, "recording_check"))
+        self.assertFalse(hasattr(panel, "reduce_motion_check"))
+        self.assertEqual(panel.source_combo.itemData(0), "serial")
+        self.assertEqual(panel.source_combo.itemData(1), "simulation")
+        self.assertGreaterEqual(panel.minimumWidth(), 420)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,12 @@ def main() -> int:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     window = MainWindow()
     window.chain_client.stop()
+    window._watchdog_timer.stop()
+    try:
+        window.scenario_panel.start_requested.disconnect(window.chain_client.send_road_hazard)
+    except RuntimeError:
+        pass
+    app.processEvents()
     state = {
         "type": "chain_state",
         "version": 1,
@@ -60,6 +66,7 @@ def main() -> int:
     }
     if not window.dashboard.apply_snapshot(args.image.read_bytes(), 128, 128000, state):
         raise RuntimeError("acceptance snapshot was rejected")
+    window.statusBar().showMessage("验收数据 · 本地上位机链路")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for width, height in ((1280, 720), (1440, 900)):
@@ -69,6 +76,57 @@ def main() -> int:
         output = args.output_dir / f"dashboard-{width}x{height}.png"
         if not window.grab().save(str(output), "PNG"):
             raise RuntimeError(f"failed to save {output}")
+
+    window.resize(1440, 900)
+    window.device_button.setChecked(True)
+    app.processEvents()
+    device_output = args.output_dir / "device-access-1440x900.png"
+    if not window.device_window.grab().save(str(device_output), "PNG"):
+        raise RuntimeError(f"failed to save {device_output}")
+    window.device_button.setChecked(False)
+
+    window.diagnostics_button.setChecked(True)
+    app.processEvents()
+    window.dashboard.diagnostics.setCurrentIndex(3)
+    diagnostics_output = args.output_dir / "pneumatic-calibration-980x650.png"
+    if not window.diagnostics_window.grab().save(str(diagnostics_output), "PNG"):
+        raise RuntimeError(f"failed to save {diagnostics_output}")
+    window.diagnostics_button.setChecked(False)
+
+    window._show_scenario()
+    window.scenario_panel.begin_demo()
+    window.scenario_panel._timer.stop()
+    window.scenario_panel._update_from_elapsed(1850)
+    app.processEvents()
+    for width, height in ((1280, 720), (1440, 900)):
+        window.resize(width, height)
+        app.processEvents()
+        output = args.output_dir / f"scenario-progress-{width}x{height}.png"
+        if not window.grab().save(str(output), "PNG"):
+            raise RuntimeError(f"failed to save {output}")
+
+    event_id = window.scenario_panel.current_event_id
+    window.scenario_panel.apply_chain_state({"road_hazard": {
+        "event_id": event_id,
+        "delivery": {"state": "completed"},
+        "ack": {"state": "completed", "payload": {
+            "type": "road_hazard_ack", "accepted": True, "event_id": event_id,
+        }},
+        "network_latency_ms": 42,
+        "effective_rgb_pattern": "orange_blink_2hz",
+    }})
+    # 让验收图展示 ACK 后的语音、气动演示与骑行者减速结果。
+    window.scenario_panel._update_from_elapsed(2850)
+    window.resize(1440, 900)
+    app.processEvents()
+    ack_output = args.output_dir / "scenario-ack-1440x900.png"
+    if not window.grab().save(str(ack_output), "PNG"):
+        raise RuntimeError(f"failed to save {ack_output}")
+    window.scenario_panel._update_from_elapsed(window.scenario_panel.EVENT_DURATION_MS)
+    app.processEvents()
+    arrival_output = args.output_dir / "scenario-arrival-1440x900.png"
+    if not window.grab().save(str(arrival_output), "PNG"):
+        raise RuntimeError(f"failed to save {arrival_output}")
     window.close()
     return 0
 

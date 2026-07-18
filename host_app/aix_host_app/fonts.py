@@ -10,17 +10,12 @@ _LOADED_FAMILY = ""
 
 
 def ensure_cjk_font() -> str:
-    """Register a known Windows CJK font so Qt offscreen/sandbox rendering stays readable."""
+    """Install one system-like CJK application font without component-level overrides."""
     global _LOADED_FAMILY
     if _LOADED_FAMILY:
         return _LOADED_FAMILY
     fonts_root = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-    candidates = (
-        fonts_root / "NotoSansSC-VF.ttf",
-        fonts_root / "Noto Sans SC (TrueType).otf",
-        fonts_root / "msyh.ttc",
-        fonts_root / "simhei.ttf",
-    )
+    candidates = (fonts_root / "msyh.ttc", fonts_root / "NotoSansSC-VF.ttf", fonts_root / "simhei.ttf")
     for path in candidates:
         if not path.is_file():
             continue
@@ -29,9 +24,20 @@ def ensure_cjk_font() -> str:
             continue
         families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
         if families:
-            _LOADED_FAMILY = families[0]
+            preferred = next((family for family in families if "YaHei UI" in family), families[0])
+            _LOADED_FAMILY = preferred
             app = QtWidgets.QApplication.instance()
             if app is not None:
-                app.setFont(QtGui.QFont(_LOADED_FAMILY, 9))
+                font = QtGui.QFont(_LOADED_FAMILY)
+                font.setPointSizeF(10.0)
+                font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferAntialias)
+                app.setFont(font)
             return _LOADED_FAMILY
-    return QtWidgets.QApplication.font().family()
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.GeneralFont)
+        font.setPointSizeF(10.0)
+        app.setFont(font)
+        _LOADED_FAMILY = font.family()
+        return _LOADED_FAMILY
+    return "Microsoft YaHei UI"

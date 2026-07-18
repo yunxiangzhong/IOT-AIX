@@ -107,7 +107,11 @@ class ActiveVisionDashboardTests(unittest.TestCase):
             "last_error": "",
         })
 
-        self.assertEqual(dashboard.instrument_subtitle.text(), "主动视觉闭环监控")
+        self.assertTrue(dashboard.instrument_subtitle.isHidden())
+        self.assertEqual(
+            dashboard.sensor_row_keys,
+            ("ov5640", "mpu6050", "pressure", "dfplayer", "rgb", "pneumatic"),
+        )
         self.assertEqual(dashboard.model_stage.title.text(), "上位机视觉推理")
         self.assertEqual(dashboard.camera_stage.title.text(), "相机采集")
         self.assertEqual(dashboard.upload_stage.title.text(), "图像上传")
@@ -125,18 +129,22 @@ class ActiveVisionDashboardTests(unittest.TestCase):
 
     def test_main_window_uses_pc_chain_client_and_minimum_dashboard_size(self):
         window = MainWindow()
-        self.assertIn("Noto Sans SC", QtGui.QFontDatabase.families())
+        self.assertIn("YaHei", self.app.font().family())
         self.assertTrue(hasattr(window, "chain_client"))
         self.assertFalse(hasattr(window, "vision_client"))
-        self.assertGreaterEqual(window.minimumWidth(), 1280)
-        self.assertGreaterEqual(window.minimumHeight(), 720)
+        self.assertFalse(hasattr(window, "settings_dialog"))
+        titles = [label.text() for label in window.findChildren(QtWidgets.QLabel)]
+        self.assertEqual(titles.count("AIX 控制中心"), 1)
+        self.assertNotIn("AIX 主动视觉安全监控台", titles)
+        self.assertGreaterEqual(window.minimumWidth(), 1024)
+        self.assertGreaterEqual(window.minimumHeight(), 620)
         window.resize(1280, 720)
         window.show()
         self.app.processEvents()
-        self.assertTrue(window.dashboard.risk_trend.isHidden())
+        self.assertTrue(window.dashboard.safety_note.isHidden())
         window.resize(1440, 900)
         self.app.processEvents()
-        self.assertFalse(window.dashboard.risk_trend.isHidden())
+        self.assertFalse(window.dashboard.safety_note.isHidden())
         window.close()
 
     def test_compact_height_prioritizes_core_closed_loop_information(self):
@@ -146,7 +154,7 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertTrue(dashboard.safety_note.isHidden())
 
         dashboard.set_compact_mode(False)
-        self.assertFalse(dashboard.risk_trend.isHidden())
+        self.assertTrue(dashboard.risk_trend.isHidden())
         self.assertFalse(dashboard.safety_note.isHidden())
         dashboard.close()
 

@@ -56,17 +56,32 @@ $env:AIX_DEVICE_ID = $runtime.DeviceId
 $env:AIX_MODEL_STDOUT_PATH = $stdoutPath
 $env:AIX_MODEL_STDERR_PATH = $stderrPath
 
-Write-Output "[3/5] Starting asynchronous model service..."
-$modelArgs = @("-m", "uvicorn", "server:create_runtime_app", "--factory", "--host", "0.0.0.0", "--port", "8008")
-$service = Start-Process -FilePath $modelPython -ArgumentList $modelArgs -WorkingDirectory $serviceRoot `
-    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -PassThru
+$service = $null
+$startedModelService = $false
+$reuseHealthyService = $false
+try {
+    $existingHealth = Invoke-RestMethod -Uri "http://127.0.0.1:8008/healthz" -TimeoutSec 1
+    $reuseHealthyService = $existingHealth.http_ready -eq $true
+} catch {
+    $reuseHealthyService = $false
+}
+
+if ($reuseHealthyService) {
+    Write-Output "[3/5] Reusing healthy local model service on 127.0.0.1:8008..."
+} else {
+    Write-Output "[3/5] Starting asynchronous model service..."
+    $modelArgs = @("-m", "uvicorn", "server:create_runtime_app", "--factory", "--host", "0.0.0.0", "--port", "8008")
+    $service = Start-Process -FilePath $modelPython -ArgumentList $modelArgs -WorkingDirectory $serviceRoot `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -PassThru
+    $startedModelService = $true
+}
 
 try {
     Write-Output "[4/5] Waiting for HTTP health endpoint..."
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     $healthy = $false
     while ([DateTime]::UtcNow -lt $deadline) {
-        if ($service.HasExited) {
+        if ($startedModelService -and $service.HasExited) {
             throw "Model service exited early with code $($service.ExitCode). See $stderrPath"
         }
         try {
@@ -95,7 +110,7 @@ try {
         Pop-Location
     }
 } finally {
-    if ($null -ne $service -and -not $service.HasExited) {
+    if ($startedModelService -and $null -ne $service -and -not $service.HasExited) {
         Stop-Process -Id $service.Id -Force
         $service.WaitForExit(5000)
     }

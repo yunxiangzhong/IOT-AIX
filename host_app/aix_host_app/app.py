@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from .chain_client import PcChainClient
 from .fonts import ensure_cjk_font
@@ -26,8 +26,18 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         ensure_cjk_font()
         self.setWindowTitle("AIX 主动视觉控制台")
-        self.setMinimumSize(1280, 720)
-        self.resize(1440, 900)
+        self.setMinimumSize(1024, 620)
+        # Respect the logical work area under Windows DPI scaling; otherwise the
+        # 1440×900 default can open clipped on a 1366×768-equivalent display.
+        primary_screen = QtGui.QGuiApplication.primaryScreen()
+        available = primary_screen.availableGeometry()
+        scale = max(1.0, primary_screen.devicePixelRatio())
+        available_width = int(available.width() / scale)
+        available_height = int(available.height() / scale)
+        self.resize(
+            min(1440, max(self.minimumWidth(), available_width - 16)),
+            min(900, max(self.minimumHeight(), available_height - 16)),
+        )
         self.setStyleSheet(app_stylesheet())
 
         settings = QtCore.QSettings("AIX", "HostApp")
@@ -50,7 +60,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.primary_pages.setObjectName("primaryPages")
         self.primary_pages.addWidget(self.dashboard)
         self.primary_pages.addWidget(self.scenario_panel)
-        self._reduce_motion = bool(settings.value("reduce_motion", False, type=bool))
+        # 默认轻量模式：中控保持一张已分析 PNG，避免串流画面拖慢上位机。
+        self._reduce_motion = True
         self._page_opacity = QtWidgets.QGraphicsOpacityEffect(self.primary_pages)
         self.primary_pages.setGraphicsEffect(self._page_opacity)
         self._page_opacity.setOpacity(1.0)
@@ -59,13 +70,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._page_fade.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
         wrapper = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(wrapper)
-        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setContentsMargins(12, 10, 12, 8)
+        layout.setSpacing(10)
         navigation = QtWidgets.QFrame()
-        navigation.setObjectName("instrumentHeader")
+        navigation.setObjectName("globalNavigation")
         nav_layout = QtWidgets.QHBoxLayout(navigation)
-        nav_layout.setContentsMargins(12, 8, 12, 8)
+        nav_layout.setContentsMargins(16, 9, 12, 9)
+        nav_layout.setSpacing(8)
         nav_title = QtWidgets.QLabel("AIX 控制中心")
-        nav_title.setObjectName("instrumentTitle")
+        nav_title.setObjectName("appTitle")
         self.overview_button = QtWidgets.QPushButton("中控总览")
         self.scenario_button = QtWidgets.QPushButton("协同场景")
         for button in (self.overview_button, self.scenario_button):
@@ -73,24 +86,77 @@ class MainWindow(QtWidgets.QMainWindow):
         self.overview_button.setChecked(True)
         self.overview_button.clicked.connect(self._show_overview)
         self.scenario_button.clicked.connect(self._show_scenario)
-        nav_layout.addWidget(nav_title, 1)
+        nav_layout.addWidget(nav_title)
+        nav_layout.addSpacing(18)
         nav_layout.addWidget(self.overview_button)
         nav_layout.addWidget(self.scenario_button)
+        nav_layout.addStretch(1)
+
+        self.diagnostics_button = QtWidgets.QPushButton("诊断")
+        self.diagnostics_button.setCheckable(True)
+        self.diagnostics_button.toggled.connect(self._toggle_diagnostics)
+        nav_layout.addWidget(self.diagnostics_button)
+
+        self.session_button = QtWidgets.QToolButton()
+        self.session_button.setText("会话记录")
+        self.session_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.session_menu = QtWidgets.QMenu(self.session_button)
+        self.session_state_action = self.session_menu.addAction("自动记录 · 已开启")
+        self.session_state_action.setEnabled(False)
+        self.session_root_action = self.session_menu.addAction(f"目录 · {self.session_recorder.root}")
+        self.session_root_action.setEnabled(False)
+        self.session_menu.addSeparator()
+        self.choose_storage_action = self.session_menu.addAction("选择数据目录…")
+        self.choose_storage_action.triggered.connect(self._choose_storage_root)
+        self.session_button.setMenu(self.session_menu)
+        nav_layout.addWidget(self.session_button)
+
+        self.device_button = QtWidgets.QPushButton("● 设备未连接")
+        self.device_button.setObjectName("deviceStatusButton")
+        self.device_button.setCheckable(True)
+        self.device_button.toggled.connect(self._set_device_sheet_visible)
+        nav_layout.addWidget(self.device_button)
         layout.addWidget(navigation)
-        layout.addWidget(self.primary_pages, 1)
+
+        content = QtWidgets.QWidget()
+        content_layout = QtWidgets.QHBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
+        content_layout.addWidget(self.primary_pages, 1)
+        layout.addWidget(content, 1)
         self.setCentralWidget(wrapper)
+        QtCore.QTimer.singleShot(0, self._place_in_available_geometry)
 
         self.connection_panel = ConnectionPanel()
-        self.connection_panel.set_storage_root(str(self.session_recorder.root))
-        self.settings_dialog = QtWidgets.QDialog(self)
-        self.settings_dialog.setWindowTitle("设备与会话设置")
-        self.settings_dialog.setMinimumWidth(420)
-        settings_layout = QtWidgets.QVBoxLayout(self.settings_dialog)
-        settings_layout.addWidget(self.connection_panel)
-        self.reduce_motion_check = QtWidgets.QCheckBox("减少动态效果")
-        self.reduce_motion_check.setChecked(self._reduce_motion)
-        self.reduce_motion_check.toggled.connect(self._set_reduce_motion)
-        settings_layout.addWidget(self.reduce_motion_check)
+        self.connection_panel.close_requested.connect(lambda: self.device_button.setChecked(False))
+        self.device_window = QtWidgets.QDialog(
+            self,
+            QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint,
+        )
+        self.device_window.setObjectName("deviceWindow")
+        self.device_window.setModal(False)
+        self.device_window.setWindowTitle("设备接入")
+        device_window_layout = QtWidgets.QVBoxLayout(self.device_window)
+        device_window_layout.setContentsMargins(0, 0, 0, 0)
+        device_window_layout.addWidget(self.connection_panel)
+        self._device_opacity = QtWidgets.QGraphicsOpacityEffect(self.device_window)
+        self.device_window.setGraphicsEffect(self._device_opacity)
+        self._device_window_fade = QtCore.QPropertyAnimation(self._device_opacity, b"opacity", self)
+        self._device_window_fade.setDuration(180)
+        self._device_window_fade.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+        self.device_window.hide()
+
+        # 诊断（含气动标定）必须脱离总览布局，避免压缩或覆盖中控画面。
+        self.diagnostics_window = QtWidgets.QDialog(self, QtCore.Qt.WindowType.Tool)
+        self.diagnostics_window.setObjectName("diagnosticsWindow")
+        self.diagnostics_window.setModal(False)
+        self.diagnostics_window.setWindowTitle("诊断与气动标定")
+        diagnostics_layout = QtWidgets.QVBoxLayout(self.diagnostics_window)
+        diagnostics_layout.setContentsMargins(12, 12, 12, 12)
+        diagnostics_layout.addWidget(self.dashboard.diagnostics)
+        self.diagnostics_window.resize(980, 650)
+        self.diagnostics_window.finished.connect(self._diagnostics_window_finished)
+        self.diagnostics_window.hide()
 
         self.chain_client = PcChainClient(
             self.service_url, self.device_id,
@@ -118,9 +184,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._wire_settings()
         self.refresh_ports()
-        self.dashboard.settings_requested.connect(self.settings_dialog.show)
         self.scenario_panel.start_requested.connect(self.chain_client.send_road_hazard)
         self.scenario_panel.reset_requested.connect(self._record_road_hazard_reset)
+        self.dashboard.set_static_visual_mode(True)
+        # 协同场景只保留低频、必要的安全演示动作。
+        self.scenario_panel.set_reduced_motion(True)
         self.chain_client.start()
         self.statusBar().showMessage("上位机帧服务连接中；视觉模型将在后台加载")
 
@@ -129,7 +197,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.connection_panel.connect_requested.connect(self._start_serial)
         self.connection_panel.disconnect_requested.connect(self._stop_serial)
         self.connection_panel.simulation_changed.connect(self._set_simulation_enabled)
-        self.connection_panel.storage_root_changed.connect(self._set_storage_root)
         self.dashboard.pneumatic_panel.command_requested.connect(self.chain_client.send_pneumatic_command)
         self.dashboard.pneumatic_panel.config_requested.connect(self.chain_client.request_pneumatic_config)
 
@@ -145,6 +212,23 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "dashboard"):
             self.dashboard.set_compact_mode(event.size().height() < 800)
 
+    def _place_in_available_geometry(self) -> None:
+        """Center the first window in the current DPI-aware work area."""
+        screen = self.screen() or QtGui.QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        scale = max(1.0, screen.devicePixelRatio())
+        available_width = int(available.width() / scale)
+        available_height = int(available.height() / scale)
+        width = min(self.width(), max(self.minimumWidth(), available_width - 16))
+        height = min(self.height(), max(self.minimumHeight(), available_height - 16))
+        self.resize(width, height)
+        self.move(
+            int(available.left() / scale) + max(0, (available_width - width) // 2),
+            int(available.top() / scale) + max(0, (available_height - height) // 2),
+        )
+
     def _show_overview(self) -> None:
         self._set_primary_page(0)
         self.overview_button.setChecked(True)
@@ -158,24 +242,50 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_primary_page(self, index: int) -> None:
         self._page_fade.stop()
         self.primary_pages.setCurrentIndex(index)
-        if self._reduce_motion:
-            self._page_opacity.setOpacity(1.0)
-            return
-        self._page_opacity.setOpacity(0.35)
-        self._page_fade.setStartValue(self._page_opacity.opacity())
-        self._page_fade.setEndValue(1.0)
-        self._page_fade.start()
+        self._page_opacity.setOpacity(1.0)
 
-    def _set_reduce_motion(self, enabled: bool) -> None:
-        self._reduce_motion = enabled
-        if self.reduce_motion_check.isChecked() != enabled:
-            self.reduce_motion_check.blockSignals(True)
-            self.reduce_motion_check.setChecked(enabled)
-            self.reduce_motion_check.blockSignals(False)
-        QtCore.QSettings("AIX", "HostApp").setValue("reduce_motion", enabled)
-        if enabled:
-            self._page_fade.stop()
-            self._page_opacity.setOpacity(1.0)
+    def _toggle_diagnostics(self, enabled: bool) -> None:
+        if not enabled:
+            self.dashboard.diagnostics.hide()
+            self.diagnostics_window.hide()
+            return
+        self._show_overview()
+        self.dashboard.diagnostics.show()
+        self.diagnostics_window.show()
+        self.diagnostics_window.raise_()
+        self.diagnostics_window.activateWindow()
+
+    def _diagnostics_window_finished(self, _result: int) -> None:
+        self.dashboard.diagnostics.hide()
+        self.diagnostics_button.blockSignals(True)
+        self.diagnostics_button.setChecked(False)
+        self.diagnostics_button.blockSignals(False)
+
+    def _set_device_sheet_visible(self, visible: bool) -> None:
+        self._device_window_fade.stop()
+        if not visible:
+            self.device_window.hide()
+            return
+        self.device_window.adjustSize()
+        width = max(420, self.device_window.sizeHint().width())
+        height = self.device_window.sizeHint().height()
+        self.device_window.resize(width, height)
+        anchor = self.device_button.mapToGlobal(QtCore.QPoint(self.device_button.width() - width, self.device_button.height() + 8))
+        screen = self.screen().availableGeometry()
+        x = min(max(screen.left() + 8, anchor.x()), screen.right() - width - 8)
+        y = min(max(screen.top() + 8, anchor.y()), screen.bottom() - height - 8)
+        self.device_window.move(x, y)
+        self.device_window.show()
+        self.device_window.raise_()
+        self._device_opacity.setOpacity(1.0)
+
+    def _choose_storage_root(self) -> None:
+        selected = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "选择会话数据目录", str(self.session_recorder.root)
+        )
+        if selected:
+            self._set_storage_root(selected)
+            self.session_root_action.setText(f"目录 · {selected}")
 
     def refresh_ports(self) -> None:
         self.connection_panel.set_ports(list_serial_ports())
@@ -204,6 +314,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reader.state_changed.connect(self._handle_reader_state)
         self.reader.start()
         self._ensure_session(port, baudrate)
+        self.device_button.setText(f"● 正在连接 {port}")
 
     def _stop_serial(self, *, close_session: bool = True) -> None:
         if self.reader is not None:
@@ -211,12 +322,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self.reader.wait(1500)
             self.reader = None
         self.connection_panel.set_connected(False)
+        if not self.connection_panel.is_simulation_selected():
+            self.device_button.setText("● 设备未连接")
         if close_session:
             self.session_recorder.close()
 
     def _handle_reader_state(self, state: str) -> None:
         connected = state == "connected"
         self.connection_panel.set_connected(connected, "串口双向已连接" if connected else "串口未连接")
+        self.device_button.setText(
+            f"● {self.connection_panel.current_port()} 已连接" if connected else "● 设备未连接"
+        )
+        self.device_button.setProperty("connectionState", "connected" if connected else "disconnected")
+        self.device_button.style().unpolish(self.device_button)
+        self.device_button.style().polish(self.device_button)
+        if connected:
+            QtCore.QTimer.singleShot(260, lambda: self.device_button.setChecked(False))
         self.statusBar().showMessage("头盔设备串口已连接" if connected else "头盔设备串口已断开")
 
     def _handle_error(self, message: str) -> None:
@@ -265,6 +386,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.dashboard.device_log.appendPlainText("收到旧版运动诊断数据；不显示速度")
         elif isinstance(event, PneumaticStatusEvent):
             self.dashboard.apply_pneumatic_status(event)
+            self.scenario_panel.apply_pneumatic_status(event)
             self.session_recorder.record_pneumatic({
                 "type": "pneumatic_status", "version": 1, "ts_ms": event.ts_ms,
                 "state": event.state, "fault": event.fault, "trigger": event.trigger,
@@ -276,6 +398,7 @@ class MainWindow(QtWidgets.QMainWindow):
             })
         elif isinstance(event, VoiceStatusEvent):
             self.dashboard.apply_voice_status(event)
+            self.scenario_panel.apply_voice_status(event)
             self.session_recorder.record_road_hazard({
                 "type": "voice_status", "state": event.state, "command_id": event.command_id,
                 "track": event.track, "error": event.error,
@@ -353,6 +476,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ensure_session()
         self.session_recorder.record_road_hazard({"type": "road_hazard_submission_error", "error": message})
         self.dashboard.protocol_log.appendPlainText(message)
+        self.scenario_panel.apply_submission_error(message)
         self.statusBar().showMessage(message)
 
     def _accept_road_hazard_status(self, event: RoadHazardStatusEvent) -> None:
@@ -446,8 +570,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sim_clock.restart()
             self.sim_timer.start()
             self.connection_panel.set_connected(False, "模拟数据")
+            self.device_button.setText("● 模拟数据")
+            self.device_button.setProperty("connectionState", "simulation")
+            self.device_button.style().unpolish(self.device_button)
+            self.device_button.style().polish(self.device_button)
         else:
             self.sim_timer.stop()
+            if self.reader is None:
+                self.device_button.setText("● 设备未连接")
 
     def _emit_simulated_sample(self) -> None:
         self.sim_seq += 1
