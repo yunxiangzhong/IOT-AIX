@@ -1,10 +1,12 @@
 import sys
+import subprocess
 import unittest
 from pathlib import Path
 
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 MODEL_ROOT = SERVICE_ROOT.parent
+PROJECT_ROOT = MODEL_ROOT.parents[1]
 sys.path.insert(0, str(SERVICE_ROOT))
 
 
@@ -28,14 +30,32 @@ class DeploymentScriptTests(unittest.TestCase):
         self.assertIn("YOLO_CONFIG_DIR", launcher)
         self.assertIn('cache\\ultralytics', launcher)
 
-    def test_runtime_scripts_keep_env_and_weights_under_this_project_root(self) -> None:
+    def test_runtime_scripts_share_heavy_assets_with_linked_worktrees(self) -> None:
         installer = (MODEL_ROOT / "install.ps1").read_text(encoding="utf-8")
         launcher = (MODEL_ROOT / "run_service.ps1").read_text(encoding="utf-8")
-        verifier = (MODEL_ROOT.parents[1] / "scripts" / "verify.ps1").read_text(encoding="utf-8")
+        verifier = (PROJECT_ROOT / "scripts" / "verify.ps1").read_text(encoding="utf-8")
+        resolver = PROJECT_ROOT / "scripts" / "runtime_paths.ps1"
+        linked_project = PROJECT_ROOT / ".worktrees" / "roadside-collaborative-warning"
+        common_git_dir = PROJECT_ROOT / ".git"
 
-        self.assertIn('Join-Path $projectRoot "Models\\DepthAnything3"', installer)
-        self.assertIn('Join-Path $projectRoot "Models\\DepthAnything3"', launcher)
-        self.assertIn('Join-Path $projectRoot ".venv\\Scripts\\python.exe"', verifier)
+        for script in (installer, launcher, verifier):
+            self.assertIn("Resolve-AixRuntimeRoot", script)
+
+        def resolve(project_root: Path, common_dir: str) -> Path:
+            command = (
+                f". '{resolver}'; Resolve-AixRuntimeRoot -ProjectRoot '{project_root}' "
+                f"-GitCommonDir '{common_dir}'"
+            )
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+            return Path(result.stdout.strip())
+
+        self.assertEqual(resolve(linked_project, str(common_git_dir)), PROJECT_ROOT)
+        self.assertEqual(resolve(PROJECT_ROOT, ".git"), PROJECT_ROOT)
 
     def test_readme_documents_processed_frame_and_agpl_boundary(self) -> None:
         readme = (MODEL_ROOT / "README.md").read_text(encoding="utf-8")

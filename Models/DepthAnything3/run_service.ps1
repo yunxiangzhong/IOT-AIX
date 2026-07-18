@@ -6,7 +6,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
-$runtimeRoot = Join-Path $projectRoot "Models\DepthAnything3"
+. (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "scripts\runtime_paths.ps1")
+$commonGitDir = (& git -C $projectRoot rev-parse --git-common-dir).Trim()
+$sharedProjectRoot = Resolve-AixRuntimeRoot -ProjectRoot $projectRoot -GitCommonDir $commonGitDir
+$runtimeRoot = Join-Path $sharedProjectRoot "Models\DepthAnything3"
 $python = Join-Path $runtimeRoot "env\python.exe"
 
 if (-not (Test-Path -LiteralPath $python)) {

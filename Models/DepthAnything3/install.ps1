@@ -9,7 +9,10 @@ $modelRevision = "e08cab65ca0ec38e7826075418411ab90cab4da3"
 $conda = "D:\APP\Anaconda\install_place\Scripts\conda.exe"
 
 $projectRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
-$root = Join-Path $projectRoot "Models\DepthAnything3"
+. (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "scripts\runtime_paths.ps1")
+$commonGitDir = (& git -C $projectRoot rev-parse --git-common-dir).Trim()
+$runtimeRoot = Resolve-AixRuntimeRoot -ProjectRoot $projectRoot -GitCommonDir $commonGitDir
+$root = Join-Path $runtimeRoot "Models\DepthAnything3"
 $source = Join-Path $root "source"
 $environment = Join-Path $root "env"
 $weights = Join-Path $root "weights\DA3-SMALL"
