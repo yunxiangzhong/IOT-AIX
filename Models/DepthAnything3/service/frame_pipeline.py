@@ -342,7 +342,8 @@ class RiskCallbackClient:
             return False
         if voice_ack.get("requested") is not True:
             return False
-        if voice_ack.get("command_id") != command_id or voice_ack.get("track") != track:
+        ack_track = voice_ack.get("track")
+        if voice_ack.get("command_id") != command_id or type(ack_track) is not int or ack_track != track:
             return False
         accepted = voice_ack.get("accepted")
         duplicate = voice_ack.get("duplicate")

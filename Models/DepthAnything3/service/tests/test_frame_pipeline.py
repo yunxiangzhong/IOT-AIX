@@ -201,6 +201,24 @@ class RiskCallbackTests(unittest.TestCase):
                 self.assertIsNone(client.send(frame(8), {"frame_seq": 8, "voice_prompt": prompt}, is_current=lambda: True))
                 self.assertIn("voice_ack", client.last_error)
 
+    def test_rejects_boolean_voice_ack_track_for_track_one_prompt(self) -> None:
+        prompt = {"command_id": "boot:8:1", "track": 1}
+
+        def transport(url, token, payload, timeout_s):
+            return {
+                "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
+                "accepted": True, "stale": False, "action_state": "attention",
+                "rgb_pattern": "yellow_blink_1hz",
+                "voice_ack": {
+                    "requested": True, "command_id": prompt["command_id"], "track": True,
+                    "accepted": True, "duplicate": False, "status": "queued",
+                },
+            }
+
+        client = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
+        self.assertIsNone(client.send(frame(8), {"frame_seq": 8, "voice_prompt": prompt}, is_current=lambda: True))
+        self.assertIn("voice_ack", client.last_error)
+
     def test_retries_keep_the_same_voice_command_id_and_accept_cached_voice_ack(self) -> None:
         sent_prompts = []
 
