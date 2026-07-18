@@ -1,4 +1,5 @@
 import os
+import re
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -80,7 +81,9 @@ class CooperativeWarningUiTests(unittest.TestCase):
         self.assertIn("新鲜度", overview.realtime_values["pressure"].text())
         overview._sensor_received_at_ms["pressure"] -= 1200
         overview.refresh_sensor_freshness()
-        self.assertIn("1200", overview.realtime_values["pressure"].text())
+        match = re.search(r"新鲜度 (\d+) ms", overview.realtime_values["pressure"].text())
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(int(match.group(1)), 1200)
         window.close()
 
     def test_compact_1280_keeps_mapped_rows_and_safety_boundaries_visible(self):
