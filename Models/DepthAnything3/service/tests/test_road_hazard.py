@@ -38,6 +38,15 @@ class ManualFuture:
         return True
 
 
+class RejectingExecutor(ManualExecutor):
+    def __init__(self):
+        super().__init__()
+        self.shutdown_called = False
+
+    def shutdown(self, wait=True, **_kwargs):
+        self.shutdown_called = True
+
+
 def event_payload(**overrides):
     payload = {
         "event_id": "road-event-001",
@@ -310,6 +319,51 @@ class RoadHazardSenderTests(unittest.TestCase):
         if outcomes[0] is True:
             self.assertEqual(states.latest("aix-helmet-01")["road_hazard"]["delivery"]["state"], "failed")
 
+    def test_queue_full_preserves_duplicate_and_conflict_semantics(self):
+        from frame_pipeline import ChainStateRepository, LatestFrameStore
+        from road_hazard import RoadHazardConflictError, RoadHazardSender, RoadHazardEvent, RoadHazardUnavailableError
+        store, states, executor = LatestFrameStore(), ChainStateRepository(), ManualExecutor()
+        store.put(frame()); states.record_frame(frame())
+        sender = RoadHazardSender(store, states, token="t", executor=executor, max_pending=1)
+        first = RoadHazardEvent.from_payload(event_payload())
+        self.assertTrue(sender.accept(first))
+        self.assertFalse(sender.accept(first))
+        with self.assertRaises(RoadHazardConflictError):
+            sender.accept(RoadHazardEvent.from_payload(event_payload(severity="critical")))
+        with self.assertRaises(RoadHazardUnavailableError):
+            sender.accept(RoadHazardEvent.from_payload(event_payload(event_id="new-while-full")))
+        self.assertTrue(sender._repository.accept(RoadHazardEvent.from_payload(event_payload(event_id="new-while-full"))))
+
+    def test_external_executor_is_not_shutdown_and_restarts(self):
+        from frame_pipeline import ChainStateRepository, LatestFrameStore
+        from road_hazard import RoadHazardSender, RoadHazardEvent
+        store, states, executor = LatestFrameStore(), ChainStateRepository(), RejectingExecutor()
+        store.put(frame()); states.record_frame(frame())
+        sender = RoadHazardSender(store, states, token="t", executor=executor)
+        sender.stop()
+        self.assertFalse(executor.shutdown_called)
+        sender.start()
+        self.assertTrue(sender.accept(RoadHazardEvent.from_payload(event_payload(event_id="external-restart"))))
+
+
+class RoadHazardRepositoryTests(unittest.TestCase):
+    def test_retains_terminal_idempotency_then_expires_and_bounds_only_terminal_entries(self):
+        from road_hazard import RoadHazardEvent, RoadHazardRepository
+        now = [0]
+        repo = RoadHazardRepository(retention_ms=100, max_events=2, clock=lambda: now[0])
+        first = RoadHazardEvent.from_payload(event_payload(event_id="retain-1"))
+        second = RoadHazardEvent.from_payload(event_payload(event_id="retain-2"))
+        third = RoadHazardEvent.from_payload(event_payload(event_id="retain-3"))
+        self.assertTrue(repo.accept(first)); repo.mark_terminal(first, 0)
+        self.assertFalse(repo.accept(first))
+        self.assertTrue(repo.accept(second)); repo.mark_terminal(second, 1)
+        self.assertTrue(repo.accept(third))
+        self.assertIsNone(repo.latest("retain-1"))
+        self.assertIsNotNone(repo.latest("retain-2"))
+        self.assertIsNotNone(repo.latest("retain-3"))
+        now[0] = 100
+        self.assertTrue(repo.accept(first))
+
 
 class RoadHazardApiTests(unittest.TestCase):
     def setUp(self):
@@ -367,3 +421,31 @@ class RoadHazardApiTests(unittest.TestCase):
             self.assertEqual(client.post("/v1/road-hazards", json=event_payload(), headers=self.headers).status_code, 202)
             self.assertEqual(client.post("/v1/road-hazards", json=event_payload(event_id="road-event-004"), headers=self.headers).status_code, 503)
         self.assertEqual(states.latest("aix-helmet-01")["road_hazard"]["event_id"], "road-event-001")
+
+
+class RoadHazardTerminalStateTests(unittest.TestCase):
+    def _state(self):
+        from frame_pipeline import ChainStateRepository
+        state = ChainStateRepository()
+        state.begin_road_hazard(event_payload(), 1)
+        return state
+
+    def _ack(self):
+        return {
+            "type": "road_hazard_ack", "version": 1, "device_id": "aix-helmet-01",
+            "boot_id": "0123456789abcdef", "event_id": "road-event-001", "accepted": True,
+            "duplicate": False, "expires_in_ms": 1, "severity": "high",
+            "effective_rgb_pattern": "x", "voice_state": "not_configured", "error": "",
+        }
+
+    def test_stop_inserted_after_ack_check_cannot_be_overwritten_by_completion(self):
+        state = self._state()
+        self.assertTrue(state.fail_road_hazard("aix-helmet-01", "road-event-001", "stopped", 1, 2))
+        self.assertFalse(state.record_road_hazard_ack("aix-helmet-01", "road-event-001", self._ack(), 1, 1, now_ms=3))
+        self.assertEqual(state.latest("aix-helmet-01")["road_hazard"]["ack"]["state"], "failed")
+
+    def test_stop_after_ack_completion_cannot_overwrite_completed_terminal(self):
+        state = self._state()
+        self.assertTrue(state.record_road_hazard_ack("aix-helmet-01", "road-event-001", self._ack(), 1, 1, now_ms=2))
+        self.assertFalse(state.fail_road_hazard("aix-helmet-01", "road-event-001", "stopped", 1, 3))
+        self.assertEqual(state.latest("aix-helmet-01")["road_hazard"]["ack"]["state"], "completed")

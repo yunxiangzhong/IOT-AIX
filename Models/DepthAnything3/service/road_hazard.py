@@ -95,15 +95,38 @@ class RoadHazardEvent:
 
 
 class RoadHazardRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, retention_ms: int = 60_000, max_events: int = 256, clock: Callable[[], int] | None = None) -> None:
+        if retention_ms <= 0 or max_events <= 0:
+            raise ValueError("repository retention and maximum must be positive")
         self._lock = threading.Lock()
-        self._events: dict[str, RoadHazardEvent] = {}
+        self._retention_ms = retention_ms
+        self._max_events = max_events
+        self._clock = clock or (lambda: int(time.time() * 1000))
+        self._events: dict[str, tuple[RoadHazardEvent, int | None]] = {}
+
+    def _cleanup_locked(self, now_ms: int) -> None:
+        for event_id, (_event, terminal_ms) in list(self._events.items()):
+            if terminal_ms is not None and now_ms - terminal_ms >= self._retention_ms:
+                del self._events[event_id]
+        if len(self._events) <= self._max_events:
+            return
+        terminal = sorted(
+            ((terminal_ms, event_id) for event_id, (_event, terminal_ms) in self._events.items() if terminal_ms is not None),
+            key=lambda item: item[0],
+        )
+        for _terminal_ms, event_id in terminal:
+            if len(self._events) <= self._max_events:
+                break
+            del self._events[event_id]
 
     def accept(self, event: RoadHazardEvent) -> bool:
         with self._lock:
-            previous = self._events.get(event.event_id)
+            self._cleanup_locked(self._clock())
+            record = self._events.get(event.event_id)
+            previous = record[0] if record is not None else None
             if previous is None:
-                self._events[event.event_id] = event
+                self._events[event.event_id] = (event, None)
+                self._cleanup_locked(self._clock())
                 return True
             if previous == event:
                 return False
@@ -111,8 +134,22 @@ class RoadHazardRepository:
 
     def discard(self, event: RoadHazardEvent) -> None:
         with self._lock:
-            if self._events.get(event.event_id) == event:
+            record = self._events.get(event.event_id)
+            if record is not None and record[0] == event:
                 del self._events[event.event_id]
+
+    def mark_terminal(self, event: RoadHazardEvent, now_ms: int | None = None) -> None:
+        with self._lock:
+            record = self._events.get(event.event_id)
+            if record is not None and record[0] == event:
+                self._events[event.event_id] = (event, self._clock() if now_ms is None else now_ms)
+            self._cleanup_locked(self._clock() if now_ms is None else now_ms)
+
+    def latest(self, event_id: str) -> RoadHazardEvent | None:
+        with self._lock:
+            self._cleanup_locked(self._clock())
+            record = self._events.get(event_id)
+            return None if record is None else record[0]
 
 
 def _default_transport(url: str, token: str, payload: dict, timeout_s: float) -> dict:
@@ -142,13 +179,14 @@ class RoadHazardSender:
         if max_pending <= 0:
             raise ValueError("max_pending must be positive")
         self._store, self._states, self._token = store, states, token
-        self._repository = repository or RoadHazardRepository()
         self._transport = transport or _default_transport
         self._clock = clock or (lambda: int(time.time() * 1000))
+        self._repository = repository or RoadHazardRepository(clock=self._clock)
         self._monotonic = monotonic_clock or time.monotonic
         self._sleep = sleep or time.sleep
         self._max_pending = max_pending
         self._lock = threading.RLock()
+        self._external_executor = executor is not None
         self._executor_factory = executor_factory or (lambda: executor if executor is not None else ThreadPoolExecutor(max_workers=2, thread_name_prefix="road-hazard"))
         self._executor = executor or self._executor_factory()
         self._accepting = True
@@ -167,7 +205,8 @@ class RoadHazardSender:
         with self._lock:
             if self._accepting:
                 return
-            self._executor = self._executor_factory()
+            if not self._external_executor:
+                self._executor = self._executor_factory()
             self._accepting = True
 
     def stop(self) -> None:
@@ -184,20 +223,23 @@ class RoadHazardSender:
             if callable(cancel):
                 cancel()
             self._states.fail_road_hazard(event.device_id, event.event_id, "road hazard sender stopped", 0, self._clock())
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            executor.shutdown(wait=False)
+            self._repository.mark_terminal(event, self._clock())
+        if not self._external_executor:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                executor.shutdown(wait=False)
 
     def accept(self, event: RoadHazardEvent) -> bool:
         with self._lock:
             if not self._accepting:
                 raise RoadHazardUnavailableError("road hazard sender is stopped")
-            if len(self._jobs) >= self._max_pending:
-                raise RoadHazardUnavailableError("road hazard sender queue is full")
             created = self._repository.accept(event)
             if not created:
                 return False
+            if len(self._jobs) >= self._max_pending:
+                self._repository.discard(event)
+                raise RoadHazardUnavailableError("road hazard sender queue is full")
             received_wall, received_monotonic = self._clock(), self._monotonic()
             stop_event, launch_gate = threading.Event(), threading.Event()
             try:
@@ -223,6 +265,7 @@ class RoadHazardSender:
             with self._lock:
                 self._jobs.pop(event.event_id, None)
                 self._timers.pop(event.event_id, None)
+            self._repository.mark_terminal(event, self._clock())
 
     def process(
         self, event: RoadHazardEvent | dict, *, stop_event: threading.Event | None = None,

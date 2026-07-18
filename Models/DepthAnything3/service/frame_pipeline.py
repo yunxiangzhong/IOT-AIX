@@ -310,12 +310,14 @@ class ChainStateRepository:
             }
             self._touch(state)
 
-    def fail_road_hazard(self, device_id: str, event_id: str, error: str, attempts: int, now_ms: int) -> None:
+    def fail_road_hazard(self, device_id: str, event_id: str, error: str, attempts: int, now_ms: int) -> bool:
         with self._lock:
             state = self._states.setdefault(device_id, self._base(device_id))
             hazard = state["road_hazard"]
             if hazard.get("event_id") != event_id:
-                return
+                return False
+            if hazard["ack"].get("state") in {"completed", "failed"}:
+                return False
             hazard["delivery"] = {"state": "failed"}
             hazard["ack"] = {"state": "failed", "payload": None}
             hazard["attempts"] = attempts
@@ -323,13 +325,16 @@ class ChainStateRepository:
             hazard["updated_ts_ms"] = now_ms
             state["last_error"] = error
             self._touch(state)
+            return True
 
-    def record_road_hazard_ack(self, device_id: str, event_id: str, ack: dict | None, latency_ms: float, attempts: int, error: str = "", now_ms: int | None = None) -> None:
+    def record_road_hazard_ack(self, device_id: str, event_id: str, ack: dict | None, latency_ms: float, attempts: int, error: str = "", now_ms: int | None = None) -> bool:
         with self._lock:
             state = self._states.setdefault(device_id, self._base(device_id))
             hazard = state["road_hazard"]
             if hazard.get("event_id") != event_id:
-                return
+                return False
+            if hazard["ack"].get("state") in {"completed", "failed"}:
+                return False
             hazard["delivery"] = {"state": "completed" if ack is not None else "failed"}
             hazard["ack"] = {"state": "completed" if ack is not None else "failed", "payload": deepcopy(ack) if ack is not None else None}
             hazard["attempts"] = attempts
@@ -340,6 +345,7 @@ class ChainStateRepository:
             if error:
                 state["last_error"] = error
             self._touch(state)
+            return True
 
     def latest(self, device_id: str, now_ms: int | None = None) -> dict | None:
         with self._lock:
