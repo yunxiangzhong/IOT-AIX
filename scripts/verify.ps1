@@ -176,6 +176,15 @@ if ([string]::IsNullOrWhiteSpace($roadHazardHandler) -or
     $roadHazardHandler -match 'voice_prompt|dfplayer|pneumatic_controller') {
     throw "road-hazard handler must remain isolated from voice and pneumatic control"
 }
+$actionControllerSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "action_controller.c")
+$applyRiskBody = [regex]::Match(
+    $actionControllerSourceText,
+    '(?s)risk_accept_result_t action_controller_apply_risk\(.*?\n}\r?\n\r?\nvoid action_controller_set_fault').Value
+if ([string]::IsNullOrWhiteSpace($applyRiskBody) -or
+    $applyRiskBody -notmatch '(?s)action_decision_t\s+local_snapshot\s*;.*?local_snapshot\s*=\s*s_decision\s*;.*?xSemaphoreGive\s*\(s_lock\).*?alert_arbiter_runtime_set_local\s*\(&local_snapshot' -or
+    [regex]::Match($applyRiskBody, '(?s)xSemaphoreGive\s*\(s_lock\)(.*)$').Groups[1].Value -match '\bs_decision\b') {
+    throw "action_controller_apply_risk must copy s_decision under lock and use only the local snapshot after unlock"
+}
 
 if ($BuildFirmware) {
     if (-not $env:IDF_PATH) {

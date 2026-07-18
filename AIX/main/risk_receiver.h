@@ -5,6 +5,8 @@
 #include <stdint.h>
 
 bool risk_receiver_token_matches(const char *expected, const char *provided);
+bool risk_receiver_copy_safe_road_hazard_event_id(char *output, size_t capacity, const char *input);
+bool risk_receiver_copy_safe_road_hazard_severity(char *output, size_t capacity, const char *input);
 bool risk_receiver_e2e_latency_ms(uint64_t capture_ts_ms, uint64_t now_ms, uint64_t *latency_ms);
 bool risk_receiver_e2e_latency_at_ack(
     uint64_t capture_ts_ms,

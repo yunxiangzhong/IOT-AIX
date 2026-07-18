@@ -72,6 +72,50 @@ int risk_receiver_format_action_ack(
     return written >= 0 && (size_t)written < capacity ? written : -1;
 }
 
+bool risk_receiver_copy_safe_road_hazard_event_id(char *output, size_t capacity, const char *input)
+{
+    if (output == NULL || capacity == 0U) {
+        return false;
+    }
+    output[0] = '\0';
+    if (input == NULL) {
+        return false;
+    }
+    const size_t length = strlen(input);
+    if (length == 0U || length > 64U || length >= capacity) {
+        return false;
+    }
+    for (size_t index = 0; index < length; ++index) {
+        const unsigned char value = (unsigned char)input[index];
+        const bool valid = (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') ||
+                           (value >= '0' && value <= '9') || value == '-' || value == '_' ||
+                           value == '.' || value == '~';
+        if (!valid) {
+            return false;
+        }
+    }
+    memcpy(output, input, length + 1U);
+    return true;
+}
+
+bool risk_receiver_copy_safe_road_hazard_severity(char *output, size_t capacity, const char *input)
+{
+    if (output == NULL || capacity == 0U) {
+        return false;
+    }
+    output[0] = '\0';
+    if (input == NULL ||
+        (strcmp(input, "attention") != 0 && strcmp(input, "high") != 0 && strcmp(input, "critical") != 0)) {
+        return false;
+    }
+    const size_t length = strlen(input);
+    if (length >= capacity) {
+        return false;
+    }
+    memcpy(output, input, length + 1U);
+    return true;
+}
+
 int risk_receiver_format_road_hazard_ack(
     char *buffer,
     size_t capacity,
@@ -394,12 +438,8 @@ static esp_err_t road_hazard_handler(httpd_req_t *request)
     };
     char event_id[ROAD_HAZARD_EVENT_ID_CAPACITY] = "";
     char severity_name[16] = "";
-    if (hazard.event_id != NULL && strlen(hazard.event_id) < sizeof(event_id)) {
-        snprintf(event_id, sizeof(event_id), "%s", hazard.event_id);
-    }
-    if (hazard.severity != NULL && strlen(hazard.severity) < sizeof(severity_name)) {
-        snprintf(severity_name, sizeof(severity_name), "%s", hazard.severity);
-    }
+    (void)risk_receiver_copy_safe_road_hazard_event_id(event_id, sizeof(event_id), hazard.event_id);
+    (void)risk_receiver_copy_safe_road_hazard_severity(severity_name, sizeof(severity_name), hazard.severity);
     if (!cJSON_IsObject(root) || cJSON_GetArraySize(root) != 14) {
         cJSON_Delete(root);
         return reject_road_hazard(request, "400 Bad Request", event_id, severity_name, "schema", current_ms);

@@ -91,16 +91,18 @@ risk_accept_result_t action_controller_apply_risk(
     action_decision_t *decision)
 {
     risk_accept_result_t result;
+    action_decision_t local_snapshot;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     result = action_policy_accept(&s_policy, risk, timestamp_ms);
     s_decision = action_policy_decide(&s_policy, timestamp_ms);
+    local_snapshot = s_decision;
     if (decision != NULL) {
-        *decision = s_decision;
+        *decision = local_snapshot;
     }
     xSemaphoreGive(s_lock);
-    alert_arbiter_runtime_set_local(&s_decision, timestamp_ms);
+    alert_arbiter_runtime_set_local(&local_snapshot, timestamp_ms);
     if (result == RISK_ACCEPTED) {
-        emit_status(&s_decision, timestamp_ms);
+        emit_status(&local_snapshot, timestamp_ms);
     }
     return result;
 }

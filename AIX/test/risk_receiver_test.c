@@ -9,6 +9,8 @@ int main(void)
     char ack[384];
     char hazard_ack[768];
     char hazard_status[512];
+    char safe_event_id[65];
+    char safe_severity[16];
     if (!risk_receiver_token_matches("local-secret", "local-secret")) {
         printf("matching token rejected\n");
         return 1;
@@ -62,6 +64,24 @@ int main(void)
         strstr(hazard_status, "\"state\":\"rejected\"") == NULL ||
         strstr(hazard_status, "\"reason\":\"boot\"") == NULL) {
         printf("road hazard serial status contract is incomplete\n");
+        return 1;
+    }
+    if (risk_receiver_copy_safe_road_hazard_event_id(
+            safe_event_id, sizeof(safe_event_id), "evil\"id\nforged") ||
+        safe_event_id[0] != '\0' ||
+        risk_receiver_copy_safe_road_hazard_severity(
+            safe_severity, sizeof(safe_severity), "high\"\nforged") ||
+        safe_severity[0] != '\0') {
+        printf("malicious rejected fields were not blanked before JSON echo\n");
+        return 1;
+    }
+    if (!risk_receiver_copy_safe_road_hazard_event_id(
+            safe_event_id, sizeof(safe_event_id), "evt_A-9.~") ||
+        strcmp(safe_event_id, "evt_A-9.~") != 0 ||
+        !risk_receiver_copy_safe_road_hazard_severity(
+            safe_severity, sizeof(safe_severity), "critical") ||
+        strcmp(safe_severity, "critical") != 0) {
+        printf("valid rejected fields were not preserved for JSON echo\n");
         return 1;
     }
     printf("risk_receiver_test: ALL PASSED\n");
