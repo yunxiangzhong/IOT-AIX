@@ -62,6 +62,39 @@ int main(void)
     expect(result.accepted && result.duplicate && result.status == VOICE_PROMPT_DUPLICATE,
            "cached HTTP retry must return a duplicate voice acknowledgement");
 
+    result = (voice_prompt_result_t){
+        .requested = true,
+        .accepted = false,
+        .duplicate = false,
+        .track = 1,
+        .status = VOICE_PROMPT_UNAVAILABLE,
+    };
+    result = voice_prompt_result_duplicate_ack(&result);
+    expect(!result.accepted && !result.duplicate && result.status == VOICE_PROMPT_UNAVAILABLE,
+           "cached unavailable retry must preserve its failed acknowledgement");
+
+    result = (voice_prompt_result_t){
+        .requested = true,
+        .accepted = false,
+        .duplicate = false,
+        .track = 1,
+        .status = VOICE_PROMPT_SUPPRESSED,
+    };
+    result = voice_prompt_result_duplicate_ack(&result);
+    expect(!result.accepted && !result.duplicate && result.status == VOICE_PROMPT_SUPPRESSED,
+           "cached suppressed retry must preserve its failed acknowledgement");
+
+    result = (voice_prompt_result_t){
+        .requested = true,
+        .accepted = false,
+        .duplicate = false,
+        .track = 1,
+        .status = VOICE_PROMPT_REJECTED,
+    };
+    result = voice_prompt_result_duplicate_ack(&result);
+    expect(!result.accepted && !result.duplicate && result.status == VOICE_PROMPT_REJECTED,
+           "cached rejected retry must preserve its failed acknowledgement");
+
     prompt = request("0123456789abcdef:10:1", 1, 10);
     result = voice_prompt_policy_submit(&policy, "attention", &prompt);
     expect(result.status == VOICE_PROMPT_DUPLICATE && result.accepted,

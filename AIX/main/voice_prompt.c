@@ -118,6 +118,10 @@ voice_prompt_result_t voice_prompt_result_duplicate_ack(const voice_prompt_resul
     if (original == NULL || !original->requested) {
         return voice_prompt_result_not_requested();
     }
+    if (!original->accepted ||
+        (original->status != VOICE_PROMPT_QUEUED && original->status != VOICE_PROMPT_DUPLICATE)) {
+        return *original;
+    }
     voice_prompt_result_t result = *original;
     result.accepted = true;
     result.duplicate = true;
