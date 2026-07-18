@@ -330,7 +330,7 @@ class ChainStateRepository:
             hazard = state["road_hazard"]
             if hazard.get("event_id") != event_id:
                 return
-            hazard["delivery"] = {"state": "completed"}
+            hazard["delivery"] = {"state": "completed" if ack is not None else "failed"}
             hazard["ack"] = {"state": "completed" if ack is not None else "failed", "payload": deepcopy(ack) if ack is not None else None}
             hazard["attempts"] = attempts
             hazard["network_latency_ms"] = round(latency_ms, 2)

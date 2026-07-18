@@ -25,6 +25,10 @@ class RoadHazardDeliveryError(RuntimeError):
     pass
 
 
+class RoadHazardUnavailableError(RuntimeError):
+    pass
+
+
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,64}$")
 _SEVERITIES = {"attention", "high", "critical"}
 _DIRECTIONS = {"left", "right", "front", "rear"}
@@ -36,7 +40,7 @@ _FIELDS = (
 
 def _positive_int(payload: dict, field: str) -> int:
     value = payload.get(field)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if type(value) is not int or value <= 0:
         raise RoadHazardValidationError(f"{field} must be a positive integer")
     return value
 
@@ -59,23 +63,24 @@ class RoadHazardEvent:
     def from_payload(cls, payload: object) -> "RoadHazardEvent":
         if not isinstance(payload, dict):
             raise RoadHazardValidationError("road hazard must be a JSON object")
+        if set(payload) != set(_FIELDS):
+            raise RoadHazardValidationError("road hazard fields are missing or unknown")
         values = {}
         for field in ("event_id", "device_id", "camera_id", "intersection_id", "object_type", "message_code"):
-            value = payload.get(field)
+            value = payload[field]
             if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
                 raise RoadHazardValidationError(f"{field} must be 1-64 URL-safe characters")
             values[field] = value
-        direction = payload.get("direction")
-        if direction not in _DIRECTIONS:
+        direction = payload["direction"]
+        severity = payload["severity"]
+        if not isinstance(direction, str) or direction not in _DIRECTIONS:
             raise RoadHazardValidationError("direction is invalid")
-        severity = payload.get("severity")
-        if severity not in _SEVERITIES:
+        if not isinstance(severity, str) or severity not in _SEVERITIES:
             raise RoadHazardValidationError("severity is invalid")
-        simulated = payload.get("simulated")
-        if not isinstance(simulated, bool):
+        if type(payload["simulated"]) is not bool:
             raise RoadHazardValidationError("simulated must be boolean")
         return cls(
-            **values, direction=direction, severity=severity, simulated=simulated,
+            **values, direction=direction, severity=severity, simulated=payload["simulated"],
             eta_ms=_positive_int(payload, "eta_ms"), ttl_ms=_positive_int(payload, "ttl_ms"),
         )
 
@@ -90,8 +95,6 @@ class RoadHazardEvent:
 
 
 class RoadHazardRepository:
-    """Thread-safe event-id idempotency registry."""
-
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._events: dict[str, RoadHazardEvent] = {}
@@ -106,17 +109,19 @@ class RoadHazardRepository:
                 return False
             raise RoadHazardConflictError("event_id already exists with different content")
 
+    def discard(self, event: RoadHazardEvent) -> None:
+        with self._lock:
+            if self._events.get(event.event_id) == event:
+                del self._events[event.event_id]
+
 
 def _default_transport(url: str, token: str, payload: dict, timeout_s: float) -> dict:
     request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-AIX-Token": token},
-        method="POST",
+        url, data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-AIX-Token": token}, method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        raw = response.read().decode("utf-8")
-    parsed = json.loads(raw)
+        parsed = json.loads(response.read().decode("utf-8"))
     if not isinstance(parsed, dict):
         raise ValueError("road hazard ACK must be a JSON object")
     return parsed
@@ -126,27 +131,29 @@ class RoadHazardSender:
     _DELAYS_S = (0.0, 0.2, 0.5, 1.0)
 
     def __init__(
-        self,
-        store: LatestFrameStore,
-        states: ChainStateRepository,
-        *,
-        token: str,
+        self, store: LatestFrameStore, states: ChainStateRepository, *, token: str,
         repository: RoadHazardRepository | None = None,
         transport: Callable[[str, str, dict, float], dict] | None = None,
         clock: Callable[[], int] | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
-        executor=None,
+        executor=None, executor_factory=None, max_pending: int = 32,
     ) -> None:
-        self._store = store
-        self._states = states
-        self._token = token
+        if max_pending <= 0:
+            raise ValueError("max_pending must be positive")
+        self._store, self._states, self._token = store, states, token
         self._repository = repository or RoadHazardRepository()
         self._transport = transport or _default_transport
         self._clock = clock or (lambda: int(time.time() * 1000))
+        self._monotonic = monotonic_clock or time.monotonic
         self._sleep = sleep or time.sleep
-        self._executor = executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix="road-hazard")
-        self._owns_executor = executor is None
-        self._received_ts_ms: dict[str, int] = {}
+        self._max_pending = max_pending
+        self._lock = threading.RLock()
+        self._executor_factory = executor_factory or (lambda: executor if executor is not None else ThreadPoolExecutor(max_workers=2, thread_name_prefix="road-hazard"))
+        self._executor = executor or self._executor_factory()
+        self._accepting = True
+        self._jobs: dict[str, tuple[RoadHazardEvent, threading.Event, object]] = {}
+        self._timers: dict[str, tuple[int, float]] = {}
 
     @property
     def store(self) -> LatestFrameStore:
@@ -157,31 +164,85 @@ class RoadHazardSender:
         return self._states
 
     def start(self) -> None:
-        return None
+        with self._lock:
+            if self._accepting:
+                return
+            self._executor = self._executor_factory()
+            self._accepting = True
 
     def stop(self) -> None:
-        if self._owns_executor:
-            self._executor.shutdown(wait=True)
+        with self._lock:
+            if not self._accepting and not self._jobs:
+                return
+            self._accepting = False
+            executor, jobs = self._executor, list(self._jobs.values())
+            self._jobs.clear()
+            self._timers.clear()
+        for event, stop_event, future in jobs:
+            stop_event.set()
+            cancel = getattr(future, "cancel", None)
+            if callable(cancel):
+                cancel()
+            self._states.fail_road_hazard(event.device_id, event.event_id, "road hazard sender stopped", 0, self._clock())
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
 
     def accept(self, event: RoadHazardEvent) -> bool:
-        created = self._repository.accept(event)
-        if created:
-            received_ms = self._clock()
-            self._received_ts_ms[event.event_id] = received_ms
-            self._states.begin_road_hazard(event.snapshot(), received_ms)
-            self._executor.submit(self.process, event)
-        return created
+        with self._lock:
+            if not self._accepting:
+                raise RoadHazardUnavailableError("road hazard sender is stopped")
+            if len(self._jobs) >= self._max_pending:
+                raise RoadHazardUnavailableError("road hazard sender queue is full")
+            created = self._repository.accept(event)
+            if not created:
+                return False
+            received_wall, received_monotonic = self._clock(), self._monotonic()
+            stop_event, launch_gate = threading.Event(), threading.Event()
+            try:
+                future = self._executor.submit(self._run, event, stop_event, launch_gate)
+            except RuntimeError as exc:
+                self._repository.discard(event)
+                raise RoadHazardUnavailableError("road hazard sender is unavailable") from exc
+            self._jobs[event.event_id] = (event, stop_event, future)
+            self._timers[event.event_id] = (received_wall, received_monotonic)
+            self._states.begin_road_hazard(event.snapshot(), received_wall)
+            launch_gate.set()
+            return True
 
-    def process(self, event: RoadHazardEvent | dict) -> None:
+    def _run(self, event: RoadHazardEvent, stop_event: threading.Event, launch_gate: threading.Event) -> None:
+        launch_gate.wait()
+        try:
+            with self._lock:
+                timer = self._timers.get(event.event_id)
+            if timer is None:
+                return
+            self.process(event, stop_event=stop_event, received_wall_ms=timer[0], received_monotonic=timer[1])
+        finally:
+            with self._lock:
+                self._jobs.pop(event.event_id, None)
+                self._timers.pop(event.event_id, None)
+
+    def process(
+        self, event: RoadHazardEvent | dict, *, stop_event: threading.Event | None = None,
+        received_wall_ms: int | None = None, received_monotonic: float | None = None,
+    ) -> None:
         if isinstance(event, dict):
             event = RoadHazardEvent.from_payload(event)
-            self._states.begin_road_hazard(event.snapshot(), self._clock())
-        received_ms = self._received_ts_ms.get(event.event_id, self._clock())
+        if received_wall_ms is None:
+            received_wall_ms = self._clock()
+            received_monotonic = self._monotonic()
+            self._states.begin_road_hazard(event.snapshot(), received_wall_ms)
+        stop_event = stop_event or threading.Event()
+        if stop_event.is_set():
+            self._fail(event, "road hazard sender stopped", 0)
+            return
         frame = self._store.latest(event.device_id)
         if frame is None:
             self._fail(event, "no recent frame for device", 0)
             return
-        age_ms = received_ms - frame.received_ts_ms
+        age_ms = received_wall_ms - frame.received_ts_ms
         if age_ms < 0 or age_ms > 3000:
             self._fail(event, "latest frame is stale", 0)
             return
@@ -189,27 +250,37 @@ class RoadHazardSender:
             self._fail(event, "latest frame has no source address", 0)
             return
 
-        attempts = 0
+        attempts, last_error, last_remaining = 0, "delivery failed", event.ttl_ms
         for delay_s in self._DELAYS_S:
             self._sleep(delay_s)
-            now_ms = self._clock()
-            remaining_ttl_ms = event.ttl_ms - (now_ms - received_ms)
+            if stop_event.is_set():
+                self._fail(event, "road hazard sender stopped", attempts)
+                return
+            elapsed_ms = max(0, int(round((self._monotonic() - received_monotonic) * 1000)))
+            remaining_ttl_ms = min(last_remaining, event.ttl_ms - elapsed_ms)
+            last_remaining = remaining_ttl_ms
             if remaining_ttl_ms <= 0:
                 self._fail(event, "TTL expired before delivery", attempts)
                 return
             attempts += 1
-            payload = event.delivery_payload(frame.boot_id, remaining_ttl_ms)
             started_ms = self._clock()
             try:
-                ack = self._transport(f"http://{frame.source_ip}:8080/road-hazard", self._token, payload, 0.5)
+                ack = self._transport(
+                    f"http://{frame.source_ip}:8080/road-hazard", self._token,
+                    event.delivery_payload(frame.boot_id, remaining_ttl_ms), 0.5,
+                )
             except urllib.error.HTTPError as exc:
+                last_error = f"device HTTP {exc.code}"
                 if 500 <= exc.code <= 599:
                     continue
-                self._fail(event, f"device HTTP {exc.code}", attempts)
+                self._fail(event, last_error, attempts)
                 return
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 last_error = str(exc) or exc.__class__.__name__
                 continue
+            if stop_event.is_set():
+                self._fail(event, "road hazard sender stopped", attempts)
+                return
             latency_ms = max(0, self._clock() - started_ms)
             try:
                 self._validate_ack(ack, event, frame.boot_id)
@@ -218,7 +289,7 @@ class RoadHazardSender:
                 return
             self._states.record_road_hazard_ack(event.device_id, event.event_id, ack, latency_ms, attempts, now_ms=self._clock())
             return
-        self._fail(event, locals().get("last_error", "delivery failed"), attempts)
+        self._fail(event, last_error, attempts)
 
     def _fail(self, event: RoadHazardEvent, error: str, attempts: int) -> None:
         self._states.fail_road_hazard(event.device_id, event.event_id, error, attempts, self._clock())
@@ -227,18 +298,20 @@ class RoadHazardSender:
     def _validate_ack(ack: object, event: RoadHazardEvent, boot_id: str) -> None:
         if not isinstance(ack, dict):
             raise RoadHazardDeliveryError("road hazard ACK must be an object")
+        if type(ack.get("version")) is not int or ack["version"] != 1:
+            raise RoadHazardDeliveryError("ACK version mismatch")
         expected = {
-            "type": "road_hazard_ack", "version": 1, "device_id": event.device_id,
-            "boot_id": boot_id, "event_id": event.event_id, "severity": event.severity,
+            "type": "road_hazard_ack", "device_id": event.device_id, "boot_id": boot_id,
+            "event_id": event.event_id, "severity": event.severity,
         }
         for key, value in expected.items():
             if ack.get(key) != value:
                 raise RoadHazardDeliveryError(f"ACK {key} mismatch")
         for key in ("accepted", "duplicate"):
-            if not isinstance(ack.get(key), bool):
+            if type(ack.get(key)) is not bool:
                 raise RoadHazardDeliveryError(f"ACK {key} must be boolean")
         expires = ack.get("expires_in_ms")
-        if isinstance(expires, bool) or not isinstance(expires, int) or expires < 0:
+        if type(expires) is not int or expires < 0:
             raise RoadHazardDeliveryError("ACK expires_in_ms is invalid")
         if not isinstance(ack.get("effective_rgb_pattern"), str):
             raise RoadHazardDeliveryError("ACK effective_rgb_pattern is invalid")

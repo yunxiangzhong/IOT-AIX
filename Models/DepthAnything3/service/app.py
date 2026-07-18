@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from fastapi.responses import Response
 from frame_pipeline import AnalysisWorker, ChainStateRepository, FrameEnvelope, LatestFrameStore, RiskCallbackClient
 from inference import PredictionSummary
 from pneumatic_proxy import PneumaticProtocolError, PneumaticProxy, PneumaticProxyError, StaleDeviceError
-from road_hazard import RoadHazardConflictError, RoadHazardEvent, RoadHazardSender, RoadHazardValidationError
+from road_hazard import RoadHazardConflictError, RoadHazardEvent, RoadHazardSender, RoadHazardUnavailableError, RoadHazardValidationError
 from schemas import build_vision_depth_response
 
 
@@ -195,15 +196,21 @@ def create_app(
         return state
 
     @app.post("/v1/road-hazards", status_code=202)
-    async def road_hazards(request: Request) -> dict:
+    async def road_hazards(request: Request, x_aix_token: str | None = Header(default=None)) -> dict:
+        if not token or x_aix_token != token:
+            raise HTTPException(status_code=401, detail="invalid link token")
         try:
             payload = await request.json()
             event = RoadHazardEvent.from_payload(payload)
             created = hazards.accept(event)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=422, detail="road hazard must be JSON") from exc
         except RoadHazardValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RoadHazardConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RoadHazardUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"accepted": True, "idempotent": not created, **event.snapshot()}
 
     @app.post("/v1/pneumatic/command")
