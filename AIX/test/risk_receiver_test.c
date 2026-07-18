@@ -22,6 +22,14 @@ int main(void)
         printf("valid e2e latency rejected\n");
         return 1;
     }
+    if (!risk_receiver_e2e_latency_at_ack(1200U, 1500U, 1988U, &latency_ms) || latency_ms != 788U) {
+        printf("e2e latency did not use the final ACK timestamp\n");
+        return 1;
+    }
+    if (risk_receiver_e2e_latency_at_ack(1200U, 1988U, 1500U, &latency_ms)) {
+        printf("e2e latency accepted an ACK timestamp before risk decision\n");
+        return 1;
+    }
     if (!risk_receiver_e2e_latency_ms(2000U, 2000U, &latency_ms) || latency_ms != 0U ||
         risk_receiver_e2e_latency_ms(2001U, 2000U, &latency_ms) ||
         risk_receiver_e2e_latency_ms(1000U, 2000U, NULL)) {

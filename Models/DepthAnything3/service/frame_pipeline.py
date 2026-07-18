@@ -332,6 +332,32 @@ class RiskCallbackClient:
         self.last_attempts = 0
         self.last_error = ""
 
+    @staticmethod
+    def _voice_ack_matches_prompt(prompt: dict, voice_ack: object) -> bool:
+        if not isinstance(voice_ack, dict):
+            return False
+        command_id = prompt.get("command_id")
+        track = prompt.get("track")
+        if not isinstance(command_id, str) or type(track) is not int:
+            return False
+        if voice_ack.get("requested") is not True:
+            return False
+        if voice_ack.get("command_id") != command_id or voice_ack.get("track") != track:
+            return False
+        accepted = voice_ack.get("accepted")
+        duplicate = voice_ack.get("duplicate")
+        status = voice_ack.get("status")
+        if type(accepted) is not bool or type(duplicate) is not bool:
+            return False
+        expected = {
+            "queued": (True, False),
+            "duplicate": (True, True),
+            "suppressed": (False, False),
+            "unavailable": (False, False),
+            "rejected": (False, False),
+        }.get(status)
+        return expected is not None and (accepted, duplicate) == expected
+
     def send(self, frame: FrameEnvelope, payload: dict, *, is_current: Callable[[], bool]) -> dict | None:
         self.last_attempts = 0
         self.last_error = ""
@@ -357,8 +383,10 @@ class RiskCallbackClient:
                     or not isinstance(ack.get("rgb_pattern"), str)
                 ):
                     raise ValueError("invalid or mismatched action_ack")
-                if "voice_prompt" in payload and not isinstance(ack.get("voice_ack"), dict):
-                    raise ValueError("missing voice_ack for requested voice prompt")
+                if "voice_prompt" in payload and not self._voice_ack_matches_prompt(
+                    payload["voice_prompt"], ack.get("voice_ack")
+                ):
+                    raise ValueError("invalid or mismatched voice_ack for requested voice prompt")
                 e2e_latency_ms = ack.get("e2e_latency_ms")
                 if e2e_latency_ms is not None and (
                     isinstance(e2e_latency_ms, bool)

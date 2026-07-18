@@ -30,6 +30,18 @@ bool risk_receiver_e2e_latency_ms(uint64_t capture_ts_ms, uint64_t now_ms, uint6
     return true;
 }
 
+bool risk_receiver_e2e_latency_at_ack(
+    uint64_t capture_ts_ms,
+    uint64_t decision_ms,
+    uint64_t ack_now_ms,
+    uint64_t *latency_ms)
+{
+    if (ack_now_ms < decision_ms) {
+        return false;
+    }
+    return risk_receiver_e2e_latency_ms(capture_ts_ms, ack_now_ms, latency_ms);
+}
+
 int risk_receiver_format_action_ack(
     char *buffer,
     size_t capacity,
@@ -165,14 +177,20 @@ static void cache_ack(
 static esp_err_t send_ack(
     httpd_req_t *request,
     uint32_t frame_seq,
+    uint64_t capture_ts_ms,
     bool accepted,
     bool stale,
-    uint64_t e2e_latency_ms,
+    uint64_t decision_ms,
     const action_decision_t *decision,
     const voice_prompt_result_t *voice_result,
     const char *command_id,
     const char *error)
 {
+    uint64_t e2e_latency_ms = 0;
+    uint64_t ack_now_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+    if (!risk_receiver_e2e_latency_at_ack(capture_ts_ms, decision_ms, ack_now_ms, &e2e_latency_ms)) {
+        e2e_latency_ms = 0;
+    }
     char body[768];
     int written = snprintf(
         body,
@@ -215,8 +233,8 @@ static esp_err_t risk_handler(httpd_req_t *request)
     voice_prompt_request_t voice_request = {0};
     char voice_command_id[VOICE_PROMPT_COMMAND_ID_CAPACITY] = "";
     bool voice_requested = false;
-    uint64_t current_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
-    uint64_t e2e_latency_ms = 0;
+    uint64_t current_ms = 0;
+    uint64_t decision_ms = 0;
 
     if (!token_matches(request)) {
         httpd_resp_set_status(request, "401 Unauthorized");
@@ -296,19 +314,21 @@ static esp_err_t risk_handler(httpd_req_t *request)
     risk.dominant_class = dominant->valuestring;
     risk.reason = reason->valuestring;
     risk.valid = true;
-    (void)risk_receiver_e2e_latency_ms(risk.capture_ts_ms, current_ms, &e2e_latency_ms);
 
     if (device_and_boot_match(device, boot) &&
         cached_ack_matches(&risk, voice_requested, voice_request.command_id, &decision, &voice_result)) {
         if (voice_requested) {
             voice_result = voice_prompt_result_duplicate_ack(&voice_result);
         }
+        decision_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
         cJSON_Delete(root);
-        return send_ack(request, risk.frame_seq, true, false, e2e_latency_ms, &decision, &voice_result,
+        return send_ack(request, risk.frame_seq, risk.capture_ts_ms, true, false, decision_ms, &decision, &voice_result,
                         voice_requested ? voice_command_id : "", "");
     }
 
+    current_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
     result = action_controller_apply_risk(&risk, current_ms, &decision);
+    decision_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
 
     if (result != RISK_ACCEPTED) {
         if (voice_requested) {
@@ -320,9 +340,10 @@ static esp_err_t risk_handler(httpd_req_t *request)
         return send_ack(
             request,
             risk.frame_seq,
+            risk.capture_ts_ms,
             false,
             result == RISK_REJECT_STALE,
-            e2e_latency_ms,
+            decision_ms,
             &decision,
             &voice_result,
             voice_requested ? voice_command_id : "",
@@ -333,7 +354,7 @@ static esp_err_t risk_handler(httpd_req_t *request)
     }
     cache_ack(&risk, voice_requested, voice_requested ? voice_command_id : "", &decision, &voice_result);
     cJSON_Delete(root);
-    return send_ack(request, risk.frame_seq, true, false, e2e_latency_ms, &decision, &voice_result,
+    return send_ack(request, risk.frame_seq, risk.capture_ts_ms, true, false, decision_ms, &decision, &voice_result,
                     voice_requested ? voice_command_id : "", "");
 }
 

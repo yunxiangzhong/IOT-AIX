@@ -154,7 +154,10 @@ class RiskCallbackTests(unittest.TestCase):
                 "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
                 "accepted": True, "stale": False, "action_state": "high",
                 "rgb_pattern": "orange_blink_2hz", "e2e_latency_ms": -1,
-                "voice_ack": {"requested": True, "accepted": True, "duplicate": False, "status": "queued"},
+                "voice_ack": {
+                    "requested": True, "command_id": "boot:8:2", "track": 2,
+                    "accepted": True, "duplicate": False, "status": "queued",
+                },
             }
 
         client = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
@@ -164,6 +167,39 @@ class RiskCallbackTests(unittest.TestCase):
             is_current=lambda: True,
         ))
         self.assertIn("e2e_latency_ms", client.last_error)
+
+    def test_rejects_voice_ack_that_does_not_strictly_match_prompt(self) -> None:
+        prompt = {"command_id": "boot:8:2", "track": 2}
+        baseline = {
+            "requested": True, "command_id": prompt["command_id"], "track": prompt["track"],
+            "accepted": True, "duplicate": False, "status": "queued",
+        }
+        invalid_cases = (
+            {"requested": False},
+            {"command_id": "other:8:2"},
+            {"track": 3},
+            {"accepted": "true"},
+            {"duplicate": "false"},
+            {"status": "unknown"},
+            {"accepted": False},
+            {"status": "suppressed", "accepted": True},
+            {"status": "duplicate", "duplicate": False},
+        )
+
+        for overrides in invalid_cases:
+            with self.subTest(overrides=overrides):
+                def transport(url, token, payload, timeout_s):
+                    voice_ack = dict(baseline)
+                    voice_ack.update(overrides)
+                    return {
+                        "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
+                        "accepted": True, "stale": False, "action_state": "high",
+                        "rgb_pattern": "orange_blink_2hz", "voice_ack": voice_ack,
+                    }
+
+                client = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
+                self.assertIsNone(client.send(frame(8), {"frame_seq": 8, "voice_prompt": prompt}, is_current=lambda: True))
+                self.assertIn("voice_ack", client.last_error)
 
     def test_retries_keep_the_same_voice_command_id_and_accept_cached_voice_ack(self) -> None:
         sent_prompts = []
@@ -177,8 +213,9 @@ class RiskCallbackTests(unittest.TestCase):
                 "accepted": True, "stale": False, "action_state": "high",
                 "rgb_pattern": "orange_blink_2hz",
                 "voice_ack": {
-                    "requested": True, "accepted": True, "duplicate": True,
-                    "status": "duplicate",
+                    "requested": True, "command_id": payload["voice_prompt"]["command_id"],
+                    "track": payload["voice_prompt"]["track"], "accepted": True,
+                    "duplicate": True, "status": "duplicate",
                 },
             }
 
@@ -263,6 +300,8 @@ class AsyncPipelineTests(unittest.TestCase):
                 "rgb_pattern": "yellow_blink_1hz",
                 "voice_ack": {
                     "requested": "voice_prompt" in payload,
+                    "command_id": payload.get("voice_prompt", {}).get("command_id", ""),
+                    "track": payload.get("voice_prompt", {}).get("track", 0),
                     "accepted": True,
                     "duplicate": False,
                     "status": "queued",

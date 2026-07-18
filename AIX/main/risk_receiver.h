@@ -6,6 +6,11 @@
 
 bool risk_receiver_token_matches(const char *expected, const char *provided);
 bool risk_receiver_e2e_latency_ms(uint64_t capture_ts_ms, uint64_t now_ms, uint64_t *latency_ms);
+bool risk_receiver_e2e_latency_at_ack(
+    uint64_t capture_ts_ms,
+    uint64_t decision_ms,
+    uint64_t ack_now_ms,
+    uint64_t *latency_ms);
 int risk_receiver_format_action_ack(
     char *buffer,
     size_t capacity,
