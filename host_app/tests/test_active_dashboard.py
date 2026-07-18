@@ -88,7 +88,11 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertIn("84", dashboard.decision_callback.text())
         self.assertIn("120", dashboard.decision_freshness.text())
         self.assertIn("2.48", dashboard.decision_freshness.text())
-        self.assertGreaterEqual(dashboard.decision_panel.minimumWidth(), 360)
+        self.assertEqual(dashboard.decision_panel.minimumWidth(), 0)
+        self.assertEqual(
+            dashboard.decision_panel.sizePolicy().horizontalPolicy(),
+            QtWidgets.QSizePolicy.Policy.Ignored,
+        )
 
     def test_default_display_uses_chinese_product_copy(self):
         dashboard = ActiveVisionDashboard()

@@ -202,16 +202,19 @@ class _StatusColumn(QtWidgets.QFrame):
         super().__init__(parent)
         self.setObjectName(object_name)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
         heading = QtWidgets.QLabel(title)
         heading.setObjectName("panelTitle")
         heading.setWordWrap(True)
+        heading.setFixedHeight(26)
         layout.addWidget(heading)
         self.values: dict[str, QtWidgets.QLabel] = {}
+        self.rows: dict[str, QtWidgets.QFrame] = {}
         for key, label in rows:
             block = QtWidgets.QFrame()
             block.setObjectName("riskHero")
+            block.setFixedHeight(76)
             block_layout = QtWidgets.QVBoxLayout(block)
             block_layout.setContentsMargins(8, 8, 8, 8)
             name = QtWidgets.QLabel(label)
@@ -223,6 +226,7 @@ class _StatusColumn(QtWidgets.QFrame):
             block_layout.addWidget(value)
             layout.addWidget(block)
             self.values[key] = value
+            self.rows[key] = block
         layout.addStretch(1)
 
     def set_value(self, key: str, value: str) -> None:
@@ -309,8 +313,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         self.workspace_ratios = (6, 1, 1, 2)
+        self.sensor_row_keys = ("ov5640", "mpu6050", "pressure")
         camera = QtWidgets.QFrame()
         camera.setObjectName("visionPanel")
+        self.camera_panel = camera
         camera_layout = QtWidgets.QVBoxLayout(camera)
         camera_layout.setContentsMargins(0, 0, 0, 0)
         camera_layout.setSpacing(0)
@@ -346,7 +352,8 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
 
         decision = QtWidgets.QFrame()
         decision.setObjectName("decisionPanel")
-        decision.setMinimumWidth(400)
+        decision.setMinimumWidth(0)
+        decision.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Expanding)
         self.decision_panel = decision
         decision_layout = QtWidgets.QVBoxLayout(decision)
         decision_layout.setContentsMargins(16, 14, 16, 14)
@@ -360,9 +367,32 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         decision_head.addWidget(heading)
         decision_head.addStretch(1)
         decision_head.addWidget(self.result_state)
-        decision_layout.addLayout(decision_head)
+        decision_head_widget = QtWidgets.QWidget()
+        decision_head_widget.setLayout(decision_head)
+        decision_head_widget.setFixedHeight(26)
+        decision_layout.addWidget(decision_head_widget)
+
+        self.derived_values: dict[str, QtWidgets.QLabel] = {}
+        self.derived_rows: dict[str, QtWidgets.QFrame] = {}
+        for key, label in (("ov5640", "风险 / 帧"), ("mpu6050", "RGB / 语音"), ("pressure", "气动总成")):
+            row = QtWidgets.QFrame()
+            row.setObjectName("riskHero")
+            row.setFixedHeight(76)
+            row_layout = QtWidgets.QVBoxLayout(row)
+            row_layout.setContentsMargins(8, 8, 8, 8)
+            name = QtWidgets.QLabel(label)
+            name.setObjectName("metricTitle")
+            value = QtWidgets.QLabel("等待")
+            value.setObjectName("metricMono")
+            value.setWordWrap(True)
+            row_layout.addWidget(name)
+            row_layout.addWidget(value)
+            decision_layout.addWidget(row)
+            self.derived_values[key] = value
+            self.derived_rows[key] = row
 
         risk_hero = QtWidgets.QFrame()
+        self.risk_hero = risk_hero
         risk_hero.setObjectName("riskHero")
         risk_hero_layout = QtWidgets.QVBoxLayout(risk_hero)
         risk_hero_layout.setContentsMargins(16, 13, 16, 13)
@@ -404,6 +434,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         risk_hero_layout.addWidget(self.risk_reason)
 
         action_hero = QtWidgets.QFrame()
+        self.action_hero = action_hero
         action_hero.setObjectName("actionHero")
         action_hero_layout = QtWidgets.QHBoxLayout(action_hero)
         action_hero_layout.setContentsMargins(14, 11, 14, 11)
@@ -434,6 +465,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.telemetry_heading.setObjectName("sectionTitle")
         decision_layout.addWidget(self.telemetry_heading)
         telemetry = QtWidgets.QFrame()
+        self.telemetry_panel = telemetry
         telemetry.setObjectName("decisionTelemetry")
         telemetry_layout = QtWidgets.QGridLayout(telemetry)
         telemetry_layout.setContentsMargins(12, 8, 12, 8)
@@ -485,17 +517,19 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
 
         self.peripheral_panel = _StatusColumn(
             "peripheralPanel", "感知外设",
-            (("camera", "OV5640"), ("motion", "MPU6050"), ("pressure", "压力传感器")),
+            (("ov5640", "OV5640"), ("mpu6050", "MPU6050"), ("pressure", "压力传感器")),
         )
         self.realtime_panel = _StatusColumn(
             "realtimePanel", "实时数据",
-            (("target", "目标 / 风险"), ("motion", "加速度 / 倾角"), ("pressure", "压力 / 时效")),
+            (("ov5640", "目标 / 风险"), ("mpu6050", "加速度 / 倾角"), ("pressure", "压力 / 时效")),
         )
-        self.peripheral_panel.set_value("camera", "等待在线")
-        self.peripheral_panel.set_value("motion", "等待串口")
-        self.peripheral_panel.set_value("pressure", "等待串口")
-        self.realtime_panel.set_value("target", "等待有效帧")
-        self.realtime_panel.set_value("motion", "等待数据")
+        self.peripheral_values = self.peripheral_panel.values
+        self.realtime_values = self.realtime_panel.values
+        self.peripheral_panel.set_value("ov5640", "离线\n采样率 — · 更新 —")
+        self.peripheral_panel.set_value("mpu6050", "离线\n采样率 — · 更新 —")
+        self.peripheral_panel.set_value("pressure", "离线\n采样率 — · 更新 —")
+        self.realtime_panel.set_value("ov5640", "等待有效帧")
+        self.realtime_panel.set_value("mpu6050", "等待数据")
         self.realtime_panel.set_value("pressure", "等待数据")
         self.execution_guard = QtWidgets.QLabel("数据新鲜且有效时才生成执行结论")
         self.execution_guard.setObjectName("safetyNote")
@@ -505,9 +539,18 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.pneumatic_acceptance_note.setWordWrap(True)
         self.voice_status_value = QtWidgets.QLabel("DFPlayer · 等待状态")
         self.voice_status_value.setObjectName("monoMuted")
-        decision_layout.insertWidget(2, self.voice_status_value)
-        decision_layout.insertWidget(3, self.execution_guard)
-        decision_layout.insertWidget(4, self.pneumatic_acceptance_note)
+        decision_layout.addWidget(self.voice_status_value)
+        decision_layout.addWidget(self.execution_guard)
+        decision_layout.addWidget(self.pneumatic_acceptance_note)
+        # The three mapped rows are the primary compact control-center surface.
+        # Legacy detailed cards remain state holders for diagnostics, but do not
+        # consume vertical space and break cross-column row alignment.
+        for legacy in (self.risk_hero, self.action_hero, self.telemetry_heading, self.telemetry_panel,
+                       self.voice_status_value, self.execution_guard, self.pneumatic_acceptance_note):
+            legacy.hide()
+        for widget in (camera, self.peripheral_panel, self.realtime_panel):
+            widget.setMinimumWidth(0)
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Expanding)
         layout.addWidget(camera, self.workspace_ratios[0])
         layout.addWidget(self.peripheral_panel, self.workspace_ratios[1])
         layout.addWidget(self.realtime_panel, self.workspace_ratios[2])
@@ -618,6 +661,22 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.risk_trend.setVisible(not compact)
         self.safety_note.setVisible(not compact)
 
+    def workspace_column_widths(self) -> tuple[int, int, int, int]:
+        """Actual rendered widths, used to guard the 6:1:1:2 operator mapping."""
+        return (
+            self.camera_panel.width(),
+            self.peripheral_panel.width(), self.realtime_panel.width(), self.decision_panel.width(),
+        )
+
+    def sensor_mapping_row_geometries(self) -> tuple[tuple[QtCore.QRect, QtCore.QRect, QtCore.QRect], ...]:
+        def in_workspace(widget: QtWidgets.QWidget) -> QtCore.QRect:
+            point = widget.mapTo(self, QtCore.QPoint(0, 0))
+            return QtCore.QRect(point, widget.size())
+        return tuple(
+            (in_workspace(self.peripheral_panel.rows[key]), in_workspace(self.realtime_panel.rows[key]), in_workspace(self.derived_rows[key]))
+            for key in self.sensor_row_keys
+        )
+
     def apply_camera_status(self, event: CameraStatusEvent) -> None:
         color = STATUS_COLORS["low"] if event.valid else STATUS_COLORS["fault"]
         self.camera_stage.set_state(f"{event.width}×{event.height} · {event.fps:.2f} 帧/秒", color)
@@ -627,20 +686,26 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.device_log.appendPlainText(
             f"相机：累计 {event.frames_ok} 帧，{event.fps:.2f} 帧/秒，采集失败 {event.capture_failures} 次"
         )
-        self.peripheral_panel.set_value("camera", f"{'在线' if event.valid else '异常'}\n{event.fps:.1f} 帧/秒")
+        self.peripheral_panel.set_value(
+            "ov5640", f"{'在线' if event.valid else '异常'}\n采样率 {event.fps:.1f} 帧/秒 · 更新 #{event.seq}",
+        )
 
     def apply_motion(self, event: MotionEvent) -> None:
         if event.accel_norm_g is None:
-            self.peripheral_panel.set_value("motion", "兼容旧协议")
+            self.peripheral_panel.set_value("mpu6050", "兼容旧协议\n采样率 — · 更新 —")
             return
-        self.peripheral_panel.set_value("motion", f"在线\n序号 {event.seq}")
+        self.peripheral_panel.set_value("mpu6050", f"在线\n采样率 100 Hz · 更新 #{event.seq}")
         self.realtime_panel.set_value(
-            "motion", f"{event.accel_norm_g:.2f} g\n{event.tilt_deg or 0.0:.1f}° {'冲击' if event.impact else '正常'}",
+            "mpu6050", f"{event.accel_norm_g:.2f} g\n{event.tilt_deg or 0.0:.1f}° {'冲击' if event.impact else '正常'}",
         )
+        self.derived_values["mpu6050"].setText("本机视觉/MPU 仲裁\n远端事件不改变气动")
 
     def apply_pressure(self, sample: PressureSample) -> None:
-        self.peripheral_panel.set_value("pressure", f"{'在线' if sample.valid else '无效'}\n序号 {sample.seq}")
-        self.realtime_panel.set_value("pressure", f"{sample.filtered_kpa:.2f} kPa\n{'有效' if sample.valid else '无效'}")
+        self.peripheral_panel.set_value("pressure", f"{'在线' if sample.valid else '无效'}\n采样率 2 Hz · 更新 #{sample.seq}")
+        self.realtime_panel.set_value(
+            "pressure", f"{sample.filtered_kpa:.2f} kPa\n{'有效' if sample.valid else '无效'} · 新鲜度 0 ms",
+        )
+        self.derived_values["pressure"].setText("策略建议与真实执行分离\n等待泵阀真实反馈")
 
     def apply_voice_status(self, event: VoiceStatusEvent) -> None:
         labels = {"ready": "就绪", "playing": "播放中", "finished": "已完成", "error": "错误", "initializing": "初始化"}
@@ -650,6 +715,9 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         if event.error:
             text += f" · {event.error}"
         self.voice_status_value.setText(text)
+        self.derived_values["mpu6050"].setText(
+            f"RGB 由仲裁层控制\n{text.replace('DFPlayer · ', 'DFPlayer ')} · 远端专用语音未配置"
+        )
 
     def apply_health(self, health: dict) -> None:
         model_state = str(health.get("model_state") or "loading")
@@ -715,6 +783,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             f"气动执行器 · {event.state} · 泵{'开' if event.pump_on else '关'} · "
             f"阀{'通电' if event.valve_on else '断电泄压'} · 故障 {event.fault}"
         )
+        self.derived_values["pressure"].setText(
+            f"策略建议：{event.vision_state if event.vision_fresh else '禁止（视觉不新鲜）'}\n"
+            f"真实执行：泵{'开' if event.pump_on else '关'} · 阀{'通电' if event.valve_on else '断电'}"
+        )
 
     def apply_chain_state(self, state: dict, *, force: bool = False) -> None:
         revision = state.get("revision")
@@ -773,11 +845,14 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self._apply_risk_tint(band)
         self.risk_reason.setText(_risk_reason_label(risk.get("reason"), model_state=model_state, stale=is_stale))
         self.realtime_panel.set_value(
-            "target",
+            "ov5640",
             f"{risk.get('dominant_class') or '目标未知'}\n{score if score is not None else '—'} 分 · {'失效' if is_stale else '有效'}",
         )
         action_state = str(action.get("state", "loading"))
         pattern = str(action.get("rgb_pattern", "blue_blink_1hz"))
+        self.derived_values["ov5640"].setText(
+            f"{action_labels.get(action_state, '状态未知')}\n第 {action.get('frame_seq', '—')} 帧 · {'失效' if is_stale else '有效'}"
+        )
         self.action_name.setText(action_labels.get(action_state, "状态未知"))
         self.action_pattern.setText(f"板载指示灯 · {_rgb_pattern_label(pattern)} · 亮度 20%")
         if action.get("confirmed"):

@@ -37,6 +37,7 @@ class CooperativeWarningUiTests(unittest.TestCase):
         self.assertEqual(overview.workspace_ratios, (6, 1, 1, 2))
         self.assertEqual(overview.peripheral_panel.objectName(), "peripheralPanel")
         self.assertEqual(overview.realtime_panel.objectName(), "realtimePanel")
+        self.assertEqual(overview.sensor_row_keys, ("ov5640", "mpu6050", "pressure"))
         self.assertIn("尚未完成气囊实物验收", overview.pneumatic_acceptance_note.text())
         state = {
             "device_id": "aix-helmet-01", "boot_id": "0123456789abcdef",
@@ -55,6 +56,28 @@ class CooperativeWarningUiTests(unittest.TestCase):
         overview.apply_chain_state(stale)
         self.assertIn("不生成", overview.execution_guard.text())
         self.assertIn("失效", overview.risk_band.text())
+        window.close()
+
+    def test_sensor_columns_share_rows_and_surface_rate_update_and_freshness(self):
+        window = MainWindow()
+        overview = window.dashboard
+        window.resize(1440, 900)
+        window.show()
+        self.app.processEvents()
+        row_geometries = overview.sensor_mapping_row_geometries()
+        self.assertEqual(len(row_geometries), 3)
+        for peripheral, realtime, derived in row_geometries:
+            self.assertEqual(peripheral.y(), realtime.y())
+            self.assertEqual(realtime.y(), derived.y())
+            self.assertEqual(peripheral.height(), realtime.height())
+            self.assertEqual(realtime.height(), derived.height())
+        overview.apply_camera_status(type("Camera", (), {
+            "valid": True, "fps": 9.5, "seq": 7, "width": 640, "height": 480, "capture_failures": 0, "frames_ok": 7,
+        })())
+        self.assertIn("9.5", overview.peripheral_values["ov5640"].text())
+        self.assertIn("更新", overview.peripheral_values["ov5640"].text())
+        overview.apply_pressure(type("Pressure", (), {"valid": True, "seq": 8, "filtered_kpa": 2.1, "ts_ms": 1200})())
+        self.assertIn("新鲜度", overview.realtime_values["pressure"].text())
         window.close()
 
     def test_voice_and_serial_road_hazard_status_have_explicit_safe_copy(self):
@@ -112,6 +135,10 @@ class CooperativeWarningUiTests(unittest.TestCase):
             self.assertTrue(window.dashboard.peripheral_panel.isVisible())
             self.assertTrue(window.dashboard.realtime_panel.isVisible())
             self.assertTrue(window.dashboard.decision_panel.isVisible())
+            widths = window.dashboard.workspace_column_widths()
+            total = sum(widths)
+            for actual, expected in zip(widths, (6, 1, 1, 2)):
+                self.assertAlmostEqual(actual / total, expected / 10, delta=0.025)
         window.close()
 
 
