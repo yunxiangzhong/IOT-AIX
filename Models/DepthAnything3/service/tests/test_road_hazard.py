@@ -2,6 +2,7 @@ import sys
 import json
 import threading
 import urllib.error
+import http.client
 import unittest
 from pathlib import Path
 
@@ -277,6 +278,38 @@ class RoadHazardSenderTests(unittest.TestCase):
         sender = RoadHazardSender(store, states, token="t", transport=transport, clock=lambda: 10_500, sleep=lambda _: None, executor=ManualExecutor())
         sender.process(event_payload())
         self.assertEqual(states.latest("aix-helmet-01")["road_hazard"]["error"], "device HTTP 503")
+
+    def test_incomplete_http_read_retries_four_times_then_fails_terminally(self):
+        from frame_pipeline import ChainStateRepository, LatestFrameStore
+        from road_hazard import RoadHazardSender
+        store, states, attempts = LatestFrameStore(), ChainStateRepository(), []
+        store.put(frame()); states.record_frame(frame())
+        def transport(*_args):
+            attempts.append(1)
+            raise http.client.IncompleteRead(b"partial", 5)
+        sender = RoadHazardSender(store, states, token="t", transport=transport, clock=lambda: 10_500, sleep=lambda _: None, executor=ManualExecutor())
+        sender.process(event_payload())
+        state = states.latest("aix-helmet-01")["road_hazard"]
+        self.assertEqual(len(attempts), 4)
+        self.assertEqual(state["delivery"]["state"], "failed")
+        self.assertEqual(state["ack"]["state"], "failed")
+        self.assertIn("IncompleteRead", state["error"])
+
+    def test_unexpected_worker_exception_is_terminal_failed_not_active(self):
+        from frame_pipeline import ChainStateRepository, LatestFrameStore
+        from road_hazard import RoadHazardSender, RoadHazardEvent
+        store, states, executor = LatestFrameStore(), ChainStateRepository(), ManualExecutor()
+        store.put(frame()); states.record_frame(frame())
+        sender = RoadHazardSender(
+            store, states, token="t", clock=lambda: 10_500, executor=executor,
+            transport=lambda *_: (_ for _ in ()).throw(RuntimeError("transport boom")),
+        )
+        sender.accept(RoadHazardEvent.from_payload(event_payload()))
+        executor.run_all()
+        state = states.latest("aix-helmet-01")["road_hazard"]
+        self.assertEqual(state["delivery"]["state"], "failed")
+        self.assertEqual(state["ack"]["state"], "failed")
+        self.assertIn("RuntimeError: transport boom", state["error"])
 
     def test_stop_during_running_transport_cannot_complete_event(self):
         from frame_pipeline import ChainStateRepository, LatestFrameStore

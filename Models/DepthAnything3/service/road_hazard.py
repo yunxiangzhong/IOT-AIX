@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import http.client
 import re
 import threading
 import time
@@ -261,6 +262,8 @@ class RoadHazardSender:
             if timer is None:
                 return
             self.process(event, stop_event=stop_event, received_wall_ms=timer[0], received_monotonic=timer[1])
+        except Exception as exc:
+            self._fail(event, f"{exc.__class__.__name__}: {exc}", 0)
         finally:
             with self._lock:
                 self._jobs.pop(event.event_id, None)
@@ -318,7 +321,7 @@ class RoadHazardSender:
                     continue
                 self._fail(event, last_error, attempts)
                 return
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
+            except (OSError, ValueError, json.JSONDecodeError, http.client.HTTPException) as exc:
                 last_error = str(exc) or exc.__class__.__name__
                 continue
             if stop_event.is_set():
