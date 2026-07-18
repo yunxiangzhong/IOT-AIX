@@ -23,6 +23,12 @@ typedef struct {
 } voice_prompt_request_t;
 
 typedef struct {
+    char command_id[VOICE_PROMPT_COMMAND_ID_CAPACITY];
+    uint8_t track;
+    uint32_t frame_seq;
+} voice_prompt_queue_item_t;
+
+typedef struct {
     bool requested;
     bool accepted;
     bool duplicate;
@@ -39,13 +45,16 @@ typedef struct {
 
 bool voice_prompt_track_for_band(const char *risk_band, uint8_t *out_track);
 bool voice_prompt_request_is_valid(const char *risk_band, const voice_prompt_request_t *request);
+bool voice_prompt_queue_item_init(voice_prompt_queue_item_t *out_item, const voice_prompt_request_t *request);
 const char *voice_prompt_status_name(voice_prompt_status_t status);
 const char *voice_prompt_error_name(voice_prompt_status_t status);
 voice_prompt_result_t voice_prompt_result_not_requested(void);
 voice_prompt_result_t voice_prompt_result_rejected(void);
+voice_prompt_result_t voice_prompt_result_duplicate_ack(const voice_prompt_result_t *original);
 void voice_prompt_policy_init(voice_prompt_policy_t *policy, bool available);
 void voice_prompt_policy_set_available(voice_prompt_policy_t *policy, bool available);
 void voice_prompt_policy_mark_finished(voice_prompt_policy_t *policy, uint8_t track);
+void voice_prompt_policy_handle_player_error(voice_prompt_policy_t *policy);
 voice_prompt_result_t voice_prompt_policy_submit(
     voice_prompt_policy_t *policy,
     const char *risk_band,

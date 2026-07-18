@@ -45,6 +45,18 @@ bool voice_prompt_request_is_valid(const char *risk_band, const voice_prompt_req
            request->track == expected_track && command_id_is_valid(request->command_id);
 }
 
+bool voice_prompt_queue_item_init(voice_prompt_queue_item_t *out_item, const voice_prompt_request_t *request)
+{
+    if (out_item == NULL || request == NULL || !command_id_is_valid(request->command_id)) {
+        return false;
+    }
+    memset(out_item, 0, sizeof(*out_item));
+    snprintf(out_item->command_id, sizeof(out_item->command_id), "%s", request->command_id);
+    out_item->track = request->track;
+    out_item->frame_seq = request->frame_seq;
+    return true;
+}
+
 const char *voice_prompt_status_name(voice_prompt_status_t status)
 {
     switch (status) {
@@ -101,6 +113,18 @@ voice_prompt_result_t voice_prompt_result_rejected(void)
     };
 }
 
+voice_prompt_result_t voice_prompt_result_duplicate_ack(const voice_prompt_result_t *original)
+{
+    if (original == NULL || !original->requested) {
+        return voice_prompt_result_not_requested();
+    }
+    voice_prompt_result_t result = *original;
+    result.accepted = true;
+    result.duplicate = true;
+    result.status = VOICE_PROMPT_DUPLICATE;
+    return result;
+}
+
 void voice_prompt_policy_init(voice_prompt_policy_t *policy, bool available)
 {
     if (policy == NULL) {
@@ -125,6 +149,11 @@ void voice_prompt_policy_mark_finished(voice_prompt_policy_t *policy, uint8_t tr
     if (policy != NULL && policy->playing_track == track) {
         policy->playing_track = 0;
     }
+}
+
+void voice_prompt_policy_handle_player_error(voice_prompt_policy_t *policy)
+{
+    voice_prompt_policy_set_available(policy, false);
 }
 
 static bool command_was_seen(const voice_prompt_policy_t *policy, const char *command_id)
@@ -208,6 +237,7 @@ static SemaphoreHandle_t s_lock;
 static voice_prompt_policy_t s_policy;
 static bool s_started;
 static char s_playing_command_id[VOICE_PROMPT_COMMAND_ID_CAPACITY];
+static uint8_t s_playing_track;
 static uint32_t s_playing_frame_seq;
 
 static void policy_take(void)
@@ -276,11 +306,17 @@ static void voice_task(void *arg)
             continue;
         }
 
-        voice_prompt_request_t request = {0};
-        if (xQueueReceive(s_queue, &request, pdMS_TO_TICKS(100U)) == pdTRUE) {
+        voice_prompt_queue_item_t queued_request = {0};
+        if (xQueueReceive(s_queue, &queued_request, pdMS_TO_TICKS(100U)) == pdTRUE) {
+            voice_prompt_request_t request = {
+                .command_id = queued_request.command_id,
+                .track = queued_request.track,
+                .frame_seq = queued_request.frame_seq,
+            };
             const esp_err_t ret = dfplayer_send_command(DFPLAYER_COMMAND_PLAY_MP3_FOLDER, request.track, true);
             if (ret == ESP_OK) {
                 snprintf(s_playing_command_id, sizeof(s_playing_command_id), "%s", request.command_id);
+                s_playing_track = request.track;
                 s_playing_frame_seq = request.frame_seq;
                 emit_voice_status("playing", &request, "");
             } else {
@@ -298,15 +334,29 @@ static void voice_task(void *arg)
             if (message.command == DFPLAYER_EVENT_PLAY_FINISHED_TF) {
                 voice_prompt_request_t finished = {
                     .command_id = s_playing_command_id,
-                    .track = (uint8_t)message.parameter,
+                    .track = s_playing_track != 0U ? s_playing_track : (uint8_t)message.parameter,
                     .frame_seq = s_playing_frame_seq,
                 };
                 policy_take();
                 voice_prompt_policy_mark_finished(&s_policy, finished.track);
                 policy_give();
                 emit_voice_status("finished", &finished, "");
+                s_playing_command_id[0] = '\0';
+                s_playing_track = 0U;
+                s_playing_frame_seq = 0U;
             } else if (message.command == DFPLAYER_EVENT_ERROR) {
-                emit_voice_status("error", NULL, "dfplayer_reported_error");
+                voice_prompt_request_t failed = {
+                    .command_id = s_playing_command_id,
+                    .track = s_playing_track,
+                    .frame_seq = s_playing_frame_seq,
+                };
+                policy_take();
+                voice_prompt_policy_handle_player_error(&s_policy);
+                policy_give();
+                emit_voice_status("error", &failed, "dfplayer_reported_error");
+                s_playing_command_id[0] = '\0';
+                s_playing_track = 0U;
+                s_playing_frame_seq = 0U;
             }
         }
     }
@@ -320,7 +370,7 @@ esp_err_t voice_prompt_start(void)
     if (s_started) {
         return ESP_OK;
     }
-    s_queue = xQueueCreate(1U, sizeof(voice_prompt_request_t));
+    s_queue = xQueueCreate(1U, sizeof(voice_prompt_queue_item_t));
     s_lock = xSemaphoreCreateMutex();
     if (s_queue == NULL || s_lock == NULL) {
         return ESP_ERR_NO_MEM;
@@ -345,10 +395,14 @@ voice_prompt_result_t voice_prompt_submit(const char *risk_band, const voice_pro
     }
     policy_take();
     voice_prompt_result_t result = voice_prompt_policy_submit(&s_policy, risk_band, request);
-    if (result.status == VOICE_PROMPT_QUEUED && xQueueOverwrite(s_queue, request) != pdPASS) {
-        voice_prompt_policy_mark_finished(&s_policy, request->track);
-        result.accepted = false;
-        result.status = VOICE_PROMPT_UNAVAILABLE;
+    if (result.status == VOICE_PROMPT_QUEUED) {
+        voice_prompt_queue_item_t queued_request = {0};
+        if (!voice_prompt_queue_item_init(&queued_request, request) ||
+            xQueueOverwrite(s_queue, &queued_request) != pdPASS) {
+            voice_prompt_policy_mark_finished(&s_policy, request->track);
+            result.accepted = false;
+            result.status = VOICE_PROMPT_UNAVAILABLE;
+        }
     }
     policy_give();
     return result;

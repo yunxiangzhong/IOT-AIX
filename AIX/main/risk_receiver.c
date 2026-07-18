@@ -254,6 +254,9 @@ static esp_err_t risk_handler(httpd_req_t *request)
 
     if (device_and_boot_match(device, boot) &&
         cached_ack_matches(&risk, voice_requested, voice_request.command_id, &decision, &voice_result)) {
+        if (voice_requested) {
+            voice_result = voice_prompt_result_duplicate_ack(&voice_result);
+        }
         cJSON_Delete(root);
         return send_ack(request, risk.frame_seq, true, false, &decision, &voice_result,
                         voice_requested ? voice_command_id : "", "");

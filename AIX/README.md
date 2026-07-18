@@ -35,15 +35,13 @@ CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC=n
 | 对象 | 固件引脚 | 实物状态 |
 | --- | --- | --- |
 | 板载 RGB | GPIO38 | 已用于视觉原型提示 |
-| DFPlayer UART2 TX / RX | GPIO47 / GPIO48 | GPIO47 经 1 kΩ 接 DFPlayer RX；DFPlayer TX 接 GPIO48；模块需与 ESP 共地 |
-| DFPlayer 喇叭 | SPK1 / SPK2 | 接 8 Ω、3 W 喇叭；喇叭两端均不得接 GND |
 | 气泵 MOSFET 输入 | GPIO40 | 已在源码中定义；未接入泵、MOSFET、SS54 与电池测试 |
 | 电磁阀 MOSFET 输入 | GPIO41 | 已在源码中定义；未接入阀、MOSFET、SS54 与电池测试 |
 | MPU6050 SDA / SCL / INT | GPIO2 / GPIO6 / GPIO39 | 已在源码中定义；未接入 MPU6050 实测 |
 
 泵和阀必须使用独立的 5–6V 电池组或外部电源，不能由开发板 5V 引脚供电；两块 MOSFET 的信号地、ESP32 GND 和电源负极必须共地。每个泵/阀负载各需要一个 SS54 反向并联。完整接线、气阀 1/2/3 气口和上电验收见上述接线文档。
 
-DFPlayer 默认从开发板 5V 取电、音量为 18/30，VCC/GND 之外还需要 GPIO47（串 1 kΩ）到模块 RX、模块 TX 到 GPIO48，以及仅跨接 SPK1/SPK2 的 8 Ω、3 W 喇叭。它与气泵/电磁阀的供电边界不同：一旦出现 brownout、相机异常、USB 断连、杂音或模块端电压不在 3.3–5.0V，必须改为独立、稳定的 5V（建议至少 1 A），并与 ESP 共地。完整 TF 卡、音频命名与排障见 [DFPlayer Mini 视觉风险语音接线与验收](../docs/hardware/dfplayer-voice-wiring.md)。
+DFPlayer 的 UART2 引脚、供电、TF 卡、喇叭、音频命名、排障和后续验收只以 [DFPlayer Mini 视觉风险语音接线与验收](../docs/hardware/dfplayer-voice-wiring.md) 为准。
 
 ## 串口与 HTTP 协议
 
@@ -73,7 +71,7 @@ CONFIG_AIX_ENABLE_VOICE_PROMPT=y
 CONFIG_AIX_VOICE_VOLUME=18
 ~~~
 
-音频卡须为 FAT32（不大于 32 GB），并包含 `/mp3/0001.mp3`、`/mp3/0002.mp3`、`/mp3/0003.mp3`。每段音频前置至少 500 ms 静音；默认内容依次为“注意前方环境”“前方风险较高，请减速避让”“前方危险，请立即减速避让”。
+音频文件、TF 卡约束和默认曲目内容见唯一的 [DFPlayer 接线与验收文档](../docs/hardware/dfplayer-voice-wiring.md)。
 
 ## 构建与烧录
 
@@ -92,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 idf.py -p COMxx flash monitor
 ~~~
 
-已完成的实机证据仅限 COM21 上的 `voice_status.ready`、曲目 1–3 的 `playing`/`finished` 串口日志及实际听音。后续验收顺序：确认 low、过期帧、乱序帧和错误曲目不播；同级 12 秒内最多两次，critical 能打断较低风险语音；最后与相机、Wi-Fi 和推理链路连续运行 10 分钟，无 brownout、掉线、USB 断连或明显杂音。通过这些步骤不构成安全认证。
+DFPlayer 已完成的实机证据仅限 COM21 上的 `voice_status.ready`、曲目 1–3 的 `playing`/`finished` 串口日志及实际听音；后续接线、验收与安全边界见唯一的 [DFPlayer 接线与验收文档](../docs/hardware/dfplayer-voice-wiring.md)。
 
 ## 尚未完成的工作
 
