@@ -33,7 +33,10 @@ if (-not $runtime.WifiConfigured) {
 }
 
 Write-Output "[2/5] Verifying 2.4 GHz Windows Mobile Hotspot..."
-& $hotspotScript
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hotspotScript
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows Mobile Hotspot setup failed with code $LASTEXITCODE"
+}
 
 $logRoot = Join-Path $hostRoot "logs"
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null

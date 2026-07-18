@@ -17,6 +17,14 @@ class LauncherScriptTests(unittest.TestCase):
         self.assertIn(helper_call, launcher)
         self.assertLess(launcher.index(helper_call), launcher.index(app_call))
 
+    def test_launcher_uses_windows_powershell_for_winrt_hotspot_helper(self):
+        launcher = (HOST_APP / "start_stack.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("powershell.exe", launcher)
+        self.assertIn("-NoProfile", launcher)
+        self.assertIn("-ExecutionPolicy", launcher)
+        self.assertIn("-File", launcher)
+
     def test_hotspot_helper_uses_runtime_config_winrt_and_24ghz(self):
         helper = (HOST_APP / "ensure_mobile_hotspot.ps1").read_text(encoding="utf-8")
 
