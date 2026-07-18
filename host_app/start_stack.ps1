@@ -33,7 +33,10 @@ if (-not $runtime.WifiConfigured) {
 }
 
 Write-Output "[2/5] Verifying 2.4 GHz Windows Mobile Hotspot..."
-& $hotspotScript
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hotspotScript
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows Mobile Hotspot setup failed with code $LASTEXITCODE"
+}
 
 $logRoot = Join-Path $hostRoot "logs"
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
@@ -45,6 +48,8 @@ $env:DA3_ROOT = $modelRoot
 $env:HF_HOME = Join-Path $modelRoot "cache\huggingface"
 $env:HF_HUB_CACHE = Join-Path $env:HF_HOME "hub"
 $env:TORCH_HOME = Join-Path $modelRoot "cache\torch"
+$env:YOLO_CONFIG_DIR = Join-Path $modelRoot "cache\ultralytics"
+$env:MPLCONFIGDIR = Join-Path $modelRoot "cache\matplotlib"
 $env:AIX_LINK_TOKEN = $runtime.Token
 $env:AIX_SERVICE_URL = "http://127.0.0.1:8008"
 $env:AIX_DEVICE_ID = $runtime.DeviceId

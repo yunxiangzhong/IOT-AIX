@@ -148,6 +148,23 @@ class RiskCallbackTests(unittest.TestCase):
             is_current=lambda: True,
         ))
 
+    def test_rejects_invalid_e2e_latency_even_when_voice_ack_is_present(self) -> None:
+        def transport(url, token, payload, timeout_s):
+            return {
+                "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
+                "accepted": True, "stale": False, "action_state": "high",
+                "rgb_pattern": "orange_blink_2hz", "e2e_latency_ms": -1,
+                "voice_ack": {"requested": True, "accepted": True, "duplicate": False, "status": "queued"},
+            }
+
+        client = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
+        self.assertIsNone(client.send(
+            frame(8),
+            {"frame_seq": 8, "voice_prompt": {"command_id": "boot:8:2", "track": 2}},
+            is_current=lambda: True,
+        ))
+        self.assertIn("e2e_latency_ms", client.last_error)
+
     def test_retries_keep_the_same_voice_command_id_and_accept_cached_voice_ack(self) -> None:
         sent_prompts = []
 

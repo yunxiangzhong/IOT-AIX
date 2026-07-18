@@ -46,12 +46,18 @@ def create_app(
         states.set_model(
             "ready",
             model=getattr(analyzer, "depth_model_name", "DA3-SMALL"),
+            detector=getattr(analyzer, "detector_model_name", ""),
+            backend=getattr(analyzer, "backend", "cuda"),
             gpu=getattr(engine, "device", "cuda"),
         )
 
     def load_models() -> None:
         try:
-            worker.set_analyzer(analyzer_loader())
+            loaded_analyzer = analyzer_loader()
+            warmup = getattr(loaded_analyzer, "warmup", None)
+            if callable(warmup):
+                warmup()
+            worker.set_analyzer(loaded_analyzer)
         except Exception as exc:
             states.set_model("error", error=str(exc))
 
@@ -84,6 +90,8 @@ def create_app(
             "model_state": model_health["model_state"],
             "model_error": model_health["model_error"],
             "model": model,
+            "detector": model_health.get("detector", ""),
+            "backend": model_health.get("backend", device),
             "device": device,
             "gpu": device,
         }
@@ -144,6 +152,23 @@ def create_app(
         item = store.latest(device_id)
         if item is None:
             raise HTTPException(status_code=404, detail="no frame for device")
+        return Response(
+            content=item.jpeg,
+            media_type="image/jpeg",
+            headers={
+                "X-Device-Id": item.device_id,
+                "X-Boot-Id": item.boot_id,
+                "X-Frame-Seq": str(item.frame_seq),
+                "X-Capture-Ts-Ms": str(item.capture_ts_ms),
+                "X-Received-Ts-Ms": str(item.received_ts_ms),
+            },
+        )
+
+    @app.get("/v1/frame/processed.jpg")
+    def processed_frame(device_id: str) -> Response:
+        item = store.latest_processed(device_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="no processed frame for device")
         return Response(
             content=item.jpeg,
             media_type="image/jpeg",

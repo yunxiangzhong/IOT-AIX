@@ -37,7 +37,7 @@ class Da3EngineTests(unittest.TestCase):
 
         self.assertAlmostEqual(summary.depth_p10, 1.3, places=5)
         self.assertEqual(len(model.calls), 1)
-        self.assertEqual(model.calls[0][1]["process_res"], 336)
+        self.assertEqual(model.calls[0][1]["process_res"], 280)
 
     def test_rejects_unreadable_jpeg(self) -> None:
         engine = Da3Engine(Path("weights"), model_loader=lambda _: FakeModel())

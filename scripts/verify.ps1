@@ -6,12 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
-$commonGitDir = (& git -C $projectRoot rev-parse --git-common-dir).Trim()
-if (-not [System.IO.Path]::IsPathRooted($commonGitDir)) {
-    $commonGitDir = Join-Path $projectRoot $commonGitDir
-}
-$runtimeRoot = Split-Path -Parent $commonGitDir
-$python = Join-Path $runtimeRoot ".venv\Scripts\python.exe"
+$python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $hostApp = Join-Path $projectRoot "host_app"
 $aix = Join-Path $projectRoot "AIX"
 $main = Join-Path $aix "main"
@@ -20,7 +15,7 @@ $cameraKconfig = Join-Path $main "Kconfig.projbuild"
 $cameraSource = Join-Path $main "camera_local.c"
 $cameraPreview = Join-Path $main "camera_preview.c"
 $runtimeSync = Join-Path $aix "sync_runtime_config.ps1"
-$modelRoot = Join-Path $runtimeRoot "Models\DepthAnything3"
+$modelRoot = Join-Path $projectRoot "Models\DepthAnything3"
 $modelService = Join-Path $projectRoot "Models\DepthAnything3\service"
 $modelPython = Join-Path $modelRoot "env\python.exe"
 

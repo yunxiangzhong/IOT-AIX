@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 import urllib.request
@@ -83,6 +84,7 @@ class LatestFrameStore:
         self._condition = threading.Condition()
         self._pending: dict[tuple[str, str], FrameEnvelope] = {}
         self._latest: dict[str, FrameEnvelope] = {}
+        self._processed: dict[str, FrameEnvelope] = {}
 
     def put(self, item: FrameEnvelope) -> bool:
         with self._condition:
@@ -106,6 +108,16 @@ class LatestFrameStore:
         with self._condition:
             return self._latest.get(device_id)
 
+    def commit_processed(self, item: FrameEnvelope) -> None:
+        with self._condition:
+            current = self._processed.get(item.device_id)
+            if current is None or current.boot_id != item.boot_id or item.frame_seq >= current.frame_seq:
+                self._processed[item.device_id] = item
+
+    def latest_processed(self, device_id: str) -> FrameEnvelope | None:
+        with self._condition:
+            return self._processed.get(device_id)
+
     def is_latest(self, item: FrameEnvelope) -> bool:
         latest = self.latest(item.device_id)
         return latest is not None and latest.boot_id == item.boot_id and latest.frame_seq == item.frame_seq
@@ -123,23 +135,47 @@ class ChainStateRepository:
         self._model_state = model_state
         self._model_error = ""
         self._model_name = "DA3-SMALL"
+        self._detector_name = ""
+        self._backend = "cuda"
         self._gpu = "cuda"
 
     def _base(self, device_id: str) -> dict:
         return {
             "type": "chain_state",
             "version": 1,
+            "revision": 0,
             "device_id": device_id,
             "boot_id": "",
             "camera": {"state": "unknown"},
             "upload": {"state": "waiting", "last_frame_seq": -1, "fps": 0.0, "frame_age_ms": None, "accepted_frames": 0, "queue_replaced": 0},
-            "model": {"state": self._model_state, "latency_ms": None, "gpu": "cuda", "error": self._model_error, "valid_results": 0},
+            "model": {
+                "state": self._model_state,
+                "name": self._model_name,
+                "detector": self._detector_name,
+                "backend": self._backend,
+                "latency_ms": None,
+                "gpu": self._gpu,
+                "error": self._model_error,
+                "valid_results": 0,
+            },
             "callback": {"state": "waiting", "latency_ms": None, "attempts": 0, "confirmed_count": 0, "failed_count": 0},
             "risk": {"valid": False, "score": 0, "band": "low", "reason": ""},
             "action": {"confirmed": False, "state": "loading", "rgb_pattern": "blue_blink_1hz", "frame_seq": -1},
+            "display": {
+                "ready": False,
+                "url": "/v1/frame/processed.jpg",
+                "boot_id": "",
+                "frame_seq": -1,
+                "capture_ts_ms": -1,
+                "detections": [],
+            },
             "last_error": "",
             "server_ts_ms": 0,
         }
+
+    @staticmethod
+    def _touch(state: dict) -> None:
+        state["revision"] = int(state.get("revision", 0)) + 1
 
     def record_frame(self, item: FrameEnvelope, queue_replaced: bool = False) -> None:
         with self._lock:
@@ -163,17 +199,37 @@ class ChainStateRepository:
             if queue_replaced:
                 state["upload"]["queue_replaced"] += 1
             state["model"].update(state=self._model_state, error=self._model_error)
+            self._touch(state)
 
-    def set_model(self, model_state: str, *, error: str = "", model: str = "DA3-SMALL", gpu: str = "cuda") -> None:
+    def set_model(
+        self,
+        model_state: str,
+        *,
+        error: str = "",
+        model: str = "DA3-SMALL",
+        detector: str = "",
+        backend: str = "cuda",
+        gpu: str = "cuda",
+    ) -> None:
         with self._lock:
             self._model_state = model_state
             self._model_error = error
             self._model_name = model
+            self._detector_name = detector
+            self._backend = backend
             self._gpu = gpu
             for state in self._states.values():
-                state["model"].update(state=model_state, error=error, name=model, gpu=gpu)
+                state["model"].update(
+                    state=model_state,
+                    error=error,
+                    name=model,
+                    detector=detector,
+                    backend=backend,
+                    gpu=gpu,
+                )
                 if error:
                     state["last_error"] = error
+                self._touch(state)
 
     def record_risk(self, item: FrameEnvelope, risk: dict, latency_ms: float) -> None:
         with self._lock:
@@ -188,6 +244,15 @@ class ChainStateRepository:
                 "dominant_class": risk.get("dominant_class", ""),
                 "frame_seq": item.frame_seq,
             }
+            state["display"] = {
+                "ready": True,
+                "url": "/v1/frame/processed.jpg",
+                "boot_id": item.boot_id,
+                "frame_seq": item.frame_seq,
+                "capture_ts_ms": item.capture_ts_ms,
+                "detections": deepcopy(risk.get("detections", [])),
+            }
+            self._touch(state)
 
     def record_callback(self, item: FrameEnvelope, ack: dict | None, latency_ms: float, attempts: int, error: str = "") -> None:
         with self._lock:
@@ -207,10 +272,12 @@ class ChainStateRepository:
                     "rgb_pattern": ack["rgb_pattern"],
                     "frame_seq": ack["frame_seq"],
                     "stale": bool(ack.get("stale", False)),
+                    "e2e_latency_ms": ack.get("e2e_latency_ms"),
                 }
                 state["last_error"] = ""
             elif error:
                 state["last_error"] = error
+            self._touch(state)
 
     def latest(self, device_id: str, now_ms: int | None = None) -> dict | None:
         with self._lock:
@@ -230,6 +297,8 @@ class ChainStateRepository:
                 "model_state": self._model_state,
                 "model_error": self._model_error,
                 "model": self._model_name,
+                "detector": self._detector_name,
+                "backend": self._backend,
                 "gpu": self._gpu,
             }
 
@@ -290,6 +359,14 @@ class RiskCallbackClient:
                     raise ValueError("invalid or mismatched action_ack")
                 if "voice_prompt" in payload and not isinstance(ack.get("voice_ack"), dict):
                     raise ValueError("missing voice_ack for requested voice prompt")
+                e2e_latency_ms = ack.get("e2e_latency_ms")
+                if e2e_latency_ms is not None and (
+                    isinstance(e2e_latency_ms, bool)
+                    or not isinstance(e2e_latency_ms, (int, float))
+                    or not math.isfinite(e2e_latency_ms)
+                    or e2e_latency_ms < 0
+                ):
+                    raise ValueError("action_ack e2e_latency_ms must be finite and non-negative")
                 return ack
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 self.last_error = str(exc)
@@ -319,6 +396,8 @@ class AnalysisWorker:
         self._states.set_model(
             "ready",
             model=getattr(analyzer, "depth_model_name", "DA3-SMALL"),
+            detector=getattr(analyzer, "detector_model_name", ""),
+            backend=getattr(analyzer, "backend", "cuda"),
             gpu=getattr(analyzer, "device", "cuda"),
         )
         self._store.wake()
@@ -353,6 +432,7 @@ class AnalysisWorker:
                     session_id=f"{item.device_id}:{item.boot_id}",
                 )
                 risk.update(device_id=item.device_id, boot_id=item.boot_id)
+                self._store.commit_processed(item)
                 self._states.record_risk(item, risk, (time.perf_counter() - started) * 1000.0)
                 callback_payload = self._voice_policy.enrich(item, risk, now_ms=int(time.time() * 1000))
                 callback_started = time.perf_counter()

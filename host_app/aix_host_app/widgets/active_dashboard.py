@@ -4,6 +4,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..models import ActionStatusEvent, CameraStatusEvent, PneumaticStatusEvent
 from .pneumatic_calibration_panel import PneumaticCalibrationPanel
+from .vision_canvas import VisionCanvas
 
 
 STATUS_COLORS = {
@@ -199,9 +200,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._last_image: QtGui.QImage | None = None
         self._last_state: dict = {}
         self._last_trend_frame = -1
+        self._last_display_frame_seq = -1
+        self._last_state_revision: int | None = None
         self.setObjectName("activeDashboard")
 
         root = QtWidgets.QVBoxLayout(self)
@@ -279,19 +281,16 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         camera_head.setObjectName("panelHead")
         head_layout = QtWidgets.QHBoxLayout(camera_head)
         head_layout.setContentsMargins(16, 10, 16, 10)
-        camera_title = QtWidgets.QLabel("实时视觉画面")
+        camera_title = QtWidgets.QLabel("已分析视觉画面")
         camera_title.setObjectName("panelTitle")
         self.camera_state_badge = QtWidgets.QLabel("● 等待画面")
         self.camera_state_badge.setObjectName("softBadge")
         head_layout.addWidget(camera_title)
         head_layout.addWidget(self.camera_state_badge)
-        self.frame_telemetry = QtWidgets.QLabel("等待上位机最新帧")
+        self.frame_telemetry = QtWidgets.QLabel("等待上位机已分析帧")
         self.frame_telemetry.setObjectName("monoMuted")
         head_layout.addWidget(self.frame_telemetry, 1, QtCore.Qt.AlignmentFlag.AlignRight)
-        self.camera_image = QtWidgets.QLabel("等待上位机帧服务提供画面")
-        self.camera_image.setObjectName("activeCamera")
-        self.camera_image.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.camera_image.setMinimumSize(480, 270)
+        self.camera_image = VisionCanvas()
         camera_footer = QtWidgets.QFrame()
         camera_footer.setObjectName("cameraFooter")
         footer_layout = QtWidgets.QHBoxLayout(camera_footer)
@@ -521,37 +520,42 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         )
 
     def apply_frame(self, data: bytes, frame_seq: int, capture_ts_ms: int) -> bool:
-        image = QtGui.QImage.fromData(data, "JPG")
-        if image.isNull():
+        if not self.camera_image.set_snapshot(data, []):
             return False
-        self._last_image = image
+        self._last_display_frame_seq = frame_seq
         self.frame_telemetry.setText(f"第 {frame_seq:08d} 帧 · 采集时间 {capture_ts_ms} 毫秒")
-        self.camera_state_badge.setText("● 画面实时更新")
+        self.camera_state_badge.setText("● 已完成分析")
         self.camera_state_badge.setStyleSheet(
             "color: #34D399; background: #0D3029; border: 1px solid #34D399;"
             "border-radius: 10px; padding: 3px 9px;"
         )
-        self._render_image()
         return True
 
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._render_image()
+    def apply_snapshot(self, data: bytes, frame_seq: int, capture_ts_ms: int, state: dict) -> bool:
+        display = state.get("display", {})
+        try:
+            expected_seq = int(display.get("frame_seq", -1))
+            expected_capture = int(display.get("capture_ts_ms", -1))
+        except (TypeError, ValueError):
+            return False
+        if expected_seq != frame_seq or expected_capture != capture_ts_ms:
+            return False
+        if not self.camera_image.set_snapshot(data, display.get("detections", [])):
+            return False
+        self._last_display_frame_seq = frame_seq
+        self.frame_telemetry.setText(f"第 {frame_seq:08d} 帧 · 采集时间 {capture_ts_ms} 毫秒")
+        self.camera_state_badge.setText("● 已完成分析")
+        self.camera_state_badge.setStyleSheet(
+            "color: #34D399; background: #0D3029; border: 1px solid #34D399;"
+            "border-radius: 10px; padding: 3px 9px;"
+        )
+        self.apply_chain_state(state, force=True)
+        return True
 
     def set_compact_mode(self, compact: bool) -> None:
         self.trend_header.setVisible(not compact)
         self.risk_trend.setVisible(not compact)
         self.safety_note.setVisible(not compact)
-
-    def _render_image(self) -> None:
-        if self._last_image is None:
-            return
-        pixmap = QtGui.QPixmap.fromImage(self._last_image).scaled(
-            self.camera_image.size(),
-            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-            QtCore.Qt.TransformationMode.SmoothTransformation,
-        )
-        self.camera_image.setPixmap(pixmap)
 
     def apply_camera_status(self, event: CameraStatusEvent) -> None:
         color = STATUS_COLORS["low"] if event.valid else STATUS_COLORS["fault"]
@@ -603,26 +607,15 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             f"动作状态：第 {event.frame_seq} 帧，{_state_label(event.action_state)}，"
             f"{_rgb_pattern_label(event.rgb_pattern)}，结果{'已失效' if event.stale else '有效'}"
         )
+        if self._last_display_frame_seq >= 0 and event.frame_seq != self._last_display_frame_seq:
+            self.protocol_log.appendPlainText(
+                f"已忽略非当前展示帧的动作状态：展示第 {self._last_display_frame_seq} 帧，收到第 {event.frame_seq} 帧"
+            )
+            return
         band = "fault" if event.stale or event.action_state == "fault" else (
-            "critical" if event.risk_score >= 80 else "high" if event.risk_score >= 60
-            else "attention" if event.risk_score >= 30 else "low"
+            event.action_state if event.action_state in STATUS_COLORS else "loading"
         )
         color = STATUS_COLORS[band]
-        self.risk_score.setText("--" if band == "fault" else f"{event.risk_score:02d}")
-        self.risk_band.setText({
-            "fault": "结果失效", "low": "低风险", "attention": "需要注意",
-            "high": "高风险", "critical": "严重风险",
-        }[band])
-        self.result_state.setText(
-            "● 结果已失效" if band == "fault" else "● 结果有效"
-        )
-        self.risk_gauge.setValue(0 if band == "fault" else event.risk_score)
-        self._apply_risk_tint(band)
-        if not event.stale and event.valid and event.frame_seq != self._last_trend_frame:
-            self._last_trend_frame = event.frame_seq
-            self.risk_trend.add_score(event.risk_score)
-        if band == "fault":
-            self.risk_reason.setText("头盔设备报告视觉结果超过 3 秒失效或链路故障，旧风险已隔离。")
         self.action_name.setText({
             "loading": "启动提示", "safe": "安全提示", "attention": "注意提示",
             "high": "高风险提示", "critical": "严重提示", "fault": "故障提示",
@@ -630,7 +623,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.action_pattern.setText(f"板载指示灯 · {_rgb_pattern_label(event.rgb_pattern)} · 亮度 20%")
         self.action_ack.setText(f"串口动作状态 · 第 {event.frame_seq} 帧")
         self.action_stage.set_state(f"串口已确认 · 第 {event.frame_seq} 帧", color)
-        self._set_system_status("闭环异常" if band == "fault" else "闭环运行正常", band)
+        self.action_indicator.setStyleSheet(f"background: {color}; border: none; border-radius: 2px;")
 
     def apply_pneumatic_status(self, event: PneumaticStatusEvent) -> None:
         self.pneumatic_panel.apply_status(event)
@@ -639,13 +632,24 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             f"阀{'通电' if event.valve_on else '断电泄压'} · 故障 {event.fault}"
         )
 
-    def apply_chain_state(self, state: dict) -> None:
+    def apply_chain_state(self, state: dict, *, force: bool = False) -> None:
+        revision = state.get("revision")
+        if not force and isinstance(revision, int) and revision == self._last_state_revision:
+            return
+        if isinstance(revision, int):
+            self._last_state_revision = revision
         self._last_state = state
         upload = state.get("upload", {})
         model = state.get("model", {})
         callback = state.get("callback", {})
         risk = state.get("risk", {})
         action = state.get("action", {})
+        display = state.get("display", {})
+        if display.get("ready"):
+            try:
+                self._last_display_frame_seq = int(display.get("frame_seq", -1))
+            except (TypeError, ValueError):
+                pass
         model_state = str(model.get("state", "loading"))
         is_stale = bool(action.get("stale", False)) or action.get("state") == "fault"
         band = "fault" if is_stale else str(risk.get("band", "loading"))
@@ -688,11 +692,16 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         pattern = str(action.get("rgb_pattern", "blue_blink_1hz"))
         self.action_name.setText(action_labels.get(action_state, "状态未知"))
         self.action_pattern.setText(f"板载指示灯 · {_rgb_pattern_label(pattern)} · 亮度 20%")
-        self.action_ack.setText(
-            f"动作已确认 · 第 {int(action.get('frame_seq', -1))} 帧" if action.get("confirmed") else "等待动作确认"
-        )
+        if action.get("confirmed"):
+            ack_text = f"动作已确认 · 第 {int(action.get('frame_seq', -1))} 帧"
+            e2e_latency = action.get("e2e_latency_ms")
+            if isinstance(e2e_latency, (int, float)) and e2e_latency >= 0:
+                ack_text += f" · 端到端 {int(round(float(e2e_latency)))} 毫秒"
+            self.action_ack.setText(ack_text)
+        else:
+            self.action_ack.setText("等待动作确认")
         age = upload.get("frame_age_ms")
-        frame_seq = int(upload.get("last_frame_seq", -1))
+        frame_seq = int(display.get("frame_seq", -1)) if display.get("ready") else int(risk.get("frame_seq", upload.get("last_frame_seq", -1)) or -1)
         risk_frame_seq = int(risk.get("frame_seq", -1) or -1)
         if score is not None and risk_frame_seq >= 0 and risk_frame_seq != self._last_trend_frame:
             self._last_trend_frame = risk_frame_seq

@@ -4,6 +4,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef CONFIG_AIX_VISION_UPLOAD_PERIOD_MS
+#define CONFIG_AIX_VISION_UPLOAD_PERIOD_MS 1000
+#endif
+
+uint32_t vision_uplink_default_period_ms(void)
+{
+    return CONFIG_AIX_VISION_UPLOAD_PERIOD_MS;
+}
+
 bool vision_uplink_response_matches_frame(
     const char *json,
     size_t length,
@@ -62,9 +71,6 @@ bool vision_uplink_response_model_failed(const char *json, size_t length)
 
 #ifndef CONFIG_AIX_VISION_SERVICE_URL
 #define CONFIG_AIX_VISION_SERVICE_URL "http://192.168.137.1:8008/v1/frames"
-#endif
-#ifndef CONFIG_AIX_VISION_UPLOAD_PERIOD_MS
-#define CONFIG_AIX_VISION_UPLOAD_PERIOD_MS 400
 #endif
 #ifndef CONFIG_AIX_VISION_HTTP_TIMEOUT_MS
 #define CONFIG_AIX_VISION_HTTP_TIMEOUT_MS 1500

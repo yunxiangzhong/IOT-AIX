@@ -6,7 +6,7 @@
 
 | 功能 | 已实现内容 | 当前边界 |
 | --- | --- | --- |
-| 视觉闭环展示 | 显示 PC 服务的最新帧、风险、上传/推理/回调延迟和 RGB 确认 | 展示的是原型视觉风险，不是安全判断 |
+| 视觉闭环展示 | 原子显示 PC 服务的已分析帧、YOLO 检测框、稳定风险、上传/推理/回调延迟和 RGB 确认 | 画面约 1 秒更新一次，不宣称实时；展示的是原型视觉风险，不是安全判断 |
 | PC 视觉语音策略 | attention/high/critical 生成 `voice_prompt` 曲目 1/2/3，保持命令编号幂等、同级冷却并在升级时立即提示 | 已由 COM21 的 `voice_status.ready`、曲目 1–3 的 `playing`/`finished` 和实际听音交叉确认；不代表整机、气动或安全验收 |
 | 串口遥测 | 解析并记录 pressure、motion v2、camera_status、action_status、pneumatic_status | 新增的 MPU6050 与气动硬件尚未实机接线验证 |
 | 气动标定页 | 读取配置、发送短充气脉冲/泄压/急停/故障复位/保存限制，并显示返回状态 | UI 不能开启自动模式，不能跳过 ESP 的 token、压力、时长或故障保护 |
@@ -16,9 +16,9 @@
 
 ## 数据源与默认页面
 
-- PC HTTP：/healthz、/v1/frame/latest.jpg、/v1/state/latest、/v1/pneumatic/config、/v1/pneumatic/command。
+- PC HTTP：/healthz、/v1/frame/processed.jpg、/v1/state/latest、/v1/pneumatic/config、/v1/pneumatic/command；latest.jpg 仅作原图诊断。
 - ESP 串口：pressure、motion、camera_status、action_status、pneumatic_status。
-- 默认页展示相机、视觉风险与 RGB 链路；气动控制放在诊断/标定区域，不与默认视觉提示混为“已自动保护”。
+- 默认页用固定自绘画布展示“已分析画面”和中文交通目标框；风险卡只接受同一帧 PC 快照，串口 action_status 不再覆盖它。气动控制放在诊断/标定区域，不与默认视觉提示混为“已自动保护”。
 - 设备首次上报新的 boot_id 后，上位机才请求该设备的气动配置。
 
 PC 服务的气动代理会把请求转到最近一帧来源地址的 ESP 端口 8080。ESP 仍是最终裁决者：只有编译时启用了气动控制时，才可能接受受限命令；自动模式默认关闭，UI 没有开启它的能力。

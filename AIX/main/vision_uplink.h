@@ -34,3 +34,4 @@ bool vision_uplink_response_matches_frame(
     const char *boot_id,
     uint32_t frame_seq);
 bool vision_uplink_response_model_failed(const char *json, size_t length);
+uint32_t vision_uplink_default_period_ms(void);

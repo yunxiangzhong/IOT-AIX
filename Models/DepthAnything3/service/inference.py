@@ -41,41 +41,72 @@ class RiskSummary:
 
 
 class RiskTracker:
-    """Single-stream temporal smoothing and lightweight box-growth tracking."""
+    """Smooth one stream and publish risk bands only after temporal confirmation."""
+
+    _BAND_ORDER = ("low", "attention", "high", "critical")
+    _BAND_LIMITS = {
+        "low": (0, 29),
+        "attention": (30, 59),
+        "high": (60, 79),
+        "critical": (80, 100),
+    }
 
     def __init__(self) -> None:
-        self._risk: float | None = None
-        self._objects: dict[str, tuple[float, int]] = {}
+        self._ema: float | None = None
+        self._band = "low"
+        self._pending_band = ""
+        self._pending_count = 0
 
     def reset(self) -> None:
-        self._risk = None
-        self._objects.clear()
+        self._ema = None
+        self._band = "low"
+        self._pending_band = ""
+        self._pending_count = 0
 
-    def smooth(self, raw_score: float) -> float:
+    def update(self, raw_score: float, *, emergency: bool = False) -> tuple[int, str]:
         raw_score = float(np.clip(raw_score, 0.0, 100.0))
-        if self._risk is None:
-            self._risk = raw_score
+        if self._ema is None:
+            self._ema = raw_score
         else:
-            factor = 0.65 if raw_score >= self._risk else 0.25
-            self._risk += factor * (raw_score - self._risk)
-        return self._risk
+            alpha = 0.45 if raw_score >= self._ema else 0.20
+            self._ema += alpha * (raw_score - self._ema)
 
-    def growth_score(self, class_name: str, area: float, now_ms: int) -> float:
-        previous = self._objects.get(class_name)
-        self._objects[class_name] = (area, now_ms)
-        if previous is None:
-            return 0.0
-        previous_area, previous_ms = previous
-        dt = max((now_ms - previous_ms) / 1000.0, 0.001)
-        return float(np.clip(max(0.0, area - previous_area) / dt / 0.15, 0.0, 1.0))
+        if emergency:
+            self._ema = max(self._ema, 80.0)
+            self._band = "critical"
+            self._pending_band = ""
+            self._pending_count = 0
+        else:
+            candidate = _risk_band(int(round(self._ema)))
+            if candidate == self._band:
+                self._pending_band = ""
+                self._pending_count = 0
+            else:
+                if candidate == self._pending_band:
+                    self._pending_count += 1
+                else:
+                    self._pending_band = candidate
+                    self._pending_count = 1
+                current_rank = self._BAND_ORDER.index(self._band)
+                candidate_rank = self._BAND_ORDER.index(candidate)
+                required = 2 if candidate_rank > current_rank else 3
+                if self._pending_count >= required:
+                    self._band = candidate
+                    self._pending_band = ""
+                    self._pending_count = 0
+
+        lower, upper = self._BAND_LIMITS[self._band]
+        published_score = int(np.clip(round(self._ema), lower, upper))
+        return published_score, self._band
 
 
 class Da3Engine:
     model_name = "DA3-SMALL"
     device = "cuda"
 
-    def __init__(self, weights: Path, model_loader=None) -> None:
+    def __init__(self, weights: Path, model_loader=None, *, process_res: int = 280) -> None:
         self._weights = weights
+        self._process_res = process_res
         self._model = (model_loader or self._load_local_model)(weights)
 
     @staticmethod
@@ -101,7 +132,7 @@ class Da3Engine:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         prediction = self._model.inference(
             [image],
-            process_res=336,
+            process_res=self._process_res,
             export_dir=None,
         )
         return DepthPrediction(depth=prediction.depth[0], confidence=prediction.conf[0])
@@ -158,12 +189,13 @@ def summarize_risk(
     roi_mask = np.zeros_like(valid_mask, dtype=bool)
     roi_mask[y1:y2, x1:x2] = True
     near_fraction = float(np.mean((normalized <= 0.25)[roi_mask & valid_mask])) if np.any(roi_mask & valid_mask) else 0.0
-    scene_score = float(np.clip(near_fraction / 0.50, 0.0, 1.0) * 100.0)
+    scene_score = float(np.clip(near_fraction / 0.50, 0.0, 1.0) * 45.0)
 
     enriched: list[dict] = []
     best_score = scene_score
     dominant_class = ""
     reason = "scene_proximity"
+    emergency = False
     for detection in detections:
         left, top, right, bottom = detection.bbox_norm
         px1 = max(0, min(width - 1, int(left * width)))
@@ -178,10 +210,19 @@ def summarize_risk(
         occupancy = float(np.clip(area / 0.25, 0.0, 1.0))
         center_distance = abs((left + right) / 2.0 - 0.5) * 2.0
         center_score = float(np.clip(1.0 - center_distance, 0.0, 1.0))
-        growth = tracker.growth_score(detection.class_name, area, now_ms)
-        object_score = 100.0 * (
-            0.45 * proximity + 0.25 * occupancy + 0.15 * center_score + 0.15 * growth
+        raw_object_score = 100.0 * (
+            0.40 * proximity
+            + 0.25 * occupancy
+            + 0.20 * center_score
+            + 0.15 * float(np.clip(detection.score, 0.0, 1.0))
         )
+        object_emergency = (
+            raw_object_score >= 92.0
+            and relative_depth <= 0.12
+            and detection.score >= 0.85
+            and center_score >= 0.70
+        )
+        object_score = raw_object_score if object_emergency else min(raw_object_score, 79.0)
         enriched.append(
             {
                 "class_name": detection.class_name,
@@ -194,65 +235,130 @@ def summarize_risk(
         if object_score > best_score:
             best_score = object_score
             dominant_class = detection.class_name
-            reason = f"{detection.class_name}_proximity" if growth == 0 else f"{detection.class_name}_approaching"
+            reason = f"{detection.class_name}_proximity"
+            emergency = object_emergency
 
-    smoothed = int(round(tracker.smooth(best_score)))
+    smoothed, stable_band = tracker.update(best_score, emergency=emergency)
     return RiskSummary(
         depth_p10=float(p10),
         depth_median=float(np.median(values)),
         confidence_median=float(np.median(confidence[valid_mask])),
         detections=enriched,
         risk_score=smoothed,
-        risk_band=_risk_band(smoothed),
+        risk_band=stable_band,
         dominant_class=dominant_class,
         reason=reason,
     )
 
 
-class SsdLiteDetector:
-    model_name = "SSDLite320-MobileNetV3-COCO"
+class Yolo26Detector:
+    model_name = "YOLO26m-COCO"
     device = "cuda"
+    relevant_classes = {
+        "person",
+        "bicycle",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck",
+        "traffic light",
+        "stop sign",
+    }
 
-    def __init__(self, weights: Path, model_loader=None) -> None:
+    def __init__(
+        self,
+        weights: Path,
+        model_loader=None,
+        *,
+        confidence: float = 0.35,
+        image_size: int = 640,
+        fallback_weights: Path | None = None,
+    ) -> None:
+        if image_size < 320 or image_size > 1280 or image_size % 32 != 0:
+            raise ValueError("YOLO image_size must be a multiple of 32 between 320 and 1280")
+        self._weights = weights
+        self._confidence = confidence
+        self._image_size = image_size
+        self._fallback_weights = fallback_weights
+        self.backend = "tensorrt-fp16" if weights.suffix.lower() == ".engine" else "pytorch-cuda-fp16"
+        self._model_loader = model_loader or self._load_model
+        self._model = self._model_loader(weights)
+
+    @staticmethod
+    def _load_model(weights: Path):
         import torch
-        from torchvision.models.detection import SSDLite320_MobileNet_V3_Large_Weights, ssdlite320_mobilenet_v3_large
+        from ultralytics import YOLO
 
-        self._torch = torch
-        self._weights_enum = SSDLite320_MobileNet_V3_Large_Weights.DEFAULT
-        self._preprocess = self._weights_enum.transforms()
-        self._categories = self._weights_enum.meta["categories"]
-        self._model = (model_loader or self._load_model)(weights, ssdlite320_mobilenet_v3_large)
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is required for the YOLO26 service")
+        if not weights.is_file():
+            raise FileNotFoundError(f"YOLO26 weights not found: {weights}")
+        return YOLO(str(weights), task="detect")
 
-    def _load_model(self, weights: Path, builder):
-        model = builder(weights=None, weights_backbone=None, num_classes=len(self._categories))
-        state = self._torch.load(weights, map_location="cpu", weights_only=True)
-        model.load_state_dict(state)
-        return model.to(self.device).eval()
+    @staticmethod
+    def _as_array(value) -> np.ndarray:
+        if hasattr(value, "detach"):
+            value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+        return np.asarray(value)
 
     def detect_jpeg(self, image_bytes: bytes) -> list[DetectionSummary]:
         import cv2
-        from PIL import Image
 
         image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("JPEG decoding failed")
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width = image.shape[:2]
-        tensor = self._preprocess(Image.fromarray(image)).to(self.device)
-        with self._torch.inference_mode():
-            output = self._model([tensor])[0]
+        predict_args = {
+            "source": image,
+            "imgsz": self._image_size,
+            "conf": self._confidence,
+            "device": 0,
+            "quantize": 16,
+            "verbose": False,
+        }
+        try:
+            results = self._model.predict(**predict_args)
+        except Exception:
+            if self.backend != "tensorrt-fp16" or self._fallback_weights is None:
+                raise
+            fallback = self._fallback_weights
+            self._fallback_weights = None
+            self._weights = fallback
+            self._model = self._model_loader(fallback)
+            self.backend = "pytorch-cuda-fp16"
+            results = self._model.predict(**predict_args)
         detections: list[DetectionSummary] = []
-        for box, label, score in zip(output["boxes"], output["labels"], output["scores"]):
-            score_value = float(score.item())
-            if score_value < 0.45:
+        if not results:
+            return detections
+        result = results[0]
+        boxes = getattr(result, "boxes", None)
+        if boxes is None:
+            return detections
+        names = getattr(result, "names", getattr(self._model, "names", {}))
+        for box, class_id, score in zip(
+            self._as_array(boxes.xyxy),
+            self._as_array(boxes.cls),
+            self._as_array(boxes.conf),
+        ):
+            score_value = float(score)
+            class_name = str(names[int(class_id)])
+            if score_value < self._confidence or class_name not in self.relevant_classes:
                 continue
-            left, top, right, bottom = [float(value) for value in box.tolist()]
-            class_id = int(label.item())
+            left, top, right, bottom = [float(value) for value in box]
             detections.append(
                 DetectionSummary(
-                    self._categories[class_id],
+                    class_name,
                     score_value,
-                    (left / width, top / height, right / width, bottom / height),
+                    (
+                        float(np.clip(left / width, 0.0, 1.0)),
+                        float(np.clip(top / height, 0.0, 1.0)),
+                        float(np.clip(right / width, 0.0, 1.0)),
+                        float(np.clip(bottom / height, 0.0, 1.0)),
+                    ),
                 )
             )
         return detections
@@ -260,13 +366,32 @@ class SsdLiteDetector:
 
 class VisionAnalyzer:
     depth_model_name = "DA3-SMALL"
-    detector_model_name = SsdLiteDetector.model_name
+    detector_model_name = Yolo26Detector.model_name
+    device = "cuda"
 
-    def __init__(self, depth_engine: Da3Engine, detector: SsdLiteDetector) -> None:
+    def __init__(self, depth_engine: Da3Engine, detector: Yolo26Detector) -> None:
         self._depth_engine = depth_engine
         self._detector = detector
         self._session_id = ""
         self._tracker = RiskTracker()
+
+    @property
+    def backend(self) -> str:
+        return self._detector.backend
+
+    def warmup(self, runs: int = 3) -> None:
+        import cv2
+
+        image = np.zeros((240, 320, 3), dtype=np.uint8)
+        ok, encoded = cv2.imencode(".jpg", image)
+        if not ok:
+            raise RuntimeError("failed to build warmup JPEG")
+        image_bytes = encoded.tobytes()
+        for _ in range(max(1, runs)):
+            self._depth_engine.predict_jpeg(image_bytes)
+            self._detector.detect_jpeg(image_bytes)
+        self._session_id = ""
+        self._tracker.reset()
 
     def analyze_jpeg(self, image_bytes: bytes, *, frame_seq: int, capture_ts_ms: int, session_id: str) -> dict:
         from time import perf_counter
@@ -278,7 +403,7 @@ class VisionAnalyzer:
         started = perf_counter()
         prediction = self._depth_engine.predict_jpeg(image_bytes)
         all_detections = self._detector.detect_jpeg(image_bytes)
-        relevant = {"person", "bicycle", "car", "motorcycle", "bus", "truck"}
+        relevant = Yolo26Detector.relevant_classes
         risk_detections = [item for item in all_detections if item.class_name in relevant]
         summary = summarize_risk(
             depth=prediction.depth,
@@ -299,4 +424,5 @@ class VisionAnalyzer:
             dominant_class=summary.dominant_class,
             reason=summary.reason,
             latency_ms=(perf_counter() - started) * 1000.0,
+            detector_model=self.detector_model_name,
         )

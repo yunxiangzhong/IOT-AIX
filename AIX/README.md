@@ -6,8 +6,8 @@
 
 | 功能 | 当前代码状态 | 注意事项 |
 | --- | --- | --- |
-| OV5640 320×240 JPEG 采集、失败恢复、约 5 FPS | 已实现 | 采集到的最新 JPEG 每 400 ms 上传给 PC |
-| Wi-Fi、设备标识、token、PC 上传和风险回调 | 已实现 | /risk 对 device、boot_id、帧序、TTL、分数和等级做校验 |
+| OV5640 320×240 JPEG 采集、失败恢复、约 5 FPS | 已实现 | 相机仍可约 5 FPS 采集，但只把最新 JPEG 每 1000 ms 上传给 PC，不积压历史帧 |
+| Wi-Fi、设备标识、token、PC 上传和风险回调 | 已实现 | /risk 对 device、boot_id、帧序、3000 ms TTL、分数和等级做校验；action_ack 回传采集至确认的 e2e_latency_ms |
 | RGB 与 action_status | 已实现 | GPIO38 最大亮度 20%，只表示原型状态 |
 | DFPlayer Mini 视觉风险语音 | UART2 驱动、三级 `/mp3/0001.mp3` 至 `0003.mp3` 映射、命令去重和 `voice_status` 已实现 | 仅接收已通过 `/risk` 校验的 PC 视觉风险；COM21 已记录 `ready`、曲目 1–3 的 `playing`/`finished`，且实际听音确认；未完成 10 分钟整机/气动/安全验收 |
 | XGZP6847A 压力遥测 | 已实现 | 用于遥测和气动策略的输入有效性检查，最终气路仍需标定 |

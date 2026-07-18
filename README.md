@@ -3,7 +3,7 @@
 这是一个仍在原型阶段的 ESP32-S3 / PC 协同项目。当前默认链路是“相机采集、PC 视觉推理、ESP 回调校验、RGB 提示”；气泵、电磁阀和 MPU6050 的软件支持已经合入源码，但尚未完成实物接线和整机验收。
 
 ~~~text
-OV5640 → ESP32-S3 主动上传 JPEG → PC 最新帧缓存 / DA3 + SSDLite 推理
+OV5640 → ESP32-S3 每 1000 ms 上传最新 JPEG → PC 已处理快照 / DA3 + YOLO26m 推理
         → PC 回调 vision_risk → ESP action_policy → GPIO38 板载 RGB
         → action_ack + 串口 action_status → PySide6 上位机
         └→ /risk.voice_prompt → UART2 DFPlayer Mini → SPK1/SPK2 8 Ω 喇叭
@@ -17,7 +17,7 @@ MPU6050 / 压力遥测 → 气动安全策略 → GPIO40 气泵 MOSFET、GPIO41 
 | 模块 | 源码与自动化验证 | 实机状态 / 边界 |
 | --- | --- | --- |
 | OV5640 QVGA/JPEG 采集、失败恢复、PC 主动上传 | 已实现；主机测试和 ESP-IDF 全量构建通过 | 已有 OV5640 跑通记录；仍未完成本版本的 10 分钟整机闭环验收 |
-| PC DA3 + SSDLite 最新帧推理、/risk 回调、TTL/帧序/token 校验 | 已实现并有主机侧测试 | 输出仅为相对视觉风险，不是距离、碰撞概率或安全结论 |
+| PC DA3 + YOLO26m 交通目标推理、/risk 回调、TTL/帧序/token 校验 | 已实现并有主机侧测试；RTX 4060 上使用 CUDA FP16 | 输出仅为相对视觉风险，不是距离、碰撞概率或安全结论；Ultralytics 有 AGPL-3.0 许可边界 |
 | GPIO38 RGB 和 action_status | 已实现并构建通过 | 仅作原型语义提示，不是安全执行器 |
 | DFPlayer 视觉风险语音提示 | `/risk.voice_prompt`、UART2 DFPlayer 驱动、三级曲目映射、去重与主机侧测试已实现 | 已在 COM21 看到 `voice_status` 的 `ready`、曲目 1–3 的 `playing`/`finished`，并由实际听音确认；未完成 10 分钟整机/气动/安全验收，语音仅为原型提示 |
 | 压力遥测 | 固件采集、串口协议和上位机记录已实现 | 仍需在最终气路上标定；旧的 180 kPa 是传感器诊断阈值，不是气囊控制目标 |
@@ -66,7 +66,8 @@ PC 服务主要接口：
 
 - POST /v1/frames：ESP 上传 JPEG，成功返回 frame_ack（HTTP 202）。
 - GET /healthz：HTTP、模型加载、GPU 和错误状态。
-- GET /v1/frame/latest.jpg?device_id=aix-helmet-01：读取最新上传帧。
+- GET /v1/frame/latest.jpg?device_id=aix-helmet-01：读取最新上传原图，仅用于诊断。
+- GET /v1/frame/processed.jpg?device_id=aix-helmet-01：读取与风险结果同一 frame_seq 的已分析画面，供上位机稳定展示。
 - GET /v1/state/latest?device_id=aix-helmet-01：查看上传、推理、回调和 RGB 确认的统一状态。
 - ESP 在本地 :8080 提供 /risk、/pneumatic/config、/pneumatic/command；气动控制默认关闭时命令会被拒绝。
 - `/risk` 可选携带 `voice_prompt: {"command_id":"<boot_id>:<frame_seq>:<track>","track":1|2|3}`；仅在既有 token、设备、boot、帧序和 TTL 校验通过后才会交给 DFPlayer。attention/high/critical 对应 0001/0002/0003，low 不发送语音。
