@@ -7,6 +7,8 @@ int main(void)
 {
     uint64_t latency_ms = 0;
     char ack[384];
+    char hazard_ack[768];
+    char hazard_status[512];
     if (!risk_receiver_token_matches("local-secret", "local-secret")) {
         printf("matching token rejected\n");
         return 1;
@@ -41,6 +43,25 @@ int main(void)
         risk_receiver_token_matches("", "") ||
         risk_receiver_token_matches(NULL, "local-secret")) {
         printf("invalid token accepted\n");
+        return 1;
+    }
+    if (risk_receiver_format_road_hazard_ack(
+            hazard_ack, sizeof(hazard_ack), "helmet-01", "boot-01", true, false,
+            "evt-1", 2500U, "high", "orange_blink_2hz", "") < 0 ||
+        strstr(hazard_ack, "\"type\":\"road_hazard_ack\"") == NULL ||
+        strstr(hazard_ack, "\"voice_state\":\"not_configured\"") == NULL ||
+        strstr(hazard_ack, "\"duplicate\":false") == NULL ||
+        strstr(hazard_ack, "\"expires_in_ms\":2500") == NULL) {
+        printf("road hazard ACK contract is incomplete\n");
+        return 1;
+    }
+    if (risk_receiver_format_road_hazard_status(
+            hazard_status, sizeof(hazard_status), "rejected", "evt-1", "boot", 0U,
+            "purple_blink_1hz") < 0 ||
+        strstr(hazard_status, "\"type\":\"road_hazard_status\"") == NULL ||
+        strstr(hazard_status, "\"state\":\"rejected\"") == NULL ||
+        strstr(hazard_status, "\"reason\":\"boot\"") == NULL) {
+        printf("road hazard serial status contract is incomplete\n");
         return 1;
     }
     printf("risk_receiver_test: ALL PASSED\n");

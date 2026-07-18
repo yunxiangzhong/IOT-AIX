@@ -132,6 +132,16 @@ Invoke-HostCTest "risk_receiver_test" @(
     (Join-Path $main "risk_receiver.c"),
     (Join-Path $aix "test\risk_receiver_test.c")
 )
+Invoke-HostCTest "road_hazard_policy_test" @(
+    (Join-Path $main "road_hazard_policy.c"),
+    (Join-Path $aix "test\road_hazard_policy_test.c")
+) @("-lm")
+Invoke-HostCTest "alert_arbiter_test" @(
+    (Join-Path $main "action_policy.c"),
+    (Join-Path $main "road_hazard_policy.c"),
+    (Join-Path $main "alert_arbiter.c"),
+    (Join-Path $aix "test\alert_arbiter_test.c")
+) @("-lm")
 Invoke-HostCTest "pneumatic_policy_test" @(
     (Join-Path $main "action_policy.c"),
     (Join-Path $main "pneumatic_policy.c"),
@@ -144,6 +154,28 @@ Invoke-HostCTest "motion_detector_test" @(
 Invoke-HostCTest "mpu6050_config_test" @(
     (Join-Path $aix "test\mpu6050_config_test.c")
 )
+
+$pneumaticSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "pneumatic_controller.c")
+if ($pneumaticSourceText -notmatch 'action_controller_get_decision\s*\(' -or
+    $pneumaticSourceText -match 'road_hazard|alert_arbiter') {
+    throw "pneumatic_controller must depend only on action_controller decision, MPU and pressure inputs"
+}
+$businessRgbCallers = @(rg -l 'rgb_status_set_pattern\s*\(' $main -g '*.c' |
+    Where-Object { (Split-Path -Leaf $_) -ne 'rgb_status.c' })
+if (@($businessRgbCallers).Count -ne 1 -or (Split-Path -Leaf $businessRgbCallers[0]) -ne 'alert_arbiter.c') {
+    throw "alert_arbiter.c must be the only business caller of rgb_status_set_pattern"
+}
+$riskReceiverSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "risk_receiver.c")
+if ($riskReceiverSourceText -notmatch '\.uri\s*=\s*"/road-hazard"') {
+    throw "risk_receiver must register POST /road-hazard"
+}
+$roadHazardHandler = [regex]::Match(
+    $riskReceiverSourceText,
+    '(?s)static esp_err_t road_hazard_handler\(.*?\n}\r?\n\r?\nstatic esp_err_t risk_handler').Value
+if ([string]::IsNullOrWhiteSpace($roadHazardHandler) -or
+    $roadHazardHandler -match 'voice_prompt|dfplayer|pneumatic_controller') {
+    throw "road-hazard handler must remain isolated from voice and pneumatic control"
+}
 
 if ($BuildFirmware) {
     if (-not $env:IDF_PATH) {

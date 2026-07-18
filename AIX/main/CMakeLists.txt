@@ -1,4 +1,4 @@
-idf_component_register(SRCS "action_controller.c" "action_policy.c" "camera_local.c" "camera_preview.c" "dfplayer.c"
+idf_component_register(SRCS "action_controller.c" "action_policy.c" "alert_arbiter.c" "road_hazard_policy.c" "camera_local.c" "camera_preview.c" "dfplayer.c"
                     "device_identity.c" "main.c" "motion_detector.c" "mpu6050_sensor.c" "network_runtime.c"
                     "pneumatic_controller.c" "pneumatic_policy.c" "pressure_sensor.c"
                     "rgb_status.c" "risk_receiver.c" "vision_uplink.c" "voice_prompt.c"

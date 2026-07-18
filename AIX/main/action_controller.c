@@ -5,11 +5,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "alert_arbiter.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "rgb_status.h"
 
 static action_policy_t s_policy;
 static action_decision_t s_decision;
@@ -56,9 +56,7 @@ static void controller_task(void *arg)
         changed = decision_changed(&next, &s_decision);
         s_decision = next;
         xSemaphoreGive(s_lock);
-        if (changed) {
-            rgb_status_set_pattern(next.rgb_pattern);
-        }
+        alert_arbiter_runtime_set_local(&next, current_ms);
         if (changed || current_ms - last_heartbeat_ms >= 1000ULL) {
             emit_status(&next, current_ms);
             last_heartbeat_ms = current_ms;
@@ -78,11 +76,8 @@ esp_err_t action_controller_start(const char *device_id, const char *boot_id)
     }
     action_policy_init(&s_policy, device_id, boot_id, now_ms());
     s_decision = action_policy_decide(&s_policy, now_ms());
-    esp_err_t rgb_ret = rgb_status_start();
-    if (rgb_ret != ESP_OK) {
-        return rgb_ret;
-    }
-    rgb_status_set_pattern(s_decision.rgb_pattern);
+    esp_err_t arbiter_ret = alert_arbiter_runtime_start(device_id, boot_id, &s_decision);
+    if (arbiter_ret != ESP_OK) return arbiter_ret;
     if (xTaskCreate(controller_task, "action_policy", 4096, NULL, 4, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
@@ -103,8 +98,8 @@ risk_accept_result_t action_controller_apply_risk(
         *decision = s_decision;
     }
     xSemaphoreGive(s_lock);
+    alert_arbiter_runtime_set_local(&s_decision, timestamp_ms);
     if (result == RISK_ACCEPTED) {
-        rgb_status_set_pattern(s_decision.rgb_pattern);
         emit_status(&s_decision, timestamp_ms);
     }
     return result;
@@ -117,7 +112,10 @@ void action_controller_set_fault(action_fault_t fault, bool active)
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     action_policy_set_fault(&s_policy, fault, active);
+    s_decision = action_policy_decide(&s_policy, now_ms());
+    const action_decision_t decision = s_decision;
     xSemaphoreGive(s_lock);
+    alert_arbiter_runtime_set_local(&decision, now_ms());
 }
 
 action_decision_t action_controller_get_decision(void)

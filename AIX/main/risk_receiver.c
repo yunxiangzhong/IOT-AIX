@@ -72,12 +72,64 @@ int risk_receiver_format_action_ack(
     return written >= 0 && (size_t)written < capacity ? written : -1;
 }
 
+int risk_receiver_format_road_hazard_ack(
+    char *buffer,
+    size_t capacity,
+    const char *device_id,
+    const char *boot_id,
+    bool accepted,
+    bool duplicate,
+    const char *event_id,
+    uint32_t expires_in_ms,
+    const char *severity,
+    const char *effective_rgb_pattern,
+    const char *error)
+{
+    if (buffer == NULL || capacity == 0U || device_id == NULL || boot_id == NULL ||
+        event_id == NULL || severity == NULL || effective_rgb_pattern == NULL) {
+        return -1;
+    }
+    const int written = snprintf(
+        buffer, capacity,
+        "{\"type\":\"road_hazard_ack\",\"version\":1,\"device_id\":\"%s\",\"boot_id\":\"%s\","
+        "\"accepted\":%s,\"duplicate\":%s,\"event_id\":\"%s\",\"expires_in_ms\":%lu,"
+        "\"severity\":\"%s\",\"effective_rgb_pattern\":\"%s\","
+        "\"voice_state\":\"not_configured\",\"error\":\"%s\"}",
+        device_id, boot_id, accepted ? "true" : "false", duplicate ? "true" : "false",
+        event_id, (unsigned long)expires_in_ms, severity, effective_rgb_pattern,
+        error != NULL ? error : "");
+    return written >= 0 && (size_t)written < capacity ? written : -1;
+}
+
+int risk_receiver_format_road_hazard_status(
+    char *buffer,
+    size_t capacity,
+    const char *state,
+    const char *event_id,
+    const char *reason,
+    uint32_t expires_in_ms,
+    const char *effective_rgb_pattern)
+{
+    if (buffer == NULL || capacity == 0U || state == NULL || event_id == NULL ||
+        reason == NULL || effective_rgb_pattern == NULL) {
+        return -1;
+    }
+    const int written = snprintf(
+        buffer, capacity,
+        "{\"type\":\"road_hazard_status\",\"version\":1,\"state\":\"%s\","
+        "\"event_id\":\"%s\",\"reason\":\"%s\",\"expires_in_ms\":%lu,"
+        "\"effective_rgb_pattern\":\"%s\"}",
+        state, event_id, reason, (unsigned long)expires_in_ms, effective_rgb_pattern);
+    return written >= 0 && (size_t)written < capacity ? written : -1;
+}
+
 #ifdef ESP_PLATFORM
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "alert_arbiter.h"
 #include "action_controller.h"
 #include "cJSON.h"
 #include "device_identity.h"
@@ -97,6 +149,7 @@ int risk_receiver_format_action_ack(
 #endif
 
 #define RISK_BODY_MAX 2048U
+#define ROAD_HAZARD_BODY_MAX 2048U
 #define PNEUMATIC_BODY_MAX 1024U
 #define RISK_CACHE_DEVICE_ID_CAPACITY 64U
 #define RISK_CACHE_BOOT_ID_CAPACITY 32U
@@ -218,6 +271,164 @@ static esp_err_t send_ack(
     }
     httpd_resp_set_type(request, "application/json");
     return httpd_resp_sendstr(request, body);
+}
+
+static void emit_road_hazard_status(
+    const char *state,
+    const char *event_id,
+    const char *reason,
+    uint32_t expires_in_ms,
+    const char *pattern)
+{
+    char status[512];
+    if (risk_receiver_format_road_hazard_status(
+            status, sizeof(status), state, event_id, reason, expires_in_ms, pattern) >= 0) {
+        printf("%s\n", status);
+        fflush(stdout);
+    }
+}
+
+static esp_err_t send_road_hazard_ack(
+    httpd_req_t *request,
+    const char *http_status,
+    bool accepted,
+    bool duplicate,
+    const char *event_id,
+    uint32_t expires_in_ms,
+    const char *severity,
+    const char *error,
+    uint64_t now_ms)
+{
+    const alert_effective_t effective = alert_arbiter_runtime_get_effective(now_ms);
+    char body[768];
+    if (risk_receiver_format_road_hazard_ack(
+            body, sizeof(body), device_identity_device_id(), device_identity_boot_id(),
+            accepted, duplicate, event_id, expires_in_ms, severity,
+            rgb_pattern_name(effective.pattern), error) < 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (http_status != NULL) httpd_resp_set_status(request, http_status);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, body);
+}
+
+static esp_err_t reject_road_hazard(
+    httpd_req_t *request,
+    const char *http_status,
+    const char *event_id,
+    const char *severity,
+    const char *reason,
+    uint64_t now_ms)
+{
+    const alert_effective_t effective = alert_arbiter_runtime_get_effective(now_ms);
+    emit_road_hazard_status("rejected", event_id, reason, 0U, rgb_pattern_name(effective.pattern));
+    return send_road_hazard_ack(request, http_status, false, false, event_id, 0U, severity, reason, now_ms);
+}
+
+static const char *json_string(const cJSON *item)
+{
+    return cJSON_IsString(item) ? item->valuestring : NULL;
+}
+
+static double json_number(const cJSON *item)
+{
+    return cJSON_IsNumber(item) ? item->valuedouble : NAN;
+}
+
+static esp_err_t road_hazard_handler(httpd_req_t *request)
+{
+    uint64_t current_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+    if (!token_matches(request)) {
+        return reject_road_hazard(request, "401 Unauthorized", "", "", "token", current_ms);
+    }
+    if (request->content_len <= 0 || request->content_len > (int)ROAD_HAZARD_BODY_MAX) {
+        return reject_road_hazard(request, "413 Payload Too Large", "", "", "payload_size", current_ms);
+    }
+    char *body = calloc(1U, (size_t)request->content_len + 1U);
+    if (body == NULL) return ESP_ERR_NO_MEM;
+    int received = 0;
+    while (received < request->content_len) {
+        const int chunk = httpd_req_recv(request, body + received, request->content_len - received);
+        if (chunk <= 0) {
+            free(body);
+            return reject_road_hazard(request, "400 Bad Request", "", "", "payload_read", current_ms);
+        }
+        received += chunk;
+    }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (root == NULL) {
+        return reject_road_hazard(request, "400 Bad Request", "", "", "json", current_ms);
+    }
+
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    const cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "version");
+    const cJSON *device = cJSON_GetObjectItemCaseSensitive(root, "device_id");
+    const cJSON *boot = cJSON_GetObjectItemCaseSensitive(root, "boot_id");
+    const cJSON *event = cJSON_GetObjectItemCaseSensitive(root, "event_id");
+    const cJSON *camera = cJSON_GetObjectItemCaseSensitive(root, "camera_id");
+    const cJSON *intersection = cJSON_GetObjectItemCaseSensitive(root, "intersection_id");
+    const cJSON *message_code = cJSON_GetObjectItemCaseSensitive(root, "message_code");
+    const cJSON *direction = cJSON_GetObjectItemCaseSensitive(root, "direction");
+    const cJSON *object_type = cJSON_GetObjectItemCaseSensitive(root, "object_type");
+    const cJSON *eta = cJSON_GetObjectItemCaseSensitive(root, "eta_ms");
+    const cJSON *severity = cJSON_GetObjectItemCaseSensitive(root, "severity");
+    const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(root, "ttl_ms");
+    const cJSON *simulated = cJSON_GetObjectItemCaseSensitive(root, "simulated");
+    road_hazard_request_t hazard = {
+        .type = json_string(type),
+        .version = json_number(version),
+        .device_id = json_string(device),
+        .boot_id = json_string(boot),
+        .event_id = json_string(event),
+        .camera_id = json_string(camera),
+        .intersection_id = json_string(intersection),
+        .message_code = json_string(message_code),
+        .direction = json_string(direction),
+        .object_type = json_string(object_type),
+        .eta_ms = json_number(eta),
+        .severity = json_string(severity),
+        .ttl_ms = json_number(ttl),
+        .simulated = cJSON_IsTrue(simulated),
+        .simulated_is_bool = cJSON_IsBool(simulated),
+    };
+    char event_id[ROAD_HAZARD_EVENT_ID_CAPACITY] = "";
+    char severity_name[16] = "";
+    if (hazard.event_id != NULL && strlen(hazard.event_id) < sizeof(event_id)) {
+        snprintf(event_id, sizeof(event_id), "%s", hazard.event_id);
+    }
+    if (hazard.severity != NULL && strlen(hazard.severity) < sizeof(severity_name)) {
+        snprintf(severity_name, sizeof(severity_name), "%s", hazard.severity);
+    }
+    if (!cJSON_IsObject(root) || cJSON_GetArraySize(root) != 14) {
+        cJSON_Delete(root);
+        return reject_road_hazard(request, "400 Bad Request", event_id, severity_name, "schema", current_ms);
+    }
+
+    current_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+    road_hazard_outcome_t outcome = {0};
+    const road_hazard_result_t result =
+        alert_arbiter_runtime_submit(&hazard, current_ms, &outcome);
+    cJSON_Delete(root);
+
+    if (result != ROAD_HAZARD_ACCEPTED && result != ROAD_HAZARD_DUPLICATE) {
+        const char *status = result == ROAD_HAZARD_REJECT_SCHEMA || result == ROAD_HAZARD_REJECT_TTL
+                                 ? "400 Bad Request"
+                                 : result == ROAD_HAZARD_REJECT_CAPACITY ? "503 Service Unavailable"
+                                                                        : "409 Conflict";
+        return reject_road_hazard(
+            request, status, event_id, severity_name, road_hazard_result_name(result), current_ms);
+    }
+
+    const alert_effective_t effective = alert_arbiter_runtime_get_effective(current_ms);
+    if (result == ROAD_HAZARD_ACCEPTED) {
+        emit_road_hazard_status(
+            "active", outcome.event_id, "accepted", outcome.expires_in_ms,
+            rgb_pattern_name(effective.pattern));
+    }
+    return send_road_hazard_ack(
+        request, NULL, true, result == ROAD_HAZARD_DUPLICATE, outcome.event_id,
+        outcome.expires_in_ms, road_hazard_severity_name(outcome.severity), "", current_ms);
 }
 
 static esp_err_t risk_handler(httpd_req_t *request)
@@ -556,6 +767,12 @@ esp_err_t risk_receiver_start(void)
         .handler = pneumatic_command_handler,
         .user_ctx = NULL,
     };
+    httpd_uri_t road_hazard_uri = {
+        .uri = "/road-hazard",
+        .method = HTTP_POST,
+        .handler = road_hazard_handler,
+        .user_ctx = NULL,
+    };
     httpd_uri_t pneumatic_config_uri = {
         .uri = "/pneumatic/config",
         .method = HTTP_GET,
@@ -567,13 +784,14 @@ esp_err_t risk_receiver_start(void)
     if (ret != ESP_OK) {
         return ret;
     }
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &road_hazard_uri), TAG, "register road hazard failed");
     ret = httpd_register_uri_handler(s_server, &uri);
     if (ret != ESP_OK) {
         return ret;
     }
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &pneumatic_command_uri), TAG, "register pneumatic command failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &pneumatic_config_uri), TAG, "register pneumatic config failed");
-    ESP_LOGI(TAG, "vision and pneumatic receiver listening on port %d", CONFIG_AIX_RISK_RECEIVER_PORT);
+    ESP_LOGI(TAG, "vision, road hazard and pneumatic receiver listening on port %d", CONFIG_AIX_RISK_RECEIVER_PORT);
     return ESP_OK;
 }
 
