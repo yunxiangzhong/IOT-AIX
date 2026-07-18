@@ -36,6 +36,20 @@ config AIX_ENABLE_RISK_RECEIVER
     bool "Enable PC vision risk callback receiver"
     default y
 
+config AIX_ENABLE_VOICE_PROMPT
+    bool "Enable DFPlayer visual-risk voice prompts"
+    default y
+    help
+        Uses UART2 with GPIO47 TX through a 1k resistor to DFPlayer RX and
+        GPIO48 RX from DFPlayer TX. The task remains optional: a missing TF
+        card or DFPlayer cannot block camera, Wi-Fi, RGB, or /risk handling.
+
+config AIX_VOICE_VOLUME
+    int "DFPlayer voice volume (0-30)"
+    default 18
+    range 0 30
+    depends on AIX_ENABLE_VOICE_PROMPT
+
 config AIX_ENABLE_PNEUMATIC_CONTROL
     bool "Enable pump and solenoid-valve control hardware"
     default n

@@ -7,6 +7,7 @@
 | 功能 | 已实现内容 | 当前边界 |
 | --- | --- | --- |
 | 视觉闭环展示 | 显示 PC 服务的最新帧、风险、上传/推理/回调延迟和 RGB 确认 | 展示的是原型视觉风险，不是安全判断 |
+| PC 视觉语音策略 | attention/high/critical 生成 `voice_prompt` 曲目 1/2/3，保持命令编号幂等、同级冷却并在升级时立即提示 | 已由 COM21 的 `voice_status.ready`、曲目 1–3 的 `playing`/`finished` 和实际听音交叉确认；不代表整机、气动或安全验收 |
 | 串口遥测 | 解析并记录 pressure、motion v2、camera_status、action_status、pneumatic_status | 新增的 MPU6050 与气动硬件尚未实机接线验证 |
 | 气动标定页 | 读取配置、发送短充气脉冲/泄压/急停/故障复位/保存限制，并显示返回状态 | UI 不能开启自动模式，不能跳过 ESP 的 token、压力、时长或故障保护 |
 | PC 气动代理 | PC 服务以最近上传帧的来源 IP 转发到 ESP :8080，而不是由 UI 填写 ESP 地址 | 没有最近设备帧、token 不匹配或 ESP 控制关闭时，命令会失败/被拒绝 |
@@ -34,6 +35,7 @@ PC 服务的气动代理会把请求转到最近一帧来源地址的 ESP 端口
 - 没有实机证明 UI 气动命令能驱动泵或阀；当前默认固件会拒绝这类命令。
 - 没有 MPU6050 的串口实测、气囊压力标定、三通阀断电泄压或 SS54 反电动势保护的验收数据。
 - 没有完成自动触发、断网、模型失效、压力无效、急停和长时间运行的整机测试。
+- DFPlayer 的曲目 1–3 已完成 COM21 串口和实际听音验证；尚未完成风险升级中断、10 分钟整机长稳，或与气动/安全相关的验收。
 - 上位机不是安全控制器，也不能把视觉风险或模拟压力数据解释为安全指令。
 
 ## 会话内容
@@ -75,4 +77,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 
 - [仓库总览](../README.md)：跨模块的已实现、模拟、未完成和默认安全配置。
 - [固件说明](../AIX/README.md)：固件 Kconfig 开关、接口与实物边界。
+- [DFPlayer 语音接线与验收](../docs/hardware/dfplayer-voice-wiring.md)：唯一的 DFPlayer 接线、TF 卡、供电与后续验收说明。
 - [气泵、三通电磁阀与 MPU6050 接线说明](../docs/hardware/pneumatic-mpu6050-wiring.md)：接线、气路和验收顺序。

@@ -25,6 +25,57 @@ class FrameEnvelope:
         return self.device_id, self.boot_id
 
 
+@dataclass
+class VoicePromptState:
+    risk_band: str = "low"
+    last_prompt_ms: int | None = None
+
+
+class VoicePromptPolicy:
+    """Adds idempotent DFPlayer prompts per device boot stream.
+
+    A risk escalation is prompt-worthy immediately. A steady band is repeated
+    only after the configured interval; a downgrade starts a new cooldown and
+    low clears the current cycle.
+    """
+
+    _TRACKS = {"attention": 1, "high": 2, "critical": 3}
+
+    def __init__(self, repeat_interval_ms: int = 10_000) -> None:
+        self._repeat_interval_ms = repeat_interval_ms
+        self._states: dict[tuple[str, str], VoicePromptState] = {}
+
+    def enrich(self, frame: FrameEnvelope, risk: dict, *, now_ms: int) -> dict:
+        payload = dict(risk)
+        band = str(payload.get("risk_band", "low"))
+        state = self._states.setdefault(frame.stream_key, VoicePromptState())
+        track = self._TRACKS.get(band)
+        if track is None:
+            state.risk_band = "low"
+            state.last_prompt_ms = None
+            return payload
+
+        previous_track = self._TRACKS.get(state.risk_band, 0)
+        should_prompt = (
+            previous_track == 0
+            or track > previous_track
+            or (track == previous_track and state.last_prompt_ms is not None and
+                now_ms - state.last_prompt_ms >= self._repeat_interval_ms)
+        )
+        state.risk_band = band
+        if should_prompt:
+            state.last_prompt_ms = now_ms
+            payload["voice_prompt"] = {
+                "command_id": f"{frame.boot_id}:{frame.frame_seq}:{track}",
+                "track": track,
+            }
+        elif track < previous_track:
+            # A downgrade never interrupts the current announcement, but its
+            # own persistent risk can be announced after a full cooldown.
+            state.last_prompt_ms = now_ms
+        return payload
+
+
 class LatestFrameStore:
     """Keeps one pending frame per boot stream and one UI snapshot per device."""
 
@@ -237,6 +288,8 @@ class RiskCallbackClient:
                     or not isinstance(ack.get("rgb_pattern"), str)
                 ):
                     raise ValueError("invalid or mismatched action_ack")
+                if "voice_prompt" in payload and not isinstance(ack.get("voice_ack"), dict):
+                    raise ValueError("missing voice_ack for requested voice prompt")
                 return ack
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 self.last_error = str(exc)
@@ -255,6 +308,7 @@ class AnalysisWorker:
         self._states = states
         self._callback = callback
         self._analyzer = analyzer
+        self._voice_policy = VoicePromptPolicy()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -300,8 +354,9 @@ class AnalysisWorker:
                 )
                 risk.update(device_id=item.device_id, boot_id=item.boot_id)
                 self._states.record_risk(item, risk, (time.perf_counter() - started) * 1000.0)
+                callback_payload = self._voice_policy.enrich(item, risk, now_ms=int(time.time() * 1000))
                 callback_started = time.perf_counter()
-                ack = self._callback.send(item, risk, is_current=lambda: self._store.is_latest(item))
+                ack = self._callback.send(item, callback_payload, is_current=lambda: self._store.is_latest(item))
                 self._states.record_callback(
                     item,
                     ack,

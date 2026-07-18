@@ -121,6 +121,11 @@ Invoke-HostCTest "action_policy_test" @(
     (Join-Path $main "action_policy.c"),
     (Join-Path $aix "test\action_policy_test.c")
 )
+Invoke-HostCTest "voice_prompt_test" @(
+    (Join-Path $main "dfplayer.c"),
+    (Join-Path $main "voice_prompt.c"),
+    (Join-Path $aix "test\voice_prompt_test.c")
+)
 Invoke-HostCTest "vision_uplink_test" @(
     (Join-Path $main "vision_uplink.c"),
     (Join-Path $aix "test\vision_uplink_test.c")

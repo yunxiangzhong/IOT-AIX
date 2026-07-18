@@ -6,6 +6,7 @@
 OV5640 → ESP32-S3 主动上传 JPEG → PC 最新帧缓存 / DA3 + SSDLite 推理
         → PC 回调 vision_risk → ESP action_policy → GPIO38 板载 RGB
         → action_ack + 串口 action_status → PySide6 上位机
+        └→ /risk.voice_prompt → UART2 DFPlayer Mini → SPK1/SPK2 8 Ω 喇叭
 
 MPU6050 / 压力遥测 → 气动安全策略 → GPIO40 气泵 MOSFET、GPIO41 电磁阀 MOSFET
                                       （默认构建关闭，未接入实物时不会输出控制）
@@ -18,6 +19,7 @@ MPU6050 / 压力遥测 → 气动安全策略 → GPIO40 气泵 MOSFET、GPIO41 
 | OV5640 QVGA/JPEG 采集、失败恢复、PC 主动上传 | 已实现；主机测试和 ESP-IDF 全量构建通过 | 已有 OV5640 跑通记录；仍未完成本版本的 10 分钟整机闭环验收 |
 | PC DA3 + SSDLite 最新帧推理、/risk 回调、TTL/帧序/token 校验 | 已实现并有主机侧测试 | 输出仅为相对视觉风险，不是距离、碰撞概率或安全结论 |
 | GPIO38 RGB 和 action_status | 已实现并构建通过 | 仅作原型语义提示，不是安全执行器 |
+| DFPlayer 视觉风险语音提示 | `/risk.voice_prompt`、UART2 DFPlayer 驱动、三级曲目映射、去重与主机侧测试已实现 | 已在 COM21 看到 `voice_status` 的 `ready`、曲目 1–3 的 `playing`/`finished`，并由实际听音确认；未完成 10 分钟整机/气动/安全验收，语音仅为原型提示 |
 | 压力遥测 | 固件采集、串口协议和上位机记录已实现 | 仍需在最终气路上标定；旧的 180 kPa 是传感器诊断阈值，不是气囊控制目标 |
 | MPU6050 与运动检测 | I2C 驱动、motion v2、运动检测及 C 测试已实现 | 模块尚未完成接线与现场动作阈值标定 |
 | 气泵 / 三通电磁阀控制 | GPIO40 / GPIO41、手动脉冲、急停、泄压、压力/超时故障保护、策略测试和固件编译已实现 | MOSFET、两个 SS54、泵、阀、电池和气囊均未在本仓库记录中完成实物验收 |
@@ -47,6 +49,7 @@ CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC=n
 - 没有气囊目标压力、硬上限、泵的启动/堵转电流、气阀方向和断电泄压的现场标定记录。
 - 没有 10 分钟持续运行、断网、模型停机、传感器失效、急停后的实机安全验收。
 - 未接入蜂鸣器、振动马达、医疗级传感器或认证级安全硬件。本项目不是医疗设备，也不能作为人身安全防护装置使用。
+- DFPlayer 已完成曲目 1–3 的 COM21 串口与实际听音验证；尚未完成与相机、Wi-Fi、推理协同的 10 分钟长稳、风险升级中断，以及任何气动或安全验收。即使后续完成，语音也不是碰撞预警、人身安全或医疗级保障。
 
 ## 启动与接口
 
@@ -66,6 +69,8 @@ PC 服务主要接口：
 - GET /v1/frame/latest.jpg?device_id=aix-helmet-01：读取最新上传帧。
 - GET /v1/state/latest?device_id=aix-helmet-01：查看上传、推理、回调和 RGB 确认的统一状态。
 - ESP 在本地 :8080 提供 /risk、/pneumatic/config、/pneumatic/command；气动控制默认关闭时命令会被拒绝。
+- `/risk` 可选携带 `voice_prompt: {"command_id":"<boot_id>:<frame_seq>:<track>","track":1|2|3}`；仅在既有 token、设备、boot、帧序和 TTL 校验通过后才会交给 DFPlayer。attention/high/critical 对应 0001/0002/0003，low 不发送语音。
+- `action_ack.voice_ack` 返回语音是否 `queued`、`duplicate`、`suppressed`、`rejected` 或 `unavailable`；串口 `voice_status` 记录 `initializing`、`ready`、`playing`、`finished`、`error` 与曲目、帧序、命令编号。
 
 ## 验证与构建
 
@@ -82,3 +87,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 - [AIX/README.md](AIX/README.md)：ESP32-S3 固件、配置开关、气动安全边界和烧录前检查。
 - [host_app/README.md](host_app/README.md)：PC 服务、上位机、模拟数据和会话记录。
 - [docs/hardware/pneumatic-mpu6050-wiring.md](docs/hardware/pneumatic-mpu6050-wiring.md)：MOSFET、SS54、泵、阀、电池与 MPU6050 的接线及验收顺序。
+- [docs/hardware/dfplayer-voice-wiring.md](docs/hardware/dfplayer-voice-wiring.md)：DFPlayer Mini、UART2、8 Ω 喇叭、TF 卡、供电和语音验收步骤。

@@ -23,10 +23,14 @@ if (-not (Test-Path -LiteralPath $runtimePath)) {
     } elseif (Test-Path -LiteralPath $previewPath) {
         Copy-Item -LiteralPath $previewPath -Destination $runtimePath
     } else {
-        Set-Content -LiteralPath $runtimePath -Value @(
+        [System.IO.File]::WriteAllLines(
+            $runtimePath,
+            @(
             'CONFIG_AIX_WIFI_SSID=""',
             'CONFIG_AIX_WIFI_PASSWORD=""'
-        ) -Encoding utf8
+            ),
+            [System.Text.UTF8Encoding]::new($false)
+        )
     }
 }
 
@@ -65,7 +69,11 @@ foreach ($key in $settings.Keys) {
     }
     $lines.Add("$key=$($settings[$key])")
 }
-Set-Content -LiteralPath $runtimePath -Value $lines -Encoding utf8
+[System.IO.File]::WriteAllLines(
+    $runtimePath,
+    $lines,
+    [System.Text.UTF8Encoding]::new($false)
+)
 
 $ssid = (($lines | Where-Object { $_ -match '^CONFIG_AIX_WIFI_SSID=' } | Select-Object -Last 1) -split '=', 2)[1].Trim('"')
 $result = [pscustomobject]@{

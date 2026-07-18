@@ -11,7 +11,7 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVICE_ROOT))
 
 from app import create_app
-from frame_pipeline import FrameEnvelope, LatestFrameStore, RiskCallbackClient
+from frame_pipeline import FrameEnvelope, LatestFrameStore, RiskCallbackClient, VoicePromptPolicy
 
 
 JPEG_A = b"\xff\xd8frame-a\xff\xd9"
@@ -133,6 +133,90 @@ class RiskCallbackTests(unittest.TestCase):
         self.assertIsNone(ack)
         self.assertEqual(attempts, [4])
 
+    def test_requires_voice_ack_when_a_voice_prompt_was_sent(self) -> None:
+        def transport(url, token, payload, timeout_s):
+            return {
+                "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
+                "accepted": True, "stale": False, "action_state": "high",
+                "rgb_pattern": "orange_blink_2hz",
+            }
+
+        client = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
+        self.assertIsNone(client.send(
+            frame(8),
+            {"frame_seq": 8, "voice_prompt": {"command_id": "boot:8:2", "track": 2}},
+            is_current=lambda: True,
+        ))
+
+    def test_retries_keep_the_same_voice_command_id_and_accept_cached_voice_ack(self) -> None:
+        sent_prompts = []
+
+        def transport(_url, _token, payload, _timeout_s):
+            sent_prompts.append(payload["voice_prompt"])
+            if len(sent_prompts) == 1:
+                raise OSError("temporary")
+            return {
+                "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
+                "accepted": True, "stale": False, "action_state": "high",
+                "rgb_pattern": "orange_blink_2hz",
+                "voice_ack": {
+                    "requested": True, "accepted": True, "duplicate": True,
+                    "status": "duplicate",
+                },
+            }
+
+        client = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0, 0))
+        prompt = {"command_id": "0123456789abcdef:8:2", "track": 2}
+        ack = client.send(frame(8), {"frame_seq": 8, "voice_prompt": prompt}, is_current=lambda: True)
+
+        self.assertEqual(sent_prompts, [prompt, prompt])
+        self.assertTrue(ack["voice_ack"]["duplicate"])
+
+
+class VoicePromptPolicyTests(unittest.TestCase):
+    def test_emits_on_entry_upgrade_and_same_band_cooldown(self) -> None:
+        policy = VoicePromptPolicy(repeat_interval_ms=10_000)
+        current = frame(20)
+
+        attention = policy.enrich(current, {"risk_band": "attention"}, now_ms=1_000)
+        self.assertEqual(attention["voice_prompt"], {"command_id": "0123456789abcdef:20:1", "track": 1})
+
+        same_band = policy.enrich(frame(21), {"risk_band": "attention"}, now_ms=10_999)
+        self.assertNotIn("voice_prompt", same_band)
+        repeat = policy.enrich(frame(22), {"risk_band": "attention"}, now_ms=11_000)
+        self.assertEqual(repeat["voice_prompt"]["track"], 1)
+
+        high = policy.enrich(frame(23), {"risk_band": "high"}, now_ms=11_100)
+        self.assertEqual(high["voice_prompt"]["track"], 2)
+
+    def test_low_clears_and_downgrade_waits_for_the_next_reminder(self) -> None:
+        policy = VoicePromptPolicy(repeat_interval_ms=10_000)
+        policy.enrich(frame(30), {"risk_band": "critical"}, now_ms=1_000)
+
+        downgrade = policy.enrich(frame(31), {"risk_band": "high"}, now_ms=2_000)
+        self.assertNotIn("voice_prompt", downgrade)
+        delayed = policy.enrich(frame(32), {"risk_band": "high"}, now_ms=11_999)
+        self.assertNotIn("voice_prompt", delayed)
+        reminder = policy.enrich(frame(33), {"risk_band": "high"}, now_ms=12_000)
+        self.assertEqual(reminder["voice_prompt"]["track"], 2)
+
+        low = policy.enrich(frame(34), {"risk_band": "low"}, now_ms=12_100)
+        self.assertNotIn("voice_prompt", low)
+        reentry = policy.enrich(frame(35), {"risk_band": "attention"}, now_ms=12_200)
+        self.assertEqual(reentry["voice_prompt"]["track"], 1)
+
+    def test_boot_sessions_are_isolated(self) -> None:
+        policy = VoicePromptPolicy(repeat_interval_ms=10_000)
+        first = policy.enrich(frame(40), {"risk_band": "high"}, now_ms=1_000)
+        restarted = FrameEnvelope(
+            device_id="aix-helmet-01", boot_id="fedcba9876543210", frame_seq=1,
+            capture_ts_ms=400, source_ip="192.168.137.20", jpeg=JPEG_A, received_ts_ms=10_001,
+        )
+        second = policy.enrich(restarted, {"risk_band": "high"}, now_ms=1_100)
+
+        self.assertEqual(first["voice_prompt"]["command_id"], "0123456789abcdef:40:2")
+        self.assertEqual(second["voice_prompt"]["command_id"], "fedcba9876543210:1:2")
+
 
 class AsyncPipelineTests(unittest.TestCase):
     def test_accepts_during_load_then_analyzes_latest_and_records_action_ack(self) -> None:
@@ -160,6 +244,12 @@ class AsyncPipelineTests(unittest.TestCase):
                 "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
                 "accepted": True, "stale": False, "action_state": "attention",
                 "rgb_pattern": "yellow_blink_1hz",
+                "voice_ack": {
+                    "requested": "voice_prompt" in payload,
+                    "accepted": True,
+                    "duplicate": False,
+                    "status": "queued",
+                },
             }
 
         callback = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
