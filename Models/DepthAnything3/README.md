@@ -22,6 +22,7 @@ logs/                  服务运行日志
 - `GET /v1/frame/latest.jpg`：最新上传原图，仅用于诊断。
 - `GET /v1/frame/processed.jpg`：最新已完成分析的画面，上位机默认使用此接口。
 - `GET /v1/state/latest`：同一 `frame_seq` 的检测框、稳定风险和动作确认。
+- `POST /v1/road-hazards`：接收路侧协同预警事件，立即返回 202；仅向最近 3 秒内有上传画面的同设备地址异步下发，并在 `state/latest` 的 `road_hazard` 中记录采集、识别、到达预测、下发和 ACK 五阶段。该演示链路只接受受控枚举与严格匹配的设备 ACK，不代表已完成实车验证。
 - `GET /healthz`：HTTP、模型、GPU 与后端状态。
 
 风险采用交通目标优先、非对称 EMA、两帧升级和三帧降级；场景深度本身最多到“注意”。它表示相对视觉接近程度，不是碰撞概率或安全控制结论。

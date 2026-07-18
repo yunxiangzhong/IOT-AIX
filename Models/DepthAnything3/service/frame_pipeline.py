@@ -161,6 +161,19 @@ class ChainStateRepository:
             "callback": {"state": "waiting", "latency_ms": None, "attempts": 0, "confirmed_count": 0, "failed_count": 0},
             "risk": {"valid": False, "score": 0, "band": "low", "reason": ""},
             "action": {"confirmed": False, "state": "loading", "rgb_pattern": "blue_blink_1hz", "frame_seq": -1},
+            "road_hazard": {
+                "event_id": "",
+                "roadside_capture": {"state": "waiting"},
+                "cloud_recognition": {"state": "waiting"},
+                "arrival_prediction": {"state": "waiting"},
+                "delivery": {"state": "waiting"},
+                "ack": {"state": "waiting", "payload": None},
+                "attempts": 0,
+                "network_latency_ms": None,
+                "effective_rgb_pattern": "",
+                "error": "",
+                "updated_ts_ms": 0,
+            },
             "display": {
                 "ready": False,
                 "url": "/v1/frame/processed.jpg",
@@ -276,6 +289,55 @@ class ChainStateRepository:
                 }
                 state["last_error"] = ""
             elif error:
+                state["last_error"] = error
+            self._touch(state)
+
+    def begin_road_hazard(self, event: dict, now_ms: int) -> None:
+        with self._lock:
+            state = self._states.setdefault(event["device_id"], self._base(event["device_id"]))
+            state["road_hazard"] = {
+                "event_id": event["event_id"],
+                "roadside_capture": {"state": "completed"},
+                "cloud_recognition": {"state": "completed"},
+                "arrival_prediction": {"state": "completed"},
+                "delivery": {"state": "active"},
+                "ack": {"state": "waiting", "payload": None},
+                "attempts": 0,
+                "network_latency_ms": None,
+                "effective_rgb_pattern": "",
+                "error": "",
+                "updated_ts_ms": now_ms,
+            }
+            self._touch(state)
+
+    def fail_road_hazard(self, device_id: str, event_id: str, error: str, attempts: int, now_ms: int) -> None:
+        with self._lock:
+            state = self._states.setdefault(device_id, self._base(device_id))
+            hazard = state["road_hazard"]
+            if hazard.get("event_id") != event_id:
+                return
+            hazard["delivery"] = {"state": "failed"}
+            hazard["ack"] = {"state": "failed", "payload": None}
+            hazard["attempts"] = attempts
+            hazard["error"] = error
+            hazard["updated_ts_ms"] = now_ms
+            state["last_error"] = error
+            self._touch(state)
+
+    def record_road_hazard_ack(self, device_id: str, event_id: str, ack: dict | None, latency_ms: float, attempts: int, error: str = "", now_ms: int | None = None) -> None:
+        with self._lock:
+            state = self._states.setdefault(device_id, self._base(device_id))
+            hazard = state["road_hazard"]
+            if hazard.get("event_id") != event_id:
+                return
+            hazard["delivery"] = {"state": "completed"}
+            hazard["ack"] = {"state": "completed" if ack is not None else "failed", "payload": deepcopy(ack) if ack is not None else None}
+            hazard["attempts"] = attempts
+            hazard["network_latency_ms"] = round(latency_ms, 2)
+            hazard["effective_rgb_pattern"] = ack.get("effective_rgb_pattern", "") if ack else ""
+            hazard["error"] = error
+            hazard["updated_ts_ms"] = int(time.time() * 1000) if now_ms is None else now_ms
+            if error:
                 state["last_error"] = error
             self._touch(state)
 

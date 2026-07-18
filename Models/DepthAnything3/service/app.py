@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from frame_pipeline import AnalysisWorker, ChainStateRepository, FrameEnvelope, LatestFrameStore, RiskCallbackClient
 from inference import PredictionSummary
 from pneumatic_proxy import PneumaticProtocolError, PneumaticProxy, PneumaticProxyError, StaleDeviceError
+from road_hazard import RoadHazardConflictError, RoadHazardEvent, RoadHazardSender, RoadHazardValidationError
 from schemas import build_vision_depth_response
 
 
@@ -35,12 +36,14 @@ def create_app(
     analyzer_loader=None,
     callback_client: RiskCallbackClient | None = None,
     pneumatic_proxy: PneumaticProxy | None = None,
+    road_hazard_sender: RoadHazardSender | None = None,
     start_worker: bool = True,
 ) -> FastAPI:
-    store = LatestFrameStore()
-    states = ChainStateRepository("ready" if analyzer is not None else "loading")
+    store = road_hazard_sender.store if road_hazard_sender is not None else LatestFrameStore()
+    states = road_hazard_sender.states if road_hazard_sender is not None else ChainStateRepository("ready" if analyzer is not None else "loading")
     callback = callback_client or RiskCallbackClient(token=token)
     pneumatic = pneumatic_proxy or PneumaticProxy(store, token=token)
+    hazards = road_hazard_sender or RoadHazardSender(store, states, token=token)
     worker = AnalysisWorker(store, states, callback, analyzer=analyzer)
     if analyzer is not None:
         states.set_model(
@@ -65,18 +68,21 @@ def create_app(
     async def lifespan(_app: FastAPI):
         if start_worker:
             worker.start()
+        hazards.start()
         if analyzer is None and analyzer_loader is not None:
             threading.Thread(target=load_models, name="aix-model-loader", daemon=True).start()
         try:
             yield
         finally:
             worker.stop()
+            hazards.stop()
 
     app = FastAPI(title="AIX Depth Anything 3 Service", lifespan=lifespan)
     app.state.frame_store = store
     app.state.chain_states = states
     app.state.analysis_worker = worker
     app.state.pneumatic_proxy = pneumatic
+    app.state.road_hazard_sender = hazards
 
     @app.get("/healthz")
     def healthz() -> dict[str, str | bool]:
@@ -187,6 +193,18 @@ def create_app(
         if state is None:
             raise HTTPException(status_code=404, detail="no state for device")
         return state
+
+    @app.post("/v1/road-hazards", status_code=202)
+    async def road_hazards(request: Request) -> dict:
+        try:
+            payload = await request.json()
+            event = RoadHazardEvent.from_payload(payload)
+            created = hazards.accept(event)
+        except RoadHazardValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RoadHazardConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"accepted": True, "idempotent": not created, **event.snapshot()}
 
     @app.post("/v1/pneumatic/command")
     async def pneumatic_command(device_id: str, request: Request) -> dict:
