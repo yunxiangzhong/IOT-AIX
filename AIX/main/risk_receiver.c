@@ -36,6 +36,7 @@ bool risk_receiver_token_matches(const char *expected, const char *provided)
 #include "esp_timer.h"
 #include "mpu6050_sensor.h"
 #include "pneumatic_controller.h"
+#include "voice_prompt.h"
 
 #ifndef CONFIG_AIX_LINK_TOKEN
 #define CONFIG_AIX_LINK_TOKEN ""
@@ -46,9 +47,24 @@ bool risk_receiver_token_matches(const char *expected, const char *provided)
 
 #define RISK_BODY_MAX 2048U
 #define PNEUMATIC_BODY_MAX 1024U
+#define RISK_CACHE_DEVICE_ID_CAPACITY 64U
+#define RISK_CACHE_BOOT_ID_CAPACITY 32U
 
 static const char *TAG = "AIX_RISK_RX";
 static httpd_handle_t s_server;
+
+typedef struct {
+    bool valid;
+    bool voice_requested;
+    char device_id[RISK_CACHE_DEVICE_ID_CAPACITY];
+    char boot_id[RISK_CACHE_BOOT_ID_CAPACITY];
+    char command_id[VOICE_PROMPT_COMMAND_ID_CAPACITY];
+    uint32_t frame_seq;
+    action_decision_t decision;
+    voice_prompt_result_t voice_result;
+} risk_ack_cache_t;
+
+static risk_ack_cache_t s_risk_ack_cache;
 
 static bool token_matches(httpd_req_t *request)
 {
@@ -63,26 +79,81 @@ static bool token_matches(httpd_req_t *request)
     return risk_receiver_token_matches(CONFIG_AIX_LINK_TOKEN, value);
 }
 
+static bool device_and_boot_match(const cJSON *device, const cJSON *boot)
+{
+    return cJSON_IsString(device) && cJSON_IsString(boot) &&
+           strcmp(device->valuestring, device_identity_device_id()) == 0 &&
+           strcmp(boot->valuestring, device_identity_boot_id()) == 0;
+}
+
+static bool cached_ack_matches(
+    const vision_risk_input_t *risk,
+    bool voice_requested,
+    const char *command_id,
+    action_decision_t *out_decision,
+    voice_prompt_result_t *out_voice_result)
+{
+    if (!s_risk_ack_cache.valid || s_risk_ack_cache.frame_seq != risk->frame_seq ||
+        s_risk_ack_cache.voice_requested != voice_requested ||
+        strcmp(s_risk_ack_cache.device_id, risk->device_id) != 0 ||
+        strcmp(s_risk_ack_cache.boot_id, risk->boot_id) != 0 ||
+        (voice_requested && strcmp(s_risk_ack_cache.command_id, command_id) != 0)) {
+        return false;
+    }
+    *out_decision = s_risk_ack_cache.decision;
+    *out_voice_result = s_risk_ack_cache.voice_result;
+    return true;
+}
+
+static void cache_ack(
+    const vision_risk_input_t *risk,
+    bool voice_requested,
+    const char *command_id,
+    const action_decision_t *decision,
+    const voice_prompt_result_t *voice_result)
+{
+    s_risk_ack_cache.valid = true;
+    s_risk_ack_cache.voice_requested = voice_requested;
+    s_risk_ack_cache.frame_seq = risk->frame_seq;
+    s_risk_ack_cache.decision = *decision;
+    s_risk_ack_cache.voice_result = *voice_result;
+    snprintf(s_risk_ack_cache.device_id, sizeof(s_risk_ack_cache.device_id), "%s", risk->device_id);
+    snprintf(s_risk_ack_cache.boot_id, sizeof(s_risk_ack_cache.boot_id), "%s", risk->boot_id);
+    snprintf(s_risk_ack_cache.command_id, sizeof(s_risk_ack_cache.command_id), "%s",
+             voice_requested ? command_id : "");
+}
+
 static esp_err_t send_ack(
     httpd_req_t *request,
     uint32_t frame_seq,
     bool accepted,
     bool stale,
     const action_decision_t *decision,
+    const voice_prompt_result_t *voice_result,
+    const char *command_id,
     const char *error)
 {
-    char body[320];
+    char body[640];
     snprintf(
         body,
         sizeof(body),
         "{\"type\":\"action_ack\",\"version\":1,\"frame_seq\":%lu,\"accepted\":%s,"
-        "\"stale\":%s,\"action_state\":\"%s\",\"rgb_pattern\":\"%s\",\"error\":\"%s\"}",
+        "\"stale\":%s,\"action_state\":\"%s\",\"rgb_pattern\":\"%s\",\"error\":\"%s\","
+        "\"voice_ack\":{\"requested\":%s,\"command_id\":\"%s\",\"track\":%u,"
+        "\"accepted\":%s,\"duplicate\":%s,\"status\":\"%s\",\"error\":\"%s\"}}",
         (unsigned long)frame_seq,
         accepted ? "true" : "false",
         stale ? "true" : "false",
         action_state_name(decision->state),
         rgb_pattern_name(decision->rgb_pattern),
-        error != NULL ? error : "");
+        error != NULL ? error : "",
+        voice_result->requested ? "true" : "false",
+        command_id != NULL ? command_id : "",
+        (unsigned int)voice_result->track,
+        voice_result->accepted ? "true" : "false",
+        voice_result->duplicate ? "true" : "false",
+        voice_prompt_status_name(voice_result->status),
+        voice_prompt_error_name(voice_result->status));
     httpd_resp_set_type(request, "application/json");
     return httpd_resp_sendstr(request, body);
 }
@@ -96,6 +167,10 @@ static esp_err_t risk_handler(httpd_req_t *request)
     action_decision_t decision = action_controller_get_decision();
     vision_risk_input_t risk = {0};
     risk_accept_result_t result;
+    voice_prompt_result_t voice_result = voice_prompt_result_not_requested();
+    voice_prompt_request_t voice_request = {0};
+    char voice_command_id[VOICE_PROMPT_COMMAND_ID_CAPACITY] = "";
+    bool voice_requested = false;
     uint64_t current_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
 
     if (!token_matches(request)) {
@@ -138,6 +213,7 @@ static esp_err_t risk_handler(httpd_req_t *request)
     cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
     cJSON *latency = cJSON_GetObjectItemCaseSensitive(root, "latency_ms");
     cJSON *valid = cJSON_GetObjectItemCaseSensitive(root, "valid");
+    cJSON *voice_prompt = cJSON_GetObjectItemCaseSensitive(root, "voice_prompt");
     bool schema_ok = cJSON_IsString(type) && strcmp(type->valuestring, "vision_risk") == 0 &&
                      cJSON_IsNumber(version) && version->valueint == 1 &&
                      cJSON_IsString(device) && cJSON_IsString(boot) &&
@@ -146,6 +222,21 @@ static esp_err_t risk_handler(httpd_req_t *request)
                      cJSON_IsNumber(score) && cJSON_IsString(band) && cJSON_IsString(dominant) &&
                      cJSON_IsString(reason) && cJSON_IsNumber(latency) && latency->valuedouble >= 0 &&
                      isfinite(latency->valuedouble) && cJSON_IsTrue(valid);
+    if (schema_ok && voice_prompt != NULL) {
+        cJSON *command_id = cJSON_GetObjectItemCaseSensitive(voice_prompt, "command_id");
+        cJSON *track = cJSON_GetObjectItemCaseSensitive(voice_prompt, "track");
+        voice_requested = true;
+        voice_request.command_id = cJSON_IsString(command_id) ? command_id->valuestring : NULL;
+        voice_request.track = cJSON_IsNumber(track) && track->valueint >= 0 && track->valueint <= UINT8_MAX
+                                  ? (uint8_t)track->valueint
+                                  : 0U;
+        voice_request.frame_seq = (uint32_t)seq->valuedouble;
+        schema_ok = cJSON_IsObject(voice_prompt) && voice_prompt_request_is_valid(band->valuestring, &voice_request);
+        if (schema_ok) {
+            snprintf(voice_command_id, sizeof(voice_command_id), "%s", voice_request.command_id);
+            voice_request.command_id = voice_command_id;
+        }
+    }
     if (!schema_ok) {
         cJSON_Delete(root);
         httpd_resp_set_status(request, "400 Bad Request");
@@ -160,10 +251,22 @@ static esp_err_t risk_handler(httpd_req_t *request)
     risk.dominant_class = dominant->valuestring;
     risk.reason = reason->valuestring;
     risk.valid = true;
+
+    if (device_and_boot_match(device, boot) &&
+        cached_ack_matches(&risk, voice_requested, voice_request.command_id, &decision, &voice_result)) {
+        cJSON_Delete(root);
+        return send_ack(request, risk.frame_seq, true, false, &decision, &voice_result,
+                        voice_requested ? voice_command_id : "", "");
+    }
+
     result = action_controller_apply_risk(&risk, current_ms, &decision);
-    cJSON_Delete(root);
 
     if (result != RISK_ACCEPTED) {
+        if (voice_requested) {
+            voice_result = voice_prompt_result_rejected();
+            voice_result.track = voice_request.track;
+        }
+        cJSON_Delete(root);
         httpd_resp_set_status(request, "409 Conflict");
         return send_ack(
             request,
@@ -171,16 +274,17 @@ static esp_err_t risk_handler(httpd_req_t *request)
             false,
             result == RISK_REJECT_STALE,
             &decision,
+            &voice_result,
+            voice_requested ? voice_command_id : "",
             risk_accept_result_name(result));
     }
-    return send_ack(request, risk.frame_seq, true, false, &decision, "");
-}
-
-static bool device_and_boot_match(const cJSON *device, const cJSON *boot)
-{
-    return cJSON_IsString(device) && cJSON_IsString(boot) &&
-           strcmp(device->valuestring, device_identity_device_id()) == 0 &&
-           strcmp(boot->valuestring, device_identity_boot_id()) == 0;
+    if (voice_requested) {
+        voice_result = voice_prompt_submit(risk.risk_band, &voice_request);
+    }
+    cache_ack(&risk, voice_requested, voice_requested ? voice_command_id : "", &decision, &voice_result);
+    cJSON_Delete(root);
+    return send_ack(request, risk.frame_seq, true, false, &decision, &voice_result,
+                    voice_requested ? voice_command_id : "", "");
 }
 
 static esp_err_t send_pneumatic_ack(

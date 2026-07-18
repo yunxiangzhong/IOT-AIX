@@ -9,6 +9,7 @@
 | OV5640 320×240 JPEG 采集、失败恢复、约 5 FPS | 已实现 | 采集到的最新 JPEG 每 400 ms 上传给 PC |
 | Wi-Fi、设备标识、token、PC 上传和风险回调 | 已实现 | /risk 对 device、boot_id、帧序、TTL、分数和等级做校验 |
 | RGB 与 action_status | 已实现 | GPIO38 最大亮度 20%，只表示原型状态 |
+| DFPlayer Mini 视觉风险语音 | UART2 驱动、三级 `/mp3/0001.mp3` 至 `0003.mp3` 映射、命令去重和 `voice_status` 已实现 | 仅接收已通过 `/risk` 校验的 PC 视觉风险；COM21 已记录 `ready`、曲目 1–3 的 `playing`/`finished`，且实际听音确认；未完成 10 分钟整机/气动/安全验收 |
 | XGZP6847A 压力遥测 | 已实现 | 用于遥测和气动策略的输入有效性检查，最终气路仍需标定 |
 | MPU6050 | I2C 驱动、motion v2 串口事件、运动检测与 C 测试已实现 | 未完成实物模块接线、静置校准和现场阈值验证 |
 | 气泵 / 三通电磁阀 | GPIO40、GPIO41、手动脉冲、泄压、急停、故障锁存与策略测试已实现 | 默认不初始化输出控制；没有实物负载验收 |
@@ -34,16 +35,23 @@ CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC=n
 | 对象 | 固件引脚 | 实物状态 |
 | --- | --- | --- |
 | 板载 RGB | GPIO38 | 已用于视觉原型提示 |
+| DFPlayer UART2 TX / RX | GPIO47 / GPIO48 | GPIO47 经 1 kΩ 接 DFPlayer RX；DFPlayer TX 接 GPIO48；模块需与 ESP 共地 |
+| DFPlayer 喇叭 | SPK1 / SPK2 | 接 8 Ω、3 W 喇叭；喇叭两端均不得接 GND |
 | 气泵 MOSFET 输入 | GPIO40 | 已在源码中定义；未接入泵、MOSFET、SS54 与电池测试 |
 | 电磁阀 MOSFET 输入 | GPIO41 | 已在源码中定义；未接入阀、MOSFET、SS54 与电池测试 |
 | MPU6050 SDA / SCL / INT | GPIO2 / GPIO6 / GPIO39 | 已在源码中定义；未接入 MPU6050 实测 |
 
 泵和阀必须使用独立的 5–6V 电池组或外部电源，不能由开发板 5V 引脚供电；两块 MOSFET 的信号地、ESP32 GND 和电源负极必须共地。每个泵/阀负载各需要一个 SS54 反向并联。完整接线、气阀 1/2/3 气口和上电验收见上述接线文档。
 
+DFPlayer 默认从开发板 5V 取电、音量为 18/30，VCC/GND 之外还需要 GPIO47（串 1 kΩ）到模块 RX、模块 TX 到 GPIO48，以及仅跨接 SPK1/SPK2 的 8 Ω、3 W 喇叭。它与气泵/电磁阀的供电边界不同：一旦出现 brownout、相机异常、USB 断连、杂音或模块端电压不在 3.3–5.0V，必须改为独立、稳定的 5V（建议至少 1 A），并与 ESP 共地。完整 TF 卡、音频命名与排障见 [DFPlayer Mini 视觉风险语音接线与验收](../docs/hardware/dfplayer-voice-wiring.md)。
+
 ## 串口与 HTTP 协议
 
 - 串口状态包括 pressure、motion v2、camera_status、action_status 和 pneumatic_status。
 - ESP 在端口 8080 接收 PC 的 /risk，并提供 /pneumatic/config 与 /pneumatic/command。
+- `/risk` 保持 `version: 1`，可附带 `voice_prompt`：`{"command_id":"<boot_id>:<frame_seq>:<track>","track":1|2|3}`。固件仅在现有 token、device_id、boot_id、帧序和 TTL 校验都通过后接收该字段；attention/high/critical 必须分别匹配 track 1/2/3，low 不播报。
+- `action_ack` 新增 `voice_ack`，其中 `queued` 表示已入队、`duplicate` 表示同一 command_id 的 HTTP 重试被缓存确认且不会二次播音、`suppressed` 表示高风险语音仍在播放、`rejected` 表示字段无效、`unavailable` 表示 TF/模块未就绪。风险回调本身仍可成功，即使语音模块暂时不可用。
+- 新增串口 `voice_status`：`initializing / ready / playing / finished / error`，含 track、frame_seq、command_id 和 error，便于上位机/串口记录诊断。
 - /pneumatic/command 仅支持受限的短充气脉冲、泄压、急停、故障复位和保存标定；它不允许 PC 直接解除固件的压力、时间和故障限制。
 - camera_preview 仅为显式启用的诊断兼容模块；默认视觉路径不是 PC 拉取 ESP 的 /capture.jpg。
 
@@ -57,6 +65,15 @@ powershell -ExecutionPolicy Bypass -File .\AIX\sync_runtime_config.ps1
 ~~~
 
 该脚本创建被 Git 忽略的 sdkconfig.runtime，首次可迁移旧 sdkconfig.preview 的 Wi-Fi 凭据，并设置设备 ID、随机 link token、PC 服务 URL、上传周期、风险端口、预览和 RGB 等配置。凭据、token 和运行时配置均不提交 Git。
+
+DFPlayer 的构建开关位于 Kconfig：
+
+~~~text
+CONFIG_AIX_ENABLE_VOICE_PROMPT=y
+CONFIG_AIX_VOICE_VOLUME=18
+~~~
+
+音频卡须为 FAT32（不大于 32 GB），并包含 `/mp3/0001.mp3`、`/mp3/0002.mp3`、`/mp3/0003.mp3`。每段音频前置至少 500 ms 静音；默认内容依次为“注意前方环境”“前方风险较高，请减速避让”“前方危险，请立即减速避让”。
 
 ## 构建与烧录
 
@@ -75,9 +92,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 idf.py -p COMxx flash monitor
 ~~~
 
+已完成的实机证据仅限 COM21 上的 `voice_status.ready`、曲目 1–3 的 `playing`/`finished` 串口日志及实际听音。后续验收顺序：确认 low、过期帧、乱序帧和错误曲目不播；同级 12 秒内最多两次，critical 能打断较低风险语音；最后与相机、Wi-Fi 和推理链路连续运行 10 分钟，无 brownout、掉线、USB 断连或明显杂音。通过这些步骤不构成安全认证。
+
 ## 尚未完成的工作
 
 - 未记录气泵、电磁阀、两个 SS54、电池、气囊和压力传感器在同一气路上的通电验收。
 - 未完成 MPU6050 的实机校准、跌落/冲击误报率测试或与视觉风险的联调。
 - 未完成自动模式、断网、模型失效、传感器异常、急停和长时间运行的整机安全验收。
+- DFPlayer 已完成曲目 1–3 播放的串口和听音验证；尚未完成风险升级中断、长稳运行，以及任何气动或安全验收。语音提示不得当作人身安全保证。
 - 本固件不是医疗器械或认证级安全控制系统，不可用于人身安全防护。

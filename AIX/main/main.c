@@ -8,6 +8,7 @@
 #include "pneumatic_controller.h"
 #include "pressure_sensor.h"
 #include "risk_receiver.h"
+#include "voice_prompt.h"
 
 #if CONFIG_AIX_ENABLE_LOCAL_CAMERA
 #include "camera_local.h"
@@ -44,10 +45,17 @@ void app_main(void)
     ESP_LOGI(TAG, "Target board: ESP32-S3-DevKitC-1, monitor via J4 USB-UART");
     ESP_LOGI(TAG, "Pressure sensor: XGZP6847A 3.3V, OUT -> GPIO1 / ADC1_CH0");
     ESP_LOGI(TAG, "Vision chain: OV5640 -> PC async inference -> RGB action");
+    ESP_LOGI(TAG, "Voice branch: PC visual risk -> UART2 DFPlayer -> SPK1/SPK2");
 
     ESP_ERROR_CHECK(device_identity_init());
     ESP_LOGI(TAG, "device=%s boot=%s", device_identity_device_id(), device_identity_boot_id());
     ESP_ERROR_CHECK(action_controller_start(device_identity_device_id(), device_identity_boot_id()));
+#if CONFIG_AIX_ENABLE_VOICE_PROMPT
+    ret = voice_prompt_start();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "DFPlayer voice task unavailable; visual chain continues: %s", esp_err_to_name(ret));
+    }
+#endif
     network_runtime_set_status_callback(network_status_changed, NULL);
     ret = network_runtime_start();
     network_ready = ret == ESP_OK;
