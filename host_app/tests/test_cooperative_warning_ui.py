@@ -72,12 +72,28 @@ class CooperativeWarningUiTests(unittest.TestCase):
             self.assertEqual(peripheral.height(), realtime.height())
             self.assertEqual(realtime.height(), derived.height())
         overview.apply_camera_status(type("Camera", (), {
-            "valid": True, "fps": 9.5, "seq": 7, "width": 640, "height": 480, "capture_failures": 0, "frames_ok": 7,
+            "valid": True, "fps": 9.5, "seq": 7, "ts_ms": 1100, "width": 640, "height": 480, "capture_failures": 0, "frames_ok": 7,
         })())
         self.assertIn("9.5", overview.peripheral_values["ov5640"].text())
         self.assertIn("更新", overview.peripheral_values["ov5640"].text())
         overview.apply_pressure(type("Pressure", (), {"valid": True, "seq": 8, "filtered_kpa": 2.1, "ts_ms": 1200})())
         self.assertIn("新鲜度", overview.realtime_values["pressure"].text())
+        overview._sensor_received_at_ms["pressure"] -= 1200
+        overview.refresh_sensor_freshness()
+        self.assertIn("1200", overview.realtime_values["pressure"].text())
+        window.close()
+
+    def test_compact_1280_keeps_mapped_rows_and_safety_boundaries_visible(self):
+        window = MainWindow()
+        window.resize(1280, 720)
+        window.show()
+        self.app.processEvents()
+        for peripheral, realtime, derived in window.dashboard.sensor_mapping_row_geometries():
+            self.assertEqual(peripheral.y(), realtime.y())
+            self.assertEqual(realtime.y(), derived.y())
+            self.assertEqual(peripheral.height(), derived.height())
+        for name in ("execution_guard", "pneumatic_acceptance_note", "voice_status_value", "action_pattern", "action_ack"):
+            self.assertTrue(getattr(window.dashboard, name).isVisible(), name)
         window.close()
 
     def test_voice_and_serial_road_hazard_status_have_explicit_safe_copy(self):

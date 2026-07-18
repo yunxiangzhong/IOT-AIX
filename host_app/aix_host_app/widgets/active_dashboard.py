@@ -242,6 +242,9 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self._last_trend_frame = -1
         self._last_display_frame_seq = -1
         self._last_state_revision: int | None = None
+        self._sensor_received_at_ms: dict[str, int] = {}
+        self._sensor_source_ts_ms: dict[str, int] = {}
+        self._last_pressure_sample: PressureSample | None = None
         self.setObjectName("activeDashboard")
 
         root = QtWidgets.QVBoxLayout(self)
@@ -254,6 +257,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.diagnostics = self._build_diagnostics()
         self.diagnostics.hide()
         root.addWidget(self.diagnostics)
+        self._sensor_freshness_timer = QtCore.QTimer(self)
+        self._sensor_freshness_timer.setInterval(500)
+        self._sensor_freshness_timer.timeout.connect(self.refresh_sensor_freshness)
+        self._sensor_freshness_timer.start()
 
     def _build_header(self) -> QtWidgets.QFrame:
         frame = QtWidgets.QFrame()
@@ -374,22 +381,23 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
 
         self.derived_values: dict[str, QtWidgets.QLabel] = {}
         self.derived_rows: dict[str, QtWidgets.QFrame] = {}
+        self.derived_row_layouts: dict[str, QtWidgets.QVBoxLayout] = {}
         for key, label in (("ov5640", "风险 / 帧"), ("mpu6050", "RGB / 语音"), ("pressure", "气动总成")):
             row = QtWidgets.QFrame()
             row.setObjectName("riskHero")
             row.setFixedHeight(76)
             row_layout = QtWidgets.QVBoxLayout(row)
-            row_layout.setContentsMargins(8, 8, 8, 8)
-            name = QtWidgets.QLabel(label)
-            name.setObjectName("metricTitle")
+            row_layout.setContentsMargins(7, 5, 7, 5)
+            row_layout.setSpacing(1)
             value = QtWidgets.QLabel("等待")
             value.setObjectName("metricMono")
-            value.setWordWrap(True)
-            row_layout.addWidget(name)
+            value.setMaximumHeight(18)
             row_layout.addWidget(value)
             decision_layout.addWidget(row)
             self.derived_values[key] = value
             self.derived_rows[key] = row
+            self.derived_row_layouts[key] = row_layout
+        decision_layout.addStretch(1)
 
         risk_hero = QtWidgets.QFrame()
         self.risk_hero = risk_hero
@@ -531,22 +539,30 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.realtime_panel.set_value("ov5640", "等待有效帧")
         self.realtime_panel.set_value("mpu6050", "等待数据")
         self.realtime_panel.set_value("pressure", "等待数据")
-        self.execution_guard = QtWidgets.QLabel("数据新鲜且有效时才生成执行结论")
+        self.execution_guard = QtWidgets.QLabel("旧/无效数据不生成新执行结论")
         self.execution_guard.setObjectName("safetyNote")
         self.execution_guard.setWordWrap(True)
-        self.pneumatic_acceptance_note = QtWidgets.QLabel("策略建议与真实执行分开显示；尚未完成气囊实物验收。")
+        self.pneumatic_acceptance_note = QtWidgets.QLabel("策略与真实执行分开；尚未完成气囊实物验收")
         self.pneumatic_acceptance_note.setObjectName("safetyNote")
         self.pneumatic_acceptance_note.setWordWrap(True)
         self.voice_status_value = QtWidgets.QLabel("DFPlayer · 等待状态")
         self.voice_status_value.setObjectName("monoMuted")
-        decision_layout.addWidget(self.voice_status_value)
-        decision_layout.addWidget(self.execution_guard)
-        decision_layout.addWidget(self.pneumatic_acceptance_note)
+        for label in (self.action_pattern, self.action_ack):
+            label.setMaximumHeight(18)
+            label.setWordWrap(False)
+            self.derived_row_layouts["ov5640"].addWidget(label)
+        for label in (self.voice_status_value, self.execution_guard):
+            label.setMaximumHeight(18)
+            label.setWordWrap(False)
+            self.derived_row_layouts["mpu6050"].addWidget(label)
+        for label in (self.pneumatic_summary, self.pneumatic_acceptance_note):
+            label.setMaximumHeight(18)
+            label.setWordWrap(False)
+            self.derived_row_layouts["pressure"].addWidget(label)
         # The three mapped rows are the primary compact control-center surface.
         # Legacy detailed cards remain state holders for diagnostics, but do not
         # consume vertical space and break cross-column row alignment.
-        for legacy in (self.risk_hero, self.action_hero, self.telemetry_heading, self.telemetry_panel,
-                       self.voice_status_value, self.execution_guard, self.pneumatic_acceptance_note):
+        for legacy in (self.risk_hero, self.action_hero, self.telemetry_heading, self.telemetry_panel):
             legacy.hide()
         for widget in (camera, self.peripheral_panel, self.realtime_panel):
             widget.setMinimumWidth(0)
@@ -686,26 +702,46 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.device_log.appendPlainText(
             f"相机：累计 {event.frames_ok} 帧，{event.fps:.2f} 帧/秒，采集失败 {event.capture_failures} 次"
         )
-        self.peripheral_panel.set_value(
-            "ov5640", f"{'在线' if event.valid else '异常'}\n采样率 {event.fps:.1f} 帧/秒 · 更新 #{event.seq}",
-        )
+        self._mark_sensor_received("ov5640", event.ts_ms)
+        self.peripheral_panel.set_value("ov5640", self._peripheral_status("在线" if event.valid else "异常", event.fps, event.ts_ms))
 
     def apply_motion(self, event: MotionEvent) -> None:
         if event.accel_norm_g is None:
-            self.peripheral_panel.set_value("mpu6050", "兼容旧协议\n采样率 — · 更新 —")
+            self._mark_sensor_received("mpu6050", event.ts_ms)
+            self.peripheral_panel.set_value("mpu6050", self._peripheral_status("兼容旧协议", None, event.ts_ms))
             return
-        self.peripheral_panel.set_value("mpu6050", f"在线\n采样率 100 Hz · 更新 #{event.seq}")
+        self._mark_sensor_received("mpu6050", event.ts_ms)
+        self.peripheral_panel.set_value("mpu6050", self._peripheral_status("在线", 100.0, event.ts_ms, unit="Hz"))
         self.realtime_panel.set_value(
             "mpu6050", f"{event.accel_norm_g:.2f} g\n{event.tilt_deg or 0.0:.1f}° {'冲击' if event.impact else '正常'}",
         )
         self.derived_values["mpu6050"].setText("本机视觉/MPU 仲裁\n远端事件不改变气动")
 
     def apply_pressure(self, sample: PressureSample) -> None:
-        self.peripheral_panel.set_value("pressure", f"{'在线' if sample.valid else '无效'}\n采样率 2 Hz · 更新 #{sample.seq}")
-        self.realtime_panel.set_value(
-            "pressure", f"{sample.filtered_kpa:.2f} kPa\n{'有效' if sample.valid else '无效'} · 新鲜度 0 ms",
-        )
+        self._last_pressure_sample = sample
+        self._mark_sensor_received("pressure", sample.ts_ms)
+        self.peripheral_panel.set_value("pressure", self._peripheral_status("在线" if sample.valid else "无效", 2.0, sample.ts_ms, unit="Hz"))
+        self.refresh_sensor_freshness()
         self.derived_values["pressure"].setText("策略建议与真实执行分离\n等待泵阀真实反馈")
+
+    def _mark_sensor_received(self, key: str, source_ts_ms: int) -> None:
+        self._sensor_received_at_ms[key] = QtCore.QDateTime.currentMSecsSinceEpoch()
+        self._sensor_source_ts_ms[key] = source_ts_ms
+
+    def _peripheral_status(self, state: str, rate: float | None, source_ts_ms: int, *, unit: str = "帧/秒") -> str:
+        wall_time = QtCore.QDateTime.currentDateTime().toString("HH:mm:ss")
+        rate_text = "—" if rate is None else f"{rate:.1f} {unit}"
+        return f"{state}\n采样率 {rate_text} · 更新 {wall_time}\n设备时间 {source_ts_ms} ms"
+
+    def refresh_sensor_freshness(self) -> None:
+        sample = self._last_pressure_sample
+        received = self._sensor_received_at_ms.get("pressure")
+        if sample is None or received is None:
+            return
+        age_ms = max(0, QtCore.QDateTime.currentMSecsSinceEpoch() - received)
+        self.realtime_panel.set_value(
+            "pressure", f"{sample.filtered_kpa:.2f} kPa\n{'有效' if sample.valid else '无效'} · 新鲜度 {age_ms} ms",
+        )
 
     def apply_voice_status(self, event: VoiceStatusEvent) -> None:
         labels = {"ready": "就绪", "playing": "播放中", "finished": "已完成", "error": "错误", "initializing": "初始化"}
