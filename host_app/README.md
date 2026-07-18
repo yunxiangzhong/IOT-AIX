@@ -12,12 +12,14 @@
 | 气动标定页 | 读取配置、发送短充气脉冲/泄压/急停/故障复位/保存限制，并显示返回状态 | UI 不能开启自动模式，不能跳过 ESP 的 token、压力、时长或故障保护 |
 | PC 气动代理 | PC 服务以最近上传帧的来源 IP 转发到 ESP :8080，而不是由 UI 填写 ESP 地址 | 没有最近设备帧、token 不匹配或 ESP 控制关闭时，命令会失败/被拒绝 |
 | 会话记录 | 自动保存帧、视觉、遥测、动作、气动命令与配置 | 文件记录不是实物安全验收报告 |
+| 路侧协同场景 | Apple 浅色双页面中展示右侧货车 ETA 5 秒的场景模拟，并向 PC 服务提交固定 `truck_right_eta_5s` 事件 | 路侧检测、货车画面和 ETA 都是模拟输入；“ESP32 确认”仅在服务收到真实 `road_hazard_ack` 后点亮 |
 | UI 测试 | 上位机组件、串口解析、气动协议和会话记录有主机侧测试 | 测试数据不驱动真实 GPIO 或负载 |
 
 ## 数据源与默认页面
 
 - PC HTTP：/healthz、/v1/frame/processed.jpg、/v1/state/latest、/v1/pneumatic/config、/v1/pneumatic/command；latest.jpg 仅作原图诊断。
 - ESP 串口：pressure、motion、camera_status、action_status、pneumatic_status。
+- ESP 串口还会记录 `voice_status` 和 `road_hazard_status`；远端货车事件只显示“专用语音未配置”，不把它伪装为现有 DFPlayer 曲目。
 - 默认页用固定自绘画布展示“已分析画面”和中文交通目标框；风险卡只接受同一帧 PC 快照，串口 action_status 不再覆盖它。气动控制放在诊断/标定区域，不与默认视觉提示混为“已自动保护”。
 - 设备首次上报新的 boot_id 后，上位机才请求该设备的气动配置。
 
@@ -48,12 +50,15 @@ vision.ndjson
 telemetry.ndjson
 action.ndjson
 pneumatic.ndjson
+road_hazard.ndjson
 pressure.csv
 model.log
 session.json
 ~~~
 
 pneumatic.ndjson 记录已发送命令、ESP 返回确认和气动状态；session.json 记录读取到的气动配置。它们用于追溯软件链路，并不能替代万用表、压力表或气路测试。
+
+road_hazard.ndjson 记录路侧事件提交、服务状态推进、真实 ACK 与串口 `road_hazard_status`。模拟页面不能制造 ESP32 成功；设备离线、地址缺失、boot 不匹配、TTL 到期和 ACK 不匹配会在服务状态中保留实际失败原因。
 
 ## 启动
 

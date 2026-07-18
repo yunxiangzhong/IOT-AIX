@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, VisionDepthEvent
+from aix_host_app.models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, RoadHazardStatusEvent, VisionDepthEvent, VoiceStatusEvent
 from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
@@ -140,6 +140,26 @@ class ActionStatusParserTests(unittest.TestCase):
         self.assertIsInstance(event, ActionStatusEvent)
         self.assertEqual(event.frame_seq, 17)
         self.assertEqual(event.rgb_pattern, "orange_blink_2hz")
+
+
+class CooperativeSerialParserTests(unittest.TestCase):
+    def test_parses_real_firmware_road_hazard_status_without_severity(self):
+        event = parse_event_line(
+            '{"type":"road_hazard_status","version":1,"state":"active",'
+            '"event_id":"demo-truck-right-5s","reason":"",'
+            '"expires_in_ms":6500,"effective_rgb_pattern":"orange_blink_2hz"}'
+        )
+        self.assertIsInstance(event, RoadHazardStatusEvent)
+        self.assertEqual(event.severity, "unknown")
+        self.assertEqual(event.state, "active")
+
+    def test_parses_voice_status_lifecycle(self):
+        event = parse_event_line(
+            '{"type":"voice_status","version":1,"state":"finished",'
+            '"track":2,"frame_seq":18,"command_id":"risk-18","error":""}'
+        )
+        self.assertIsInstance(event, VoiceStatusEvent)
+        self.assertEqual(event.track, 2)
 
 
 if __name__ == "__main__":

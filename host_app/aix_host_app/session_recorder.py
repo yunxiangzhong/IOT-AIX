@@ -16,6 +16,7 @@ class SessionRecorder:
         self._vision = None
         self._action = None
         self._pneumatic = None
+        self._road_hazard = None
         self._model_log = None
         self._pressure = None
         self._pressure_writer = None
@@ -47,6 +48,7 @@ class SessionRecorder:
         self._vision = (session_dir / "vision.ndjson").open("w", encoding="utf-8")
         self._action = (session_dir / "action.ndjson").open("w", encoding="utf-8")
         self._pneumatic = (session_dir / "pneumatic.ndjson").open("w", encoding="utf-8")
+        self._road_hazard = (session_dir / "road_hazard.ndjson").open("w", encoding="utf-8")
         self._model_log = (session_dir / "model.log").open("w", encoding="utf-8")
         self._pressure = (session_dir / "pressure.csv").open("w", newline="", encoding="utf-8")
         self._pressure_writer = csv.writer(self._pressure)
@@ -99,6 +101,11 @@ class SessionRecorder:
             self._write_metadata()
         self.record_pneumatic(payload)
 
+    def record_road_hazard(self, payload: dict[str, Any]) -> None:
+        if self._road_hazard is None:
+            return
+        self._write_line(self._road_hazard, {"wall_time": datetime.now().astimezone().isoformat(), **payload})
+
     def append_model_log(self, line: str) -> None:
         if self._model_log is None:
             return
@@ -115,10 +122,10 @@ class SessionRecorder:
         self._pressure.flush()
 
     def close(self) -> None:
-        for handle in (self._telemetry, self._vision, self._action, self._pneumatic, self._model_log, self._pressure):
+        for handle in (self._telemetry, self._vision, self._action, self._pneumatic, self._road_hazard, self._model_log, self._pressure):
             if handle is not None:
                 handle.close()
-        self._telemetry = self._vision = self._action = self._pneumatic = self._model_log = self._pressure = None
+        self._telemetry = self._vision = self._action = self._pneumatic = self._road_hazard = self._model_log = self._pressure = None
         self._pressure_writer = None
         self._saved_frames.clear()
         self._saved_actions.clear()

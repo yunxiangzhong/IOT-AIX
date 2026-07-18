@@ -140,3 +140,20 @@ class ActionStatusEvent:
     stale: bool
     action_state: str
     rgb_pattern: str
+
+
+@dataclass(frozen=True)
+class VoiceStatusEvent:
+    state: str
+    command_id: str
+    track: int
+    error: str
+
+
+@dataclass(frozen=True)
+class RoadHazardStatusEvent:
+    state: str
+    event_id: str
+    severity: str
+    effective_rgb_pattern: str
+    reason: str

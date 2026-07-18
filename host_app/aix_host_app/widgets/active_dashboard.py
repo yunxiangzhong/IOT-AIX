@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..models import ActionStatusEvent, CameraStatusEvent, PneumaticStatusEvent
+from ..models import ActionStatusEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample, VoiceStatusEvent
 from .pneumatic_calibration_panel import PneumaticCalibrationPanel
 from .vision_canvas import VisionCanvas
 
@@ -195,6 +195,40 @@ class _Metric(QtWidgets.QFrame):
         layout.addWidget(self.value)
 
 
+class _StatusColumn(QtWidgets.QFrame):
+    """Narrow column whose rows stay horizontally aligned with the result pane."""
+
+    def __init__(self, object_name: str, title: str, rows: tuple[tuple[str, str], ...], parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setSpacing(10)
+        heading = QtWidgets.QLabel(title)
+        heading.setObjectName("panelTitle")
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+        self.values: dict[str, QtWidgets.QLabel] = {}
+        for key, label in rows:
+            block = QtWidgets.QFrame()
+            block.setObjectName("riskHero")
+            block_layout = QtWidgets.QVBoxLayout(block)
+            block_layout.setContentsMargins(8, 8, 8, 8)
+            name = QtWidgets.QLabel(label)
+            name.setObjectName("metricTitle")
+            value = QtWidgets.QLabel("等待")
+            value.setObjectName("metricMono")
+            value.setWordWrap(True)
+            block_layout.addWidget(name)
+            block_layout.addWidget(value)
+            layout.addWidget(block)
+            self.values[key] = value
+        layout.addStretch(1)
+
+    def set_value(self, key: str, value: str) -> None:
+        self.values[key].setText(value)
+
+
 class ActiveVisionDashboard(QtWidgets.QWidget):
     settings_requested = QtCore.Signal()
 
@@ -268,10 +302,13 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             layout.addWidget(stage, 1)
         return frame
 
-    def _build_workspace(self) -> QtWidgets.QSplitter:
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        splitter.setObjectName("workspaceSplitter")
-        splitter.setChildrenCollapsible(False)
+    def _build_workspace(self) -> QtWidgets.QWidget:
+        workspace = QtWidgets.QWidget()
+        workspace.setObjectName("workspaceSplitter")
+        layout = QtWidgets.QHBoxLayout(workspace)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        self.workspace_ratios = (6, 1, 1, 2)
         camera = QtWidgets.QFrame()
         camera.setObjectName("visionPanel")
         camera_layout = QtWidgets.QVBoxLayout(camera)
@@ -446,12 +483,36 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.safety_note.setWordWrap(True)
         decision_layout.addWidget(self.safety_note)
 
-        splitter.addWidget(camera)
-        splitter.addWidget(decision)
-        splitter.setStretchFactor(0, 7)
-        splitter.setStretchFactor(1, 3)
-        splitter.setSizes([900, 420])
-        return splitter
+        self.peripheral_panel = _StatusColumn(
+            "peripheralPanel", "感知外设",
+            (("camera", "OV5640"), ("motion", "MPU6050"), ("pressure", "压力传感器")),
+        )
+        self.realtime_panel = _StatusColumn(
+            "realtimePanel", "实时数据",
+            (("target", "目标 / 风险"), ("motion", "加速度 / 倾角"), ("pressure", "压力 / 时效")),
+        )
+        self.peripheral_panel.set_value("camera", "等待在线")
+        self.peripheral_panel.set_value("motion", "等待串口")
+        self.peripheral_panel.set_value("pressure", "等待串口")
+        self.realtime_panel.set_value("target", "等待有效帧")
+        self.realtime_panel.set_value("motion", "等待数据")
+        self.realtime_panel.set_value("pressure", "等待数据")
+        self.execution_guard = QtWidgets.QLabel("数据新鲜且有效时才生成执行结论")
+        self.execution_guard.setObjectName("safetyNote")
+        self.execution_guard.setWordWrap(True)
+        self.pneumatic_acceptance_note = QtWidgets.QLabel("策略建议与真实执行分开显示；尚未完成气囊实物验收。")
+        self.pneumatic_acceptance_note.setObjectName("safetyNote")
+        self.pneumatic_acceptance_note.setWordWrap(True)
+        self.voice_status_value = QtWidgets.QLabel("DFPlayer · 等待状态")
+        self.voice_status_value.setObjectName("monoMuted")
+        decision_layout.insertWidget(2, self.voice_status_value)
+        decision_layout.insertWidget(3, self.execution_guard)
+        decision_layout.insertWidget(4, self.pneumatic_acceptance_note)
+        layout.addWidget(camera, self.workspace_ratios[0])
+        layout.addWidget(self.peripheral_panel, self.workspace_ratios[1])
+        layout.addWidget(self.realtime_panel, self.workspace_ratios[2])
+        layout.addWidget(decision, self.workspace_ratios[3])
+        return workspace
 
     def _build_metrics(self) -> QtWidgets.QFrame:
         frame = QtWidgets.QFrame()
@@ -566,6 +627,29 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.device_log.appendPlainText(
             f"相机：累计 {event.frames_ok} 帧，{event.fps:.2f} 帧/秒，采集失败 {event.capture_failures} 次"
         )
+        self.peripheral_panel.set_value("camera", f"{'在线' if event.valid else '异常'}\n{event.fps:.1f} 帧/秒")
+
+    def apply_motion(self, event: MotionEvent) -> None:
+        if event.accel_norm_g is None:
+            self.peripheral_panel.set_value("motion", "兼容旧协议")
+            return
+        self.peripheral_panel.set_value("motion", f"在线\n序号 {event.seq}")
+        self.realtime_panel.set_value(
+            "motion", f"{event.accel_norm_g:.2f} g\n{event.tilt_deg or 0.0:.1f}° {'冲击' if event.impact else '正常'}",
+        )
+
+    def apply_pressure(self, sample: PressureSample) -> None:
+        self.peripheral_panel.set_value("pressure", f"{'在线' if sample.valid else '无效'}\n序号 {sample.seq}")
+        self.realtime_panel.set_value("pressure", f"{sample.filtered_kpa:.2f} kPa\n{'有效' if sample.valid else '无效'}")
+
+    def apply_voice_status(self, event: VoiceStatusEvent) -> None:
+        labels = {"ready": "就绪", "playing": "播放中", "finished": "已完成", "error": "错误", "initializing": "初始化"}
+        text = f"DFPlayer · {labels.get(event.state, '未知')}"
+        if event.track:
+            text += f" · 曲目 {event.track}"
+        if event.error:
+            text += f" · {event.error}"
+        self.voice_status_value.setText(text)
 
     def apply_health(self, health: dict) -> None:
         model_state = str(health.get("model_state") or "loading")
@@ -688,6 +772,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.risk_gauge.setValue(score if score is not None else 0)
         self._apply_risk_tint(band)
         self.risk_reason.setText(_risk_reason_label(risk.get("reason"), model_state=model_state, stale=is_stale))
+        self.realtime_panel.set_value(
+            "target",
+            f"{risk.get('dominant_class') or '目标未知'}\n{score if score is not None else '—'} 分 · {'失效' if is_stale else '有效'}",
+        )
         action_state = str(action.get("state", "loading"))
         pattern = str(action.get("rgb_pattern", "blue_blink_1hz"))
         self.action_name.setText(action_labels.get(action_state, "状态未知"))
@@ -700,6 +788,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             self.action_ack.setText(ack_text)
         else:
             self.action_ack.setText("等待动作确认")
+        self.execution_guard.setText(
+            "旧数据、断链或无效数据：不生成新的执行结论。"
+            if is_stale or not risk.get("valid") else "数据新鲜且有效：展示策略建议；真实执行以串口反馈为准。"
+        )
         age = upload.get("frame_age_ms")
         frame_seq = int(display.get("frame_seq", -1)) if display.get("ready") else int(risk.get("frame_seq", upload.get("last_frame_seq", -1)) or -1)
         risk_frame_seq = int(risk.get("frame_seq", -1) or -1)

@@ -8,13 +8,14 @@ from PySide6 import QtCore, QtWidgets
 
 from .chain_client import PcChainClient
 from .fonts import ensure_cjk_font
-from .models import ActionStatusEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample
+from .models import ActionStatusEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RoadHazardStatusEvent, VoiceStatusEvent
 from .parsers import ParseError, parse_event_line
 from .serial_source import SerialLineReader, list_serial_ports
 from .session_recorder import SessionRecorder
 from .simulation import make_simulated_pressure_sample
 from .styles import app_stylesheet
 from .widgets.active_dashboard import ActiveVisionDashboard
+from .widgets.cooperative_scenario import CooperativeScenarioPanel
 from .widgets.connection_panel import ConnectionPanel
 
 
@@ -41,12 +42,42 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chain_clock.start()
         self._watchdog_fault_shown = False
         self._last_pneumatic_boot = ""
+        self._last_road_hazard_identity: tuple[str, str, str] | None = None
 
         self.dashboard = ActiveVisionDashboard()
+        self.scenario_panel = CooperativeScenarioPanel()
+        self.primary_pages = QtWidgets.QStackedWidget()
+        self.primary_pages.setObjectName("primaryPages")
+        self.primary_pages.addWidget(self.dashboard)
+        self.primary_pages.addWidget(self.scenario_panel)
+        self._reduce_motion = bool(settings.value("reduce_motion", False, type=bool))
+        self._page_opacity = QtWidgets.QGraphicsOpacityEffect(self.primary_pages)
+        self.primary_pages.setGraphicsEffect(self._page_opacity)
+        self._page_opacity.setOpacity(1.0)
+        self._page_fade = QtCore.QPropertyAnimation(self._page_opacity, b"opacity", self)
+        self._page_fade.setDuration(200)
+        self._page_fade.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
         wrapper = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(wrapper)
         layout.setContentsMargins(12, 10, 12, 10)
-        layout.addWidget(self.dashboard)
+        navigation = QtWidgets.QFrame()
+        navigation.setObjectName("instrumentHeader")
+        nav_layout = QtWidgets.QHBoxLayout(navigation)
+        nav_layout.setContentsMargins(12, 8, 12, 8)
+        nav_title = QtWidgets.QLabel("AIX 控制中心")
+        nav_title.setObjectName("instrumentTitle")
+        self.overview_button = QtWidgets.QPushButton("中控总览")
+        self.scenario_button = QtWidgets.QPushButton("协同场景")
+        for button in (self.overview_button, self.scenario_button):
+            button.setCheckable(True)
+        self.overview_button.setChecked(True)
+        self.overview_button.clicked.connect(self._show_overview)
+        self.scenario_button.clicked.connect(self._show_scenario)
+        nav_layout.addWidget(nav_title, 1)
+        nav_layout.addWidget(self.overview_button)
+        nav_layout.addWidget(self.scenario_button)
+        layout.addWidget(navigation)
+        layout.addWidget(self.primary_pages, 1)
         self.setCentralWidget(wrapper)
 
         self.connection_panel = ConnectionPanel()
@@ -56,8 +87,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings_dialog.setMinimumWidth(420)
         settings_layout = QtWidgets.QVBoxLayout(self.settings_dialog)
         settings_layout.addWidget(self.connection_panel)
+        self.reduce_motion_check = QtWidgets.QCheckBox("减少动态效果")
+        self.reduce_motion_check.setChecked(self._reduce_motion)
+        self.reduce_motion_check.toggled.connect(self._set_reduce_motion)
+        settings_layout.addWidget(self.reduce_motion_check)
 
-        self.chain_client = PcChainClient(self.service_url, self.device_id, self)
+        self.chain_client = PcChainClient(
+            self.service_url, self.device_id,
+            token=str(os.environ.get("AIX_TOKEN") or settings.value("token", "")), parent=self,
+        )
         self.chain_client.state_received.connect(self._accept_chain_state)
         self.chain_client.snapshot_received.connect(self._accept_pc_snapshot)
         self.chain_client.health_received.connect(self._accept_health)
@@ -65,6 +103,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chain_client.pneumatic_config_received.connect(self._accept_pneumatic_config)
         self.chain_client.pneumatic_command_finished.connect(self._accept_pneumatic_command)
         self.chain_client.pneumatic_error.connect(self._accept_pneumatic_error)
+        self.chain_client.road_hazard_finished.connect(self._accept_road_hazard_submission)
+        self.chain_client.road_hazard_error.connect(self._accept_road_hazard_error)
 
         self.sim_seq = 0
         self.sim_clock = QtCore.QElapsedTimer()
@@ -79,6 +119,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._wire_settings()
         self.refresh_ports()
         self.dashboard.settings_requested.connect(self.settings_dialog.show)
+        self.scenario_panel.start_requested.connect(self.chain_client.send_road_hazard)
+        self.scenario_panel.reset_requested.connect(self._record_road_hazard_reset)
         self.chain_client.start()
         self.statusBar().showMessage("上位机帧服务连接中；视觉模型将在后台加载")
 
@@ -102,6 +144,38 @@ class MainWindow(QtWidgets.QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "dashboard"):
             self.dashboard.set_compact_mode(event.size().height() < 800)
+
+    def _show_overview(self) -> None:
+        self._set_primary_page(0)
+        self.overview_button.setChecked(True)
+        self.scenario_button.setChecked(False)
+
+    def _show_scenario(self) -> None:
+        self._set_primary_page(1)
+        self.overview_button.setChecked(False)
+        self.scenario_button.setChecked(True)
+
+    def _set_primary_page(self, index: int) -> None:
+        self._page_fade.stop()
+        self.primary_pages.setCurrentIndex(index)
+        if self._reduce_motion:
+            self._page_opacity.setOpacity(1.0)
+            return
+        self._page_opacity.setOpacity(0.35)
+        self._page_fade.setStartValue(self._page_opacity.opacity())
+        self._page_fade.setEndValue(1.0)
+        self._page_fade.start()
+
+    def _set_reduce_motion(self, enabled: bool) -> None:
+        self._reduce_motion = enabled
+        if self.reduce_motion_check.isChecked() != enabled:
+            self.reduce_motion_check.blockSignals(True)
+            self.reduce_motion_check.setChecked(enabled)
+            self.reduce_motion_check.blockSignals(False)
+        QtCore.QSettings("AIX", "HostApp").setValue("reduce_motion", enabled)
+        if enabled:
+            self._page_fade.stop()
+            self._page_opacity.setOpacity(1.0)
 
     def refresh_ports(self) -> None:
         self.connection_panel.set_ports(list_serial_ports())
@@ -159,6 +233,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.dashboard.protocol_log.appendPlainText(f"已忽略无法识别的协议消息：{line}")
             return
         if isinstance(event, PressureSample):
+            self.dashboard.apply_pressure(event)
             self.session_recorder.record_pressure(event)
             self.dashboard.device_log.appendPlainText(
                 f"压力数据：序号 {event.seq}，滤波值 {event.filtered_kpa:.2f} 千帕，"
@@ -180,6 +255,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "rgb_pattern": event.rgb_pattern,
             })
         elif isinstance(event, MotionEvent):
+            self.dashboard.apply_motion(event)
             if event.accel_norm_g is not None:
                 self.dashboard.device_log.appendPlainText(
                     f"MPU6050：加速度 {event.accel_norm_g:.2f} g，倾角 {event.tilt_deg:.1f}°，"
@@ -198,6 +274,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 "vision_fresh": event.vision_fresh, "mpu_available": event.mpu_available,
                 "mpu_calibrated": event.mpu_calibrated, "impact": event.impact, "rapid_tilt": event.rapid_tilt,
             })
+        elif isinstance(event, VoiceStatusEvent):
+            self.dashboard.apply_voice_status(event)
+            self.session_recorder.record_road_hazard({
+                "type": "voice_status", "state": event.state, "command_id": event.command_id,
+                "track": event.track, "error": event.error,
+            })
+        elif isinstance(event, RoadHazardStatusEvent):
+            self._accept_road_hazard_status(event)
 
     def _accept_chain_state(self, state: dict) -> None:
         self._ensure_session()
@@ -205,6 +289,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chain_clock.restart()
         self._watchdog_fault_shown = False
         self.dashboard.apply_chain_state(state)
+        self.scenario_panel.apply_chain_state(state)
+        hazard = state.get("road_hazard", {})
+        if isinstance(hazard, dict) and hazard.get("event_id"):
+            ack = hazard.get("ack", {}) if isinstance(hazard.get("ack"), dict) else {}
+            identity = (
+                str(hazard.get("event_id")), str(hazard.get("delivery", {}).get("state", "")),
+                str(ack.get("state", "")),
+            )
+            if identity != self._last_road_hazard_identity:
+                self._last_road_hazard_identity = identity
+                self.session_recorder.record_road_hazard({"type": "road_hazard_chain", **hazard})
         boot_id = str(state.get("boot_id") or "")
         if len(boot_id) == 16 and boot_id != self._last_pneumatic_boot:
             self._last_pneumatic_boot = boot_id
@@ -246,6 +341,34 @@ class MainWindow(QtWidgets.QMainWindow):
     def _accept_pneumatic_error(self, message: str) -> None:
         self.dashboard.pneumatic_panel.show_error(message)
         self.dashboard.protocol_log.appendPlainText(message)
+
+    def _accept_road_hazard_submission(self, payload: dict) -> None:
+        self._ensure_session()
+        self.session_recorder.record_road_hazard({"type": "road_hazard_submission", **payload})
+        self.dashboard.protocol_log.appendPlainText(
+            f"路侧协同事件已受理：{payload.get('event_id', '—')}；等待真实 ESP32 ACK"
+        )
+
+    def _accept_road_hazard_error(self, message: str) -> None:
+        self._ensure_session()
+        self.session_recorder.record_road_hazard({"type": "road_hazard_submission_error", "error": message})
+        self.dashboard.protocol_log.appendPlainText(message)
+        self.statusBar().showMessage(message)
+
+    def _accept_road_hazard_status(self, event: RoadHazardStatusEvent) -> None:
+        self.scenario_panel.apply_serial_status(event)
+        self.dashboard.protocol_log.appendPlainText(
+            f"路侧预警串口状态：{event.state} · {event.event_id} · {event.effective_rgb_pattern or '无 RGB'}"
+        )
+        self._ensure_session()
+        self.session_recorder.record_road_hazard({
+            "type": "road_hazard_status", "state": event.state, "event_id": event.event_id,
+            "severity": event.severity, "effective_rgb_pattern": event.effective_rgb_pattern, "reason": event.reason,
+        })
+
+    def _record_road_hazard_reset(self) -> None:
+        self._ensure_session()
+        self.session_recorder.record_road_hazard({"type": "road_hazard_reset"})
 
     def _accept_pc_snapshot(self, data: bytes, frame_seq: int, capture_ts_ms: int, state: dict) -> None:
         if not self.dashboard.apply_snapshot(data, frame_seq, capture_ts_ms, state):

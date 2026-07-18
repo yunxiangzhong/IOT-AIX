@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, DetectionBox, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, VisionDepthEvent
+from .models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, DetectionBox, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, RoadHazardStatusEvent, VisionDepthEvent, VoiceStatusEvent
 
 
 class ParseError(ValueError):
@@ -34,9 +34,11 @@ _RISK_ACK_REQUIRED = ("frame_seq", "risk_score", "risk_band", "valid", "stale")
 _ACTION_STATUS_REQUIRED = (
     "ts_ms", "frame_seq", "risk_score", "valid", "stale", "action_state", "rgb_pattern",
 )
+_VOICE_STATUS_REQUIRED = ("state", "command_id", "track", "error")
+_ROAD_HAZARD_STATUS_REQUIRED = ("state", "event_id", "effective_rgb_pattern", "reason")
 
 
-def parse_event_line(line: str) -> PressureSample | MotionEvent | PneumaticStatusEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent | ActionStatusEvent:
+def parse_event_line(line: str) -> PressureSample | MotionEvent | PneumaticStatusEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent | ActionStatusEvent | VoiceStatusEvent | RoadHazardStatusEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -60,6 +62,10 @@ def parse_event_line(line: str) -> PressureSample | MotionEvent | PneumaticStatu
         return _parse_risk_ack_payload(payload)
     if event_type == "action_status":
         return _parse_action_status_payload(payload)
+    if event_type == "voice_status":
+        return _parse_voice_status_payload(payload)
+    if event_type == "road_hazard_status":
+        return _parse_road_hazard_status_payload(payload)
     raise ParseError(f"unsupported json event type: {event_type}")
 
 
@@ -266,6 +272,35 @@ def _parse_action_status_payload(payload: dict[str, Any]) -> ActionStatusEvent:
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc
+
+
+def _parse_voice_status_payload(payload: dict[str, Any]) -> VoiceStatusEvent:
+    missing = [key for key in _VOICE_STATUS_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"voice_status missing fields: {', '.join(missing)}")
+    try:
+        state = str(payload["state"])
+        if state not in {"initializing", "ready", "playing", "finished", "error"}:
+            raise ValueError("voice_status state is invalid")
+        track = _as_int(payload["track"], "track")
+        if track < 0 or track > 255:
+            raise ValueError("voice_status track is invalid")
+        return VoiceStatusEvent(state, str(payload["command_id"]), track, str(payload["error"]))
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_road_hazard_status_payload(payload: dict[str, Any]) -> RoadHazardStatusEvent:
+    missing = [key for key in _ROAD_HAZARD_STATUS_REQUIRED if key not in payload]
+    if missing:
+        raise ParseError(f"road_hazard_status missing fields: {', '.join(missing)}")
+    state = str(payload["state"])
+    if state not in {"active", "expired", "rejected"}:
+        raise ParseError("road_hazard_status state is invalid")
+    return RoadHazardStatusEvent(
+        state, str(payload["event_id"]), str(payload.get("severity", "unknown")),
+        str(payload["effective_rgb_pattern"]), str(payload["reason"]),
+    )
 
 
 def _parse_legacy_pressure(text: str) -> PressureSample:
