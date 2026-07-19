@@ -56,8 +56,13 @@ if ($tokenLine) {
     $token = ($tokenLine -split '=', 2)[1].Trim('"')
 } else {
     $bytes = [byte[]]::new(32)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    $token = [Convert]::ToHexString($bytes).ToLowerInvariant()
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    } finally {
+        $rng.Dispose()
+    }
+    $token = -join ($bytes | ForEach-Object { $_.ToString("x2") })
 }
 $settings.CONFIG_AIX_LINK_TOKEN = '"' + $token + '"'
 

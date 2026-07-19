@@ -207,8 +207,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self._last_state: dict = {}
         self._last_trend_frame = -1
         self._last_display_frame_seq = -1
-        # 中控默认使用最近一张已分析 PNG。链路状态仍持续更新，但不再逐帧重绘大画面。
-        self._static_visual_mode = True
+        self._static_visual_mode = False
         self._last_state_revision: int | None = None
         self._sensor_received_at_ms: dict[str, int] = {}
         self._sensor_source_ts_ms: dict[str, int] = {}

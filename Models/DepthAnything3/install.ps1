@@ -6,7 +6,13 @@ $ErrorActionPreference = "Stop"
 $sourceCommit = "41736238f5bced4debf3f2a12375d2466874866d"
 $modelRepo = "depth-anything/DA3-SMALL"
 $modelRevision = "e08cab65ca0ec38e7826075418411ab90cab4da3"
-$conda = "D:\APP\Anaconda\install_place\Scripts\conda.exe"
+$fallbackConda = "D:\APP\Anaconda\install_place\Scripts\conda.exe"
+$conda = if ($env:AIX_CONDA_EXE) {
+    $env:AIX_CONDA_EXE
+} else {
+    $condaCommand = Get-Command conda -ErrorAction SilentlyContinue
+    if ($condaCommand) { $condaCommand.Source } else { $fallbackConda }
+}
 
 $projectRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
 . (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "scripts\runtime_paths.ps1")
@@ -39,7 +45,7 @@ if ($LASTEXITCODE -ne 0) { throw "Depth Anything 3 fetch failed" }
 if ($LASTEXITCODE -ne 0) { throw "Depth Anything 3 checkout failed" }
 
 if (-not (Test-Path -LiteralPath (Join-Path $environment "python.exe"))) {
-    & $conda create --prefix $environment python=3.10 pip -y
+    & $conda create --prefix $environment python=3.10 pip -y --override-channels --channel conda-forge
     if ($LASTEXITCODE -ne 0) { throw "DA3 environment creation failed" }
 }
 

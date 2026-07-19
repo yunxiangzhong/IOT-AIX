@@ -26,7 +26,7 @@ class CooperativeWarningUiTests(unittest.TestCase):
         self.assertFalse(hasattr(window.connection_panel, "storage_root_edit"))
         self.assertEqual(window.session_button.text(), "会话记录")
         self.assertFalse(hasattr(window, "preferences_button"))
-        self.assertTrue(window.dashboard._static_visual_mode)
+        self.assertFalse(window.dashboard._static_visual_mode)
         window.device_button.setChecked(True)
         self.app.processEvents()
         self.assertTrue(window.device_window.isVisible())

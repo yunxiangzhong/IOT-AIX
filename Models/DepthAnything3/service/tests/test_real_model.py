@@ -13,7 +13,7 @@ sys.path.insert(0, str(SERVICE_ROOT))
 from inference import Da3Engine
 
 
-WEIGHTS = Path(r"D:\Projects\IOTCompetition\ProjectFile\Models\DepthAnything3\weights\DA3-SMALL")
+WEIGHTS = SERVICE_ROOT.parent / "weights" / "DA3-SMALL"
 
 
 class RealDa3ModelTests(unittest.TestCase):

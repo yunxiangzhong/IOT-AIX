@@ -186,7 +186,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_ports()
         self.scenario_panel.start_requested.connect(self.chain_client.send_road_hazard)
         self.scenario_panel.reset_requested.connect(self._record_road_hazard_reset)
-        self.dashboard.set_static_visual_mode(True)
+        self.dashboard.set_static_visual_mode(False)
         # 协同场景只保留低频、必要的安全演示动作。
         self.scenario_panel.set_reduced_motion(True)
         self.chain_client.start()
