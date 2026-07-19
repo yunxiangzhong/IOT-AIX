@@ -76,13 +76,20 @@ class CooperativeWarningUiTests(unittest.TestCase):
             "valid": True, "fps": 9.5, "seq": 7, "ts_ms": 1100, "width": 640, "height": 480,
             "capture_failures": 0, "frames_ok": 7,
         })())
-        self.assertIn("9.5", overview.peripheral_values["ov5640"].text())
+        self.assertEqual(overview.peripheral_values["ov5640"].text(), "等待设备数据")
+        overview.apply_hardware_health(type("Health", (), {
+            "modules": {
+                "ov5640": "healthy", "mpu6050": "healthy", "pressure": "healthy",
+                "dfplayer": "healthy", "rgb": "healthy", "pump": "healthy", "valve": "healthy",
+            },
+            "automatic_ready": True, "overall": "healthy", "reason": "硬件正常",
+        })())
+        self.assertEqual(overview.peripheral_values["ov5640"].text(), "正常")
         overview.apply_pressure(type("Pressure", (), {"valid": True, "seq": 8, "filtered_kpa": 2.1, "ts_ms": 1200})())
         overview._sensor_received_at_ms["pressure"] -= 1200
         overview.refresh_sensor_freshness()
-        match = re.search(r"新鲜度 (\d+) ms", overview.realtime_values["pressure"].text())
-        self.assertIsNotNone(match)
-        self.assertGreaterEqual(int(match.group(1)), 1200)
+        self.assertIn("2.10 kPa", overview.realtime_values["pressure"].text())
+        self.assertNotIn("ms", overview.realtime_values["pressure"].text())
         window.close()
 
     def test_layout_is_adaptive_and_core_content_stays_visible(self):

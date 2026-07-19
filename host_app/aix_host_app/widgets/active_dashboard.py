@@ -4,6 +4,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..models import ActionStatusEvent, CameraStatusEvent, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, VoiceStatusEvent
 from .pneumatic_calibration_panel import PneumaticCalibrationPanel
+from .status_card import ClickableStatusCard
+from .trend_dialog import TrendDialog, TrendStore
 from .vision_canvas import VisionCanvas
 
 
@@ -131,11 +133,14 @@ class _Stage(QtWidgets.QFrame):
 class _StatusColumn(QtWidgets.QFrame):
     """Content-sized column; matching row count and stretch keep the causal chain aligned."""
 
-    def __init__(self, object_name: str, title: str, rows: tuple[tuple[str, str], ...], parent=None) -> None:
+    metric_clicked = QtCore.Signal(str)
+
+    def __init__(self, object_name: str, title: str, rows: tuple[tuple[str, str], ...], *, clickable_keys: tuple[str, ...] = (), metric_aliases: dict[str, str] | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName(object_name)
         self.setMinimumWidth(0)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.metric_aliases = metric_aliases or {}
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
@@ -145,28 +150,34 @@ class _StatusColumn(QtWidgets.QFrame):
         self.values: dict[str, QtWidgets.QLabel] = {}
         self.rows: dict[str, QtWidgets.QFrame] = {}
         for key, label in rows:
-            block = QtWidgets.QFrame()
-            block.setObjectName("mappingCell")
-            block.setMinimumHeight(64)
-            block.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-            block_layout = QtWidgets.QVBoxLayout(block)
-            block_layout.setContentsMargins(9, 8, 9, 8)
-            block_layout.setSpacing(3)
-            name = QtWidgets.QLabel(label)
-            name.setObjectName("mappingLabel")
-            name.setWordWrap(True)
-            value = QtWidgets.QLabel("等待")
-            value.setObjectName("mappingValue")
-            value.setWordWrap(True)
-            value.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
-            block_layout.addWidget(name)
-            block_layout.addWidget(value, 1)
+            block = ClickableStatusCard(key, label)
+            block.set_trend_enabled(key in clickable_keys)
+            block.clicked.connect(lambda key, aliases=self.metric_aliases: self.metric_clicked.emit(aliases.get(key, key)))
+            value = block.value_label
             layout.addWidget(block, 1)
             self.values[key] = value
             self.rows[key] = block
 
     def set_value(self, key: str, value: str) -> None:
-        self.values[key].setText(value)
+        block = self.rows.get(key)
+        if isinstance(block, ClickableStatusCard):
+            block.set_value(value)
+            return
+        if self.values[key].text() != value:
+            self.values[key].setText(value)
+
+    def set_tone(self, key: str, tone: str) -> None:
+        block = self.rows.get(key)
+        if block is None:
+            return
+        if isinstance(block, ClickableStatusCard):
+            block.set_status(tone)
+            return
+        if block.property("statusTone") == tone:
+            return
+        block.setProperty("statusTone", tone)
+        block.style().unpolish(block)
+        block.style().polish(block)
 
 
 class _HostStatusCard(QtWidgets.QFrame):
@@ -201,6 +212,22 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         ("pneumatic", "气泵 · 阀门 · 气囊"),
     )
 
+    DISPLAY_OWNERS = {
+        **{("peripheralPanel", key): "hardware_health" for key, _ in ROWS},
+        ("realtimePanel", "ov5640"): "chain_state",
+        ("realtimePanel", "mpu6050"): "motion",
+        ("realtimePanel", "pressure"): "pressure",
+        ("realtimePanel", "dfplayer"): "voice_status",
+        ("realtimePanel", "rgb"): "chain_state",
+        ("realtimePanel", "pneumatic"): "pneumatic_status",
+        ("decisionPanel", "ov5640"): "chain_state",
+        ("decisionPanel", "mpu6050"): "chain_state",
+        ("decisionPanel", "pressure"): "pneumatic_status",
+        ("decisionPanel", "dfplayer"): "voice_status",
+        ("decisionPanel", "rgb"): "chain_state",
+        ("decisionPanel", "pneumatic"): "pneumatic_status",
+    }
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("activeDashboard")
@@ -212,6 +239,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self._sensor_received_at_ms: dict[str, int] = {}
         self._sensor_source_ts_ms: dict[str, int] = {}
         self._last_pressure_sample: PressureSample | None = None
+        self.trend_store = TrendStore()
+        self.trend_dialog = TrendDialog(self)
+        self._pending_display_updates: dict[tuple[str, str], tuple[str, str | None]] = {}
+        self._display_cache: dict[tuple[str, str], tuple[str, str | None]] = {}
         self._compact = False
         self.sensor_row_keys = tuple(key for key, _ in self.ROWS)
         self.workspace_ratios = (11, 3, 3, 4)
@@ -230,6 +261,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self._sensor_freshness_timer.setInterval(500)
         self._sensor_freshness_timer.timeout.connect(self.refresh_sensor_freshness)
         self._sensor_freshness_timer.start()
+        self._display_timer = QtCore.QTimer(self)
+        self._display_timer.setInterval(500)
+        self._display_timer.timeout.connect(self._flush_display_updates)
+        self._display_timer.start()
 
     def _init_stage_holders(self) -> None:
         self.camera_stage = _Stage("01", "相机采集", self)
@@ -262,7 +297,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         peripheral_rows = self.ROWS
         realtime_rows = (
             ("ov5640", "目标 · 相对风险"), ("mpu6050", "加速度 · 倾角 · 冲击"),
-            ("pressure", "压力 · 数据新鲜度"), ("dfplayer", "播放状态 · 曲目"),
+            ("pressure", "压力 · 当前值"), ("dfplayer", "播放状态 · 曲目"),
             ("rgb", "模式 · 亮度"), ("pneumatic", "泵阀 · 压力反馈"),
         )
         derived_rows = (
@@ -270,13 +305,22 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             ("pressure", "气动允许 / 禁止原因"), ("dfplayer", "语音实际反馈"),
             ("rgb", "灯光实际反馈"), ("pneumatic", "泵阀真实反馈"),
         )
-        self.peripheral_panel = _StatusColumn("peripheralPanel", "感知与外设", peripheral_rows)
-        self.realtime_panel = _StatusColumn("realtimePanel", "实时数据", realtime_rows)
+        self.peripheral_panel = _StatusColumn(
+            "peripheralPanel", "感知与外设", peripheral_rows,
+            clickable_keys=("ov5640",), metric_aliases={"ov5640": "upload_fps"},
+        )
+        self.realtime_panel = _StatusColumn(
+            "realtimePanel", "实时数据", realtime_rows,
+            clickable_keys=("ov5640", "mpu6050", "pressure"),
+            metric_aliases={"ov5640": "risk_score", "mpu6050": "motion", "pressure": "pressure_kpa"},
+        )
         self.decision_panel = _StatusColumn("decisionPanel", "推导与执行", derived_rows)
         self.peripheral_values = self.peripheral_panel.values
         self.realtime_values = self.realtime_panel.values
         self.derived_values = self.decision_panel.values
         self.derived_rows = self.decision_panel.rows
+        self.peripheral_panel.metric_clicked.connect(self._show_trend)
+        self.realtime_panel.metric_clicked.connect(self._show_trend)
         mapping_layout.addWidget(self.peripheral_panel, 3)
         mapping_layout.addWidget(self.realtime_panel, 3)
         mapping_layout.addWidget(self.decision_panel, 4)
@@ -436,6 +480,71 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
     def set_diagnostic_mode(self, enabled: bool) -> None:
         self.diagnostics.setVisible(enabled)
 
+    def _queue_mapping_value(
+        self,
+        panel: _StatusColumn,
+        key: str,
+        value: str,
+        *,
+        source: str,
+        immediate: bool = False,
+        tone: str | None = None,
+    ) -> bool:
+        cache_key = (panel.objectName(), key)
+        if self.DISPLAY_OWNERS.get(cache_key) != source:
+            return False
+        display_state = (value, tone)
+        if self._pending_display_updates.get(cache_key) == display_state:
+            return False
+        if cache_key not in self._pending_display_updates and self._display_cache.get(cache_key) == display_state:
+            return False
+        if immediate or cache_key not in self._display_cache:
+            panel.set_value(key, value)
+            self._display_cache[cache_key] = display_state
+            self._pending_display_updates.pop(cache_key, None)
+            if tone:
+                panel.set_tone(key, tone)
+            return True
+        self._pending_display_updates[cache_key] = display_state
+        return True
+
+    def _flush_display_updates(self) -> None:
+        pending = self._pending_display_updates
+        self._pending_display_updates = {}
+        panels = {
+            self.peripheral_panel.objectName(): self.peripheral_panel,
+            self.realtime_panel.objectName(): self.realtime_panel,
+            self.decision_panel.objectName(): self.decision_panel,
+        }
+        for (panel_name, key), (value, tone) in pending.items():
+            panel = panels.get(panel_name)
+            if panel is None:
+                continue
+            panel.set_value(key, value)
+            self._display_cache[(panel_name, key)] = (value, tone)
+            if tone:
+                panel.set_tone(key, tone)
+
+    def _record_trend(self, metric_key: str, timestamp_ms: int, value: float, label: str = "") -> None:
+        self.trend_store.add(metric_key, timestamp_ms, value, label)
+        if self.trend_dialog.isVisible() and self.trend_dialog._metric_key in {metric_key, "motion"}:
+            self.trend_dialog.refresh_plot()
+
+    def _show_trend(self, metric_key: str) -> None:
+        if metric_key == "risk_score":
+            self.trend_dialog.set_metric("risk_score", "视觉风险", "分", self.trend_store)
+        elif metric_key == "motion":
+            self.trend_dialog.set_metric("motion", "MPU6050 姿态趋势", "", self.trend_store)
+        elif metric_key == "pressure_kpa":
+            self.trend_dialog.set_metric("pressure_kpa", "压力趋势", "kPa", self.trend_store)
+        elif metric_key == "upload_fps":
+            self.trend_dialog.set_metric("upload_fps", "OV5640 上传速率", "帧/秒", self.trend_store)
+        else:
+            self.trend_dialog.set_metric(metric_key, metric_key, "", self.trend_store)
+        self.trend_dialog.show()
+        self.trend_dialog.raise_()
+        self.trend_dialog.activateWindow()
+
     def set_static_visual_mode(self, enabled: bool) -> None:
         """Keep the latest analysed PNG on screen while telemetry continues to refresh."""
         self._static_visual_mode = bool(enabled)
@@ -500,39 +609,34 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.camera_health.setText(f"采集 · {event.fps:.2f} 帧/秒 · 失败 {event.capture_failures}")
         self.device_log.appendPlainText(f"相机：累计 {event.frames_ok} 帧，{event.fps:.2f} 帧/秒，失败 {event.capture_failures} 次")
         self._mark_sensor_received("ov5640", event.ts_ms)
-        self.peripheral_panel.set_value("ov5640", self._peripheral_status("在线" if event.valid else "异常", event.fps, event.ts_ms))
+        self._record_trend("upload_fps", event.ts_ms, event.fps)
 
     def apply_motion(self, event: MotionEvent) -> None:
         self._mark_sensor_received("mpu6050", event.ts_ms)
         if event.accel_norm_g is None:
-            self.peripheral_panel.set_value("mpu6050", self._peripheral_status("兼容旧协议", None, event.ts_ms))
-            self.realtime_panel.set_value("mpu6050", "旧协议数据\n未提供姿态与冲击")
+            self._queue_mapping_value(self.realtime_panel, "mpu6050", "旧协议数据\n未提供姿态与冲击", source="motion", immediate=True, tone="attention")
             return
-        self.peripheral_panel.set_value("mpu6050", self._peripheral_status("在线", 100.0, event.ts_ms, unit="Hz"))
-        self.realtime_panel.set_value("mpu6050", f"{event.accel_norm_g:.2f} g · {event.tilt_deg or 0.0:.1f}°\n{'检测到冲击' if event.impact else '姿态正常'}")
-        self.derived_values["mpu6050"].setText(
-            "检测到运动冲击\n视觉高风险可直接触发充气" if event.impact or event.rapid_tilt
-            else "运动状态正常\n不影响视觉高风险直接充气"
-        )
+        self._queue_mapping_value(self.realtime_panel, "mpu6050", f"{event.accel_norm_g:.2f} g · {event.tilt_deg or 0.0:.1f}°\n{'检测到冲击' if event.impact else '姿态正常'}", source="motion", tone="high" if event.impact else "ok")
+        self._record_trend("acceleration", event.ts_ms, event.accel_norm_g)
+        if event.tilt_deg is not None:
+            self._record_trend("tilt", event.ts_ms, event.tilt_deg)
 
     def apply_pressure(self, sample: PressureSample) -> None:
         self._last_pressure_sample = sample
         self._mark_sensor_received("pressure", sample.ts_ms)
-        self.peripheral_panel.set_value("pressure", self._peripheral_status("在线" if sample.valid else "无效", 2.0, sample.ts_ms, unit="Hz"))
         self.refresh_sensor_freshness()
-        self.derived_values["pressure"].setText("允许进入气动仲裁" if sample.valid else "禁止：压力数据无效")
+        self._record_trend("pressure_kpa", sample.ts_ms, sample.filtered_kpa)
 
     def apply_voice_status(self, event: VoiceStatusEvent) -> None:
         labels = {"ready": "就绪", "playing": "播放中", "finished": "播放完成", "error": "错误", "initializing": "初始化"}
         state = labels.get(event.state, "未知")
-        self.peripheral_values["dfplayer"].setText(f"{'异常' if event.error else '在线'}\n状态 {state}")
         detail = state
         if event.track:
             detail += f" · 曲目 {event.track}"
         if event.error:
             detail += f"\n{event.error}"
-        self.realtime_values["dfplayer"].setText(detail)
-        self.voice_status_value.setText(f"DFPlayer {detail}")
+        self._queue_mapping_value(self.realtime_panel, "dfplayer", detail, source="voice_status", immediate=bool(event.error), tone="fault" if event.error else "ok")
+        self._queue_mapping_value(self.decision_panel, "dfplayer", f"DFPlayer {detail}", source="voice_status", immediate=bool(event.error), tone="fault" if event.error else "ok")
 
     def apply_action_status(self, event: ActionStatusEvent) -> None:
         self.protocol_log.appendPlainText(
@@ -541,26 +645,28 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         )
         if self._last_display_frame_seq >= 0 and event.frame_seq != self._last_display_frame_seq:
             self.protocol_log.appendPlainText(f"已忽略非当前展示帧动作：展示第 {self._last_display_frame_seq} 帧，收到第 {event.frame_seq} 帧")
-            return
-        self.peripheral_values["rgb"].setText("在线\n串口动作反馈")
-        self.realtime_values["rgb"].setText(f"{_rgb_pattern_label(event.rgb_pattern)}\n亮度 20%")
-        self.action_pattern.setText(f"{_rgb_pattern_label(event.rgb_pattern)}\n第 {event.frame_seq} 帧真实反馈")
-        self.action_ack.setText(f"串口动作状态 · 第 {event.frame_seq} 帧")
-        self.action_stage.set_state(f"串口已确认 · 第 {event.frame_seq} 帧", STATUS_COLORS.get(event.action_state, STATUS_COLORS["loading"]))
 
     def apply_pneumatic_status(self, event: PneumaticStatusEvent) -> None:
         self.pneumatic_panel.apply_status(event)
-        self.peripheral_values["pneumatic"].setText(f"在线 · {event.state}\n故障 {event.fault}")
-        self.realtime_values["pneumatic"].setText(
+        self._queue_mapping_value(self.realtime_panel, "pneumatic",
             f"泵{'开' if event.pump_on else '关'} · 阀{'通电' if event.valve_on else '断电'}\n"
-            f"{event.pressure_kpa:.1f} kPa · {'有效' if event.pressure_valid else '无效'}"
+            f"{event.pressure_kpa:.1f} kPa · {'有效' if event.pressure_valid else '无效'}",
+            source="pneumatic_status",
+            immediate=not event.pressure_valid,
+            tone="ok" if event.pressure_valid else "fault",
         )
-        self.pneumatic_summary.setText(
-            f"真实反馈：泵{'开' if event.pump_on else '关'} · 阀{'通电' if event.valve_on else '断电'}\n状态 {event.state} · 故障 {event.fault}"
+        self._queue_mapping_value(
+            self.decision_panel, "pneumatic",
+            f"真实反馈：泵{'开' if event.pump_on else '关'} · 阀{'通电' if event.valve_on else '断电'}\n状态 {event.state} · 故障 {event.fault}",
+            source="pneumatic_status", immediate=event.fault != "none",
+            tone="fault" if event.fault != "none" else "ok",
         )
-        self.derived_values["pressure"].setText(
+        self._queue_mapping_value(self.decision_panel, "pressure",
             f"{'允许' if event.vision_fresh and event.pressure_valid else '禁止'}："
-            f"{'条件有效' if event.vision_fresh and event.pressure_valid else '视觉或压力数据不新鲜'}"
+            f"{'条件有效' if event.vision_fresh and event.pressure_valid else '视觉或压力数据不新鲜'}",
+            source="pneumatic_status",
+            immediate=not (event.vision_fresh and event.pressure_valid),
+            tone="ok" if event.vision_fresh and event.pressure_valid else "fault",
         )
 
     def apply_hardware_health(self, event: HardwareHealthEvent) -> None:
@@ -570,18 +676,23 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         }
         for key in ("ov5640", "mpu6050", "pressure", "dfplayer", "rgb"):
             state = event.modules[key]
-            self.peripheral_values[key].setText(f"{labels[state]}\n真实硬件健康心跳")
-        self.peripheral_values["pneumatic"].setText(
-            f"泵 {labels[event.modules['pump']]} · 阀 {labels[event.modules['valve']]}"
-        )
-        self.derived_values["pneumatic"].setText(
-            f"自动闭环{'允许' if event.automatic_ready else '禁止'}\n{event.reason}"
+            self._queue_mapping_value(self.peripheral_panel, key, labels[state], source="hardware_health", immediate=state in {"fault", "stale"}, tone="fault" if state in {"fault", "stale"} else "ok")
+        self._queue_mapping_value(self.peripheral_panel, "pneumatic",
+            f"泵 {labels[event.modules['pump']]} · 阀 {labels[event.modules['valve']]}",
+            source="hardware_health",
+            immediate=not event.automatic_ready,
+            tone="ok" if event.automatic_ready else "fault",
         )
         self.protocol_log.appendPlainText(
             f"硬件健康：{labels[event.overall]} · 自动{'允许' if event.automatic_ready else '禁止'} · {event.reason}"
         )
 
     def apply_health(self, health: dict) -> None:
+        # /healthz is only a bootstrap source. Once the richer chain state has
+        # arrived, letting periodic health polls write these widgets causes the
+        # risk/model cards to alternate between real results and placeholders.
+        if self._last_state:
+            return
         model_state = str(health.get("model_state") or "loading")
         gpu = "CUDA GPU" if str(health.get("gpu") or health.get("device") or "cuda").lower() == "cuda" else "CPU"
         name = str(health.get("model") or "DA3 / YOLO")
@@ -629,8 +740,6 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         age = upload.get("frame_age_ms")
         model_latency = model.get("latency_ms")
         callback_latency = callback.get("latency_ms")
-        pattern = str(action.get("rgb_pattern", "blue_blink_1hz"))
-
         self.device_value.setText(f"{_device_label(state.get('device_id'))} · {_state_label(upload.get('state'))}")
         self.decision_frame.setText(f"第 {frame_seq:08d} 帧" if frame_seq >= 0 else "等待视觉帧")
         gpu_label = "CUDA GPU" if str(model.get("gpu", "cuda")).lower() == "cuda" else "CPU"
@@ -664,29 +773,34 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.risk_band.setText(band_labels.get(band, "状态未知"))
         self.result_state.setText("● 结果已失效" if is_stale else "● 结果有效" if score is not None else "● 等待模型")
         self.risk_reason.setText(_risk_reason_label(risk.get("reason"), model_state=model_state, stale=is_stale))
-        self.peripheral_values["ov5640"].setText(
-            f"{'在线' if upload.get('state') == 'healthy' else '链路异常'}\n上传 {float(upload.get('fps', 0)):.2f} 帧/秒 · 更新当前"
+        self._queue_mapping_value(self.realtime_panel, "ov5640",
+            f"{risk.get('dominant_class') or '目标未知'}\n风险 {score if score is not None else '—'} / 100",
+            source="chain_state",
+            immediate=is_stale,
+            tone="fault" if is_stale else str(band) if band in {"low", "attention", "high", "critical"} else "info",
         )
-        self.realtime_values["ov5640"].setText(
-            f"{risk.get('dominant_class') or '目标未知'}\n风险 {score if score is not None else '—'} / 100 · {'失效' if is_stale else '有效'}"
-        )
-        self.derived_values["ov5640"].setText(
+        self._queue_mapping_value(self.decision_panel, "ov5640",
             f"{band_labels.get(band, '状态未知')} · {score if score is not None else '—'} / 100\n"
-            f"第 {action.get('frame_seq', '—')} 帧 · {'真实确认' if action.get('confirmed') else '等待反馈'}"
+            f"{'真实确认' if action.get('confirmed') else '等待反馈'}",
+            source="chain_state",
+            immediate=is_stale or band in {"high", "critical"},
+            tone="fault" if is_stale else str(band) if band in {"low", "attention", "high", "critical"} else "info",
         )
         if score is not None and score >= 80:
-            self.derived_values["mpu6050"].setText("严重风险已触发充气\n等待 ESP32 泵阀串口反馈")
+            self._queue_mapping_value(self.decision_panel, "mpu6050", "严重风险已触发充气\n等待 ESP32 泵阀串口反馈", source="chain_state", immediate=True, tone="critical")
         elif score is not None and score >= 60:
-            self.derived_values["mpu6050"].setText("高风险已触发充气\n等待 ESP32 泵阀串口反馈")
+            self._queue_mapping_value(self.decision_panel, "mpu6050", "高风险已触发充气\n等待 ESP32 泵阀串口反馈", source="chain_state", immediate=True, tone="high")
         else:
-            self.derived_values["mpu6050"].setText("不触发充气\n视觉风险未达高风险阈值")
-        self.derived_values["pressure"].setText(
-            "允许进入气动仲裁\n最终以压力与泵阀反馈为准" if risk.get("valid") and not is_stale else "禁止：视觉数据失效或过期"
+            self._queue_mapping_value(self.decision_panel, "mpu6050", "不触发充气\n视觉风险未达高风险阈值", source="chain_state", tone="ok")
+        self._queue_mapping_value(
+            self.realtime_panel, "rgb", f"{_rgb_pattern_label(str(action.get('rgb_pattern', 'blue_blink_1hz')))}\n亮度 20%",
+            source="chain_state", tone="info",
         )
-        self.peripheral_values["rgb"].setText(f"{'在线' if action.get('confirmed') else '等待确认'}\n由 ESP32 仲裁层控制")
-        self.realtime_values["rgb"].setText(f"{_rgb_pattern_label(pattern)}\n亮度 20%")
-        self.action_pattern.setText(
-            f"{_rgb_pattern_label(pattern)}\n{'第 ' + str(action.get('frame_seq')) + ' 帧真实反馈' if action.get('confirmed') else '等待 ESP32 反馈'}"
+        self._queue_mapping_value(
+            self.decision_panel, "rgb",
+            f"{_rgb_pattern_label(str(action.get('rgb_pattern', 'blue_blink_1hz')))}\n"
+            f"{'第 ' + str(action.get('frame_seq')) + ' 帧真实反馈' if action.get('confirmed') else '等待 ESP32 反馈'}",
+            source="chain_state", immediate=bool(action.get("confirmed")), tone="info",
         )
         self.action_name.setText(action_labels.get(str(action.get("state", "loading")), "状态未知"))
         if action.get("confirmed"):
@@ -705,6 +819,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         if score is not None and risk_frame_seq >= 0 and risk_frame_seq != self._last_trend_frame:
             self._last_trend_frame = risk_frame_seq
             self.risk_trend.add_score(score)
+            self._record_trend("risk_score", QtCore.QDateTime.currentMSecsSinceEpoch(), score, band_labels.get(band, ""))
         self.camera_uplink.setText(f"上传 · {float(upload.get('fps', 0)):.2f} 帧/秒 · 第 {frame_seq} 帧" if frame_seq >= 0 else "上传 · 等待首帧")
         if is_stale:
             self._set_system_status("闭环异常", "fault")
@@ -724,18 +839,18 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self._sensor_received_at_ms[key] = QtCore.QDateTime.currentMSecsSinceEpoch()
         self._sensor_source_ts_ms[key] = source_ts_ms
 
-    def _peripheral_status(self, state: str, rate: float | None, source_ts_ms: int, *, unit: str = "帧/秒") -> str:
-        wall_time = QtCore.QDateTime.currentDateTime().toString("HH:mm:ss")
-        rate_text = "—" if rate is None else f"{rate:.1f} {unit}"
-        return f"{state} · {rate_text}\n更新 {wall_time} · 设备 {source_ts_ms} ms"
-
     def refresh_sensor_freshness(self) -> None:
         sample = self._last_pressure_sample
         received = self._sensor_received_at_ms.get("pressure")
         if sample is None or received is None:
             return
-        age_ms = max(0, QtCore.QDateTime.currentMSecsSinceEpoch() - received)
-        self.realtime_panel.set_value("pressure", f"{sample.filtered_kpa:.2f} kPa\n{'有效' if sample.valid else '无效'} · 新鲜度 {age_ms} ms")
+        self._queue_mapping_value(
+            self.realtime_panel, "pressure",
+            f"{sample.filtered_kpa:.2f} kPa\n{'有效' if sample.valid else '无效'}",
+            source="pressure",
+            immediate=not sample.valid,
+            tone="ok" if sample.valid else "fault",
+        )
 
     def set_session_path(self, path: str) -> None:
         self.session_log.setPlainText(path)

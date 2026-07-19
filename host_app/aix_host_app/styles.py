@@ -34,6 +34,9 @@ def app_stylesheet() -> str:
     QLabel#monoMuted, QLabel#cameraTelemetry { font-family: "Cascadia Mono", Consolas, "Microsoft YaHei UI"; }
     QLabel#guardPrimary { background: transparent; color: #3A3A3C; font-size: 12px; font-weight: 600; }
     QLabel#hostStatusValue { background: transparent; color: #1D1D1F; font-size: 13px; font-weight: 650; }
+    QLabel#trendDialogTitle { background: transparent; color: #1D1D1F; font-size: 17px; font-weight: 700; }
+    QLabel#trendDialogStats { background: transparent; color: #6E6E73; font-size: 11px; }
+    QDialog#trendDialog { background: #F5F5F7; }
 
     QFrame#panelHead, QFrame#cameraFooter {
         background: #FAFAFC; border: none; border-bottom: 1px solid #E5E5EA;
@@ -49,6 +52,19 @@ def app_stylesheet() -> str:
     QFrame#mappingCell, QFrame#hostStatusCard, QFrame#scenarioInfoCard, QFrame#sheetStateCard {
         background: #FAFAFC; border: 1px solid #E5E5EA; border-radius: 10px;
     }
+    QFrame#clickableStatusCard {
+        background: #FAFAFC; border: 1px solid #E5E5EA; border-radius: 10px;
+    }
+    QFrame#clickableStatusCard:hover { background: #F2F7FF; border-color: #80B7FF; }
+    QFrame#clickableStatusCard:focus { border: 2px solid #007AFF; }
+    QFrame#clickableStatusCard[statusTone="ok"] { background: #ECF8EF; border-color: #B9DFC2; }
+    QFrame#clickableStatusCard[statusTone="info"] { background: #EAF3FF; border-color: #80B7FF; }
+    QFrame#clickableStatusCard[statusTone="attention"] { background: #FFF7E6; border-color: #E8C780; }
+    QFrame#clickableStatusCard[statusTone="high"] { background: #FFF3ED; border-color: #F0B294; }
+    QFrame#clickableStatusCard[statusTone="critical"] { background: #FFF0F1; border-color: #FFC1C5; }
+    QFrame#clickableStatusCard[statusTone="fault"] { background: #F6F0FA; border-color: #D8BDE5; }
+    QLabel#metricStatusIcon { background: transparent; }
+    QLabel#metricTrendHint { background: transparent; color: #007AFF; font-size: 10px; font-weight: 600; }
     QFrame#guardBar {
         background: #F9F9FB; border: 1px solid #E5E5EA; border-radius: 10px;
     }

@@ -84,6 +84,40 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertIn("已就绪", dashboard.model_stage.meta.text())
         self.assertIn("等待视觉帧", dashboard.risk_reason.text())
 
+    def test_health_poll_cannot_reset_an_existing_chain_result(self):
+        dashboard = ActiveVisionDashboard()
+        dashboard.apply_chain_state({
+            "revision": 8,
+            "device_id": "aix-helmet-01",
+            "upload": {"state": "healthy", "last_frame_seq": 18, "fps": 1.0, "frame_age_ms": 120},
+            "model": {"state": "ready", "name": "DA3-SMALL", "latency_ms": 180.0, "gpu": "cuda", "error": ""},
+            "callback": {"state": "confirmed", "latency_ms": 40.0},
+            "risk": {"valid": True, "score": 71, "band": "high", "reason": "car_proximity", "frame_seq": 18},
+            "action": {"confirmed": True, "state": "high", "rgb_pattern": "orange_blink_2hz", "frame_seq": 18, "stale": False},
+            "last_error": "",
+        })
+        result_before = (
+            dashboard.risk_band.text(),
+            dashboard.risk_reason.text(),
+            dashboard.system_status.text(),
+            dashboard.decision_model.text(),
+        )
+
+        dashboard.apply_health({
+            "model": "DA3-SMALL",
+            "model_state": "ready",
+            "model_ready": True,
+            "gpu": "cuda",
+            "model_error": "",
+        })
+
+        self.assertEqual((
+            dashboard.risk_band.text(),
+            dashboard.risk_reason.text(),
+            dashboard.system_status.text(),
+            dashboard.decision_model.text(),
+        ), result_before)
+
     def test_decision_panel_exposes_live_frame_model_callback_and_freshness(self):
         dashboard = ActiveVisionDashboard()
         dashboard.apply_chain_state({
@@ -202,6 +236,20 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertEqual(dashboard.risk_score.text(), "71")
         self.assertIn("第 18 帧", dashboard.action_ack.text())
         self.assertIn("端到端 512 毫秒", dashboard.action_ack.text())
+
+        stage_before = dashboard.action_stage.meta.text()
+        ack_before = dashboard.action_ack.text()
+        dashboard.apply_action_status(ActionStatusEvent(
+            ts_ms=9100,
+            frame_seq=18,
+            risk_score=5,
+            valid=True,
+            stale=False,
+            action_state="safe",
+            rgb_pattern="green_solid",
+        ))
+        self.assertEqual(dashboard.action_stage.meta.text(), stage_before)
+        self.assertEqual(dashboard.action_ack.text(), ack_before)
 
     def test_snapshot_updates_image_and_matching_risk_together(self):
         dashboard = ActiveVisionDashboard()
