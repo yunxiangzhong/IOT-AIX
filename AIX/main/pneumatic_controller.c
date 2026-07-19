@@ -29,7 +29,9 @@
 #define PNEUMATIC_STATUS_PERIOD_MS 1000ULL
 #define PNEUMATIC_NVS_NAMESPACE "pneumatic"
 #define PNEUMATIC_NVS_KEY "cal_v1"
-#define PNEUMATIC_CALIBRATION_VERSION 1U
+#define PNEUMATIC_CALIBRATION_VERSION 2U
+#define PNEUMATIC_SELF_TEST_MIN_RISE_KPA 0.3f
+#define PNEUMATIC_SELF_TEST_TIMEOUT_MS 6000ULL
 
 static const char *TAG = "AIX_PNEUMATIC";
 
@@ -47,12 +49,30 @@ typedef struct {
     bool reset_fault;
 } pending_commands_t;
 
+typedef enum {
+    PNEUMATIC_SELF_TEST_IDLE = 0,
+    PNEUMATIC_SELF_TEST_REQUESTED,
+    PNEUMATIC_SELF_TEST_PUMPING,
+    PNEUMATIC_SELF_TEST_VENTING,
+} pneumatic_self_test_phase_t;
+
+typedef struct {
+    pneumatic_self_test_phase_t phase;
+    uint64_t started_ms;
+    float baseline_kpa;
+    float peak_kpa;
+} pneumatic_self_test_t;
+
 static SemaphoreHandle_t s_lock;
 static bool s_started;
 static pneumatic_policy_t s_policy;
 static pneumatic_status_t s_status;
 static pending_commands_t s_pending;
 static char s_last_command_id[PNEUMATIC_COMMAND_ID_CAPACITY];
+static bool s_pump_verified;
+static bool s_valve_verified;
+static bool s_self_test_failed;
+static pneumatic_self_test_t s_self_test;
 
 static uint64_t now_ms(void)
 {
@@ -84,7 +104,7 @@ static pneumatic_policy_config_t build_config(void)
     pneumatic_policy_config_t config = pneumatic_policy_default_config();
     config.calibration_enabled = true;
     config.automatic_enabled = CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC != 0;
-    config.calibration_valid = false;
+    config.calibration_valid = true;
 
     nvs_handle_t handle;
     if (nvs_open(PNEUMATIC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
@@ -141,6 +161,7 @@ static void emit_status(const pneumatic_status_t *status)
            "\"state\":\"%s\",\"fault\":\"%s\",\"trigger\":\"%s\","
            "\"operation\":%d,\"pump_on\":%s,\"valve_on\":%s,"
            "\"pressure_kpa\":%.2f,\"pressure_valid\":%s,\"pressure_age_ms\":%lu,"
+           "\"pump_verified\":%s,\"valve_verified\":%s,\"self_test_failed\":%s,"
            "\"vision_state\":\"%s\",\"vision_fresh\":%s,\"mpu_available\":%s,"
            "\"mpu_calibrated\":%s,\"impact\":%s,\"rapid_tilt\":%s}\n",
            (unsigned long long)status->timestamp_ms,
@@ -153,6 +174,9 @@ static void emit_status(const pneumatic_status_t *status)
            status->pressure_kpa,
            status->pressure_valid ? "true" : "false",
            (unsigned long)status->pressure_age_ms,
+           status->pump_verified ? "true" : "false",
+           status->valve_verified ? "true" : "false",
+           status->self_test_failed ? "true" : "false",
            action_state_name(status->vision_state),
            status->vision_fresh ? "true" : "false",
            status->mpu_available ? "true" : "false",
@@ -160,6 +184,56 @@ static void emit_status(const pneumatic_status_t *status)
            status->mpu_impact ? "true" : "false",
            status->mpu_rapid_tilt ? "true" : "false");
     fflush(stdout);
+}
+
+static void update_self_test(
+    const pneumatic_policy_output_t *output,
+    bool pressure_fresh,
+    float pressure_kpa,
+    uint64_t timestamp_ms)
+{
+    if (s_self_test.phase == PNEUMATIC_SELF_TEST_IDLE) {
+        return;
+    }
+    if (!pressure_fresh || timestamp_ms - s_self_test.started_ms > PNEUMATIC_SELF_TEST_TIMEOUT_MS) {
+        s_pump_verified = false;
+        s_valve_verified = false;
+        s_self_test_failed = true;
+        s_pending.vent = true;
+        s_self_test.phase = PNEUMATIC_SELF_TEST_IDLE;
+        ESP_LOGE(TAG, "pneumatic self-test failed: pressure feedback missing or timed out");
+        return;
+    }
+    if (s_self_test.phase == PNEUMATIC_SELF_TEST_REQUESTED &&
+        output->state == PNEUMATIC_STATE_INFLATING) {
+        s_self_test.phase = PNEUMATIC_SELF_TEST_PUMPING;
+        s_self_test.peak_kpa = pressure_kpa;
+        return;
+    }
+    if (s_self_test.phase == PNEUMATIC_SELF_TEST_PUMPING) {
+        if (pressure_kpa > s_self_test.peak_kpa) {
+            s_self_test.peak_kpa = pressure_kpa;
+        }
+        if (output->state == PNEUMATIC_STATE_HOLDING) {
+            s_pump_verified = (s_self_test.peak_kpa - s_self_test.baseline_kpa) >= PNEUMATIC_SELF_TEST_MIN_RISE_KPA;
+            s_valve_verified = false;
+            s_pending.vent = true;
+            s_self_test_failed = !s_pump_verified;
+            s_self_test.phase = s_pump_verified ? PNEUMATIC_SELF_TEST_VENTING : PNEUMATIC_SELF_TEST_IDLE;
+            ESP_LOGI(TAG, "pneumatic self-test pump %s (rise %.2f kPa)",
+                     s_pump_verified ? "verified" : "failed",
+                     s_self_test.peak_kpa - s_self_test.baseline_kpa);
+        }
+        return;
+    }
+    if (s_self_test.phase == PNEUMATIC_SELF_TEST_VENTING &&
+        (output->state == PNEUMATIC_STATE_VENTING || output->state == PNEUMATIC_STATE_COOLDOWN ||
+         output->state == PNEUMATIC_STATE_VENTED) &&
+        pressure_kpa <= s_self_test.peak_kpa - PNEUMATIC_SELF_TEST_MIN_RISE_KPA) {
+        s_valve_verified = true;
+        s_self_test.phase = PNEUMATIC_SELF_TEST_IDLE;
+        ESP_LOGI(TAG, "pneumatic self-test valve verified");
+    }
 }
 
 static void controller_task(void *arg)
@@ -173,11 +247,18 @@ static void controller_task(void *arg)
         const bool has_pressure = pressure_sensor_get_latest(&pressure);
         mpu6050_status_t mpu = {0};
         const bool has_mpu = mpu6050_sensor_get_latest(&mpu);
+        const bool pressure_fresh = has_pressure && pressure.valid &&
+                                    timestamp_ms >= pressure.timestamp_ms &&
+                                    timestamp_ms - pressure.timestamp_ms <= PNEUMATIC_PRESSURE_STALE_MS;
+        const bool common_automatic_ready = pressure_fresh;
         pneumatic_policy_input_t input = {
             .vision_state = decision.state,
             .vision_fresh = decision.valid && !decision.stale,
             .motion_impact = has_mpu && mpu.motion.impact,
             .motion_rapid_tilt = has_mpu && mpu.motion.rapid_tilt,
+            .automatic_permitted = common_automatic_ready,
+            .vision_trigger_permitted = true,
+            .motion_trigger_permitted = has_mpu && mpu.motion.calibrated,
             .pressure_valid = has_pressure && pressure.valid,
             .pressure_kpa = pressure.filtered_kpa,
             .pressure_timestamp_ms = pressure.timestamp_ms,
@@ -192,6 +273,7 @@ static void controller_task(void *arg)
 
         const pneumatic_status_t previous = s_status;
         const pneumatic_policy_output_t output = pneumatic_policy_step(&s_policy, &input, timestamp_ms);
+        update_self_test(&output, pressure_fresh, pressure.filtered_kpa, timestamp_ms);
         s_status = (pneumatic_status_t){
             .config = s_policy.config,
             .output = output,
@@ -206,6 +288,9 @@ static void controller_task(void *arg)
             .mpu_calibrated = has_mpu && mpu.motion.calibrated,
             .mpu_impact = has_mpu && mpu.motion.impact,
             .mpu_rapid_tilt = has_mpu && mpu.motion.rapid_tilt,
+            .pump_verified = s_pump_verified,
+            .valve_verified = s_valve_verified,
+            .self_test_failed = s_self_test_failed,
             .timestamp_ms = timestamp_ms,
         };
         const pneumatic_status_t current = s_status;
@@ -263,6 +348,19 @@ bool pneumatic_controller_get_status(pneumatic_status_t *out)
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     *out = s_status;
+    xSemaphoreGive(s_lock);
+    return true;
+}
+
+bool pneumatic_controller_get_self_test(bool *pump_verified, bool *valve_verified, bool *self_test_failed)
+{
+    if (!s_started || pump_verified == NULL || valve_verified == NULL || self_test_failed == NULL) {
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    *pump_verified = s_pump_verified;
+    *valve_verified = s_valve_verified;
+    *self_test_failed = s_self_test_failed;
     xSemaphoreGive(s_lock);
     return true;
 }
@@ -335,6 +433,26 @@ esp_err_t pneumatic_controller_execute(
                 break;
             case PNEUMATIC_COMMAND_RESET_FAULT:
                 s_pending.reset_fault = true;
+                break;
+            case PNEUMATIC_COMMAND_SELF_TEST:
+                if (s_policy.state != PNEUMATIC_STATE_VENTED ||
+                    s_status.pressure_age_ms > PNEUMATIC_PRESSURE_STALE_MS ||
+                    !s_status.pressure_valid ||
+                    s_self_test.phase != PNEUMATIC_SELF_TEST_IDLE) {
+                    xSemaphoreGive(s_lock);
+                    set_result_error(result, "self_test_requires_vented_fresh_low_pressure");
+                    return ESP_ERR_INVALID_STATE;
+                }
+                s_pump_verified = false;
+                s_valve_verified = false;
+                s_self_test_failed = false;
+                s_self_test = (pneumatic_self_test_t){
+                    .phase = PNEUMATIC_SELF_TEST_REQUESTED,
+                    .started_ms = now_ms(),
+                    .baseline_kpa = s_status.pressure_kpa,
+                    .peak_kpa = s_status.pressure_kpa,
+                };
+                s_pending.inflate_pulse = true;
                 break;
             default:
                 xSemaphoreGive(s_lock);

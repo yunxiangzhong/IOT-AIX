@@ -13,6 +13,7 @@
 
 static led_strip_handle_t s_strip;
 static rgb_pattern_t s_pattern = RGB_BLUE_BLINK_1HZ;
+static bool s_started;
 static portMUX_TYPE s_pattern_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void set_color(uint8_t red, uint8_t green, uint8_t blue, bool on)
@@ -77,6 +78,7 @@ esp_err_t rgb_status_start(void)
     if (xTaskCreate(rgb_task, "rgb_status", 3072, NULL, 3, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
+    s_started = true;
     return ESP_OK;
 }
 
@@ -85,6 +87,20 @@ void rgb_status_set_pattern(rgb_pattern_t pattern)
     taskENTER_CRITICAL(&s_pattern_lock);
     s_pattern = pattern;
     taskEXIT_CRITICAL(&s_pattern_lock);
+}
+
+bool rgb_status_is_ready(void)
+{
+    return s_started && s_strip != NULL;
+}
+
+rgb_pattern_t rgb_status_get_pattern(void)
+{
+    rgb_pattern_t pattern;
+    taskENTER_CRITICAL(&s_pattern_lock);
+    pattern = s_pattern;
+    taskEXIT_CRITICAL(&s_pattern_lock);
+    return pattern;
 }
 
 #endif

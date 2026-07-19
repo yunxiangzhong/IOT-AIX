@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.serial_source import SerialLineReader
+from aix_host_app.serial_source import SerialLineReader, SerialPortOption, preferred_serial_port
 
 
 class FakeSerial:
@@ -27,6 +27,17 @@ class SerialLineReaderWriteTests(unittest.TestCase):
         reader = SerialLineReader("COM_TEST", 115200)
 
         self.assertFalse(reader.write_line('{"type":"vision"}'))
+
+
+class PreferredSerialPortTests(unittest.TestCase):
+    def test_prefers_matching_cp210x_and_ignores_bluetooth_ports(self):
+        selected = preferred_serial_port([
+            SerialPortOption("COM8", "Bluetooth", None, None, ""),
+            SerialPortOption("COM21", "Silicon Labs CP210x", 0x10C4, 0xEA60, "AIX-BOARD"),
+        ])
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.device, "COM21")
 
 
 if __name__ == "__main__":

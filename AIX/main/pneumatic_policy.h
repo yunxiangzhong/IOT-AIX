@@ -6,10 +6,12 @@
 #include "action_policy.h"
 
 #define PNEUMATIC_PRESSURE_STALE_MS 200ULL
+#define PNEUMATIC_PRESSURE_INVALID_GRACE_MS 100ULL
 #define PNEUMATIC_PRIME_VALVE_MS 20ULL
 #define PNEUMATIC_CALIBRATION_PULSE_MS 200ULL
 #define PNEUMATIC_CALIBRATION_TOTAL_PUMP_MS 2000ULL
-#define PNEUMATIC_CALIBRATION_CEILING_KPA 5.0f
+#define PNEUMATIC_CALIBRATION_CEILING_KPA 200.0f
+#define PNEUMATIC_RELEASE_HYSTERESIS_KPA 1.0f
 #define PNEUMATIC_HOLD_MAX_MS 15000ULL
 #define PNEUMATIC_CLEAR_CONFIRM_MS 5000ULL
 #define PNEUMATIC_VENT_TIMEOUT_MS 5000ULL
@@ -58,7 +60,7 @@ typedef struct {
     bool automatic_enabled;
     bool calibration_valid;
     float target_kpa;
-    float max_kpa;
+    float max_kpa; /* Absolute gauge-pressure hard limit; XGZP6847A model is 200 kPa. */
     uint32_t max_inflate_ms;
 } pneumatic_policy_config_t;
 
@@ -67,6 +69,9 @@ typedef struct {
     bool vision_fresh;
     bool motion_impact;
     bool motion_rapid_tilt;
+    bool automatic_permitted;
+    bool vision_trigger_permitted;
+    bool motion_trigger_permitted;
     bool pressure_valid;
     float pressure_kpa;
     uint64_t pressure_timestamp_ms;
@@ -84,6 +89,7 @@ typedef struct {
     pneumatic_operation_t operation;
     uint64_t state_started_ms;
     uint64_t inflate_started_ms;
+    uint64_t pressure_invalid_started_ms;
     uint64_t clear_started_ms;
     uint32_t calibration_pump_on_ms;
 } pneumatic_policy_t;

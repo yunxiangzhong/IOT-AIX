@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, DetectionBox, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, RoadHazardStatusEvent, VisionDepthEvent, VoiceStatusEvent
+from .models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, DetectionBox, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, RoadHazardStatusEvent, VisionDepthEvent, VoiceStatusEvent
 
 
 class ParseError(ValueError):
@@ -36,9 +36,11 @@ _ACTION_STATUS_REQUIRED = (
 )
 _VOICE_STATUS_REQUIRED = ("state", "command_id", "track", "error")
 _ROAD_HAZARD_STATUS_REQUIRED = ("state", "event_id", "effective_rgb_pattern", "reason")
+_HARDWARE_HEALTH_MODULES = ("ov5640", "mpu6050", "pressure", "dfplayer", "rgb", "pump", "valve")
+_HARDWARE_HEALTH_STATES = {"initializing", "healthy", "degraded", "fault", "stale", "disabled", "pending"}
 
 
-def parse_event_line(line: str) -> PressureSample | MotionEvent | PneumaticStatusEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent | ActionStatusEvent | VoiceStatusEvent | RoadHazardStatusEvent:
+def parse_event_line(line: str) -> PressureSample | HardwareHealthEvent | MotionEvent | PneumaticStatusEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent | ActionStatusEvent | VoiceStatusEvent | RoadHazardStatusEvent:
     text = line.strip()
     if not text:
         raise ParseError("empty line")
@@ -48,6 +50,8 @@ def parse_event_line(line: str) -> PressureSample | MotionEvent | PneumaticStatu
     event_type = payload.get("type")
     if event_type == "pressure":
         return _parse_pressure_payload(payload)
+    if event_type == "hardware_health":
+        return _parse_hardware_health_payload(payload)
     if event_type == "motion":
         return _parse_motion_payload(payload)
     if event_type == "pneumatic_status":
@@ -97,6 +101,29 @@ def _parse_pressure_payload(payload: dict[str, Any]) -> PressureSample:
             kpa=_as_float(payload["kpa"], "kpa"), filtered_kpa=_as_float(payload["filtered_kpa"], "filtered_kpa"),
             over_pressure=_as_bool(payload["over_pressure"], "over_pressure"),
             valid=_as_bool(payload["valid"], "valid"), source="json",
+        )
+    except (TypeError, ValueError) as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def _parse_hardware_health_payload(payload: dict[str, Any]) -> HardwareHealthEvent:
+    required = ("ts_ms", "overall", "automatic_ready", "reason", *_HARDWARE_HEALTH_MODULES)
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise ParseError(f"hardware_health missing fields: {', '.join(missing)}")
+    try:
+        overall = str(payload["overall"])
+        if overall not in _HARDWARE_HEALTH_STATES:
+            raise ValueError("hardware_health overall state is invalid")
+        modules = {key: str(payload[key]) for key in _HARDWARE_HEALTH_MODULES}
+        if any(state not in _HARDWARE_HEALTH_STATES for state in modules.values()):
+            raise ValueError("hardware_health module state is invalid")
+        return HardwareHealthEvent(
+            ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
+            overall=overall,
+            automatic_ready=_as_bool(payload["automatic_ready"], "automatic_ready"),
+            modules=modules,
+            reason=str(payload["reason"]),
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc

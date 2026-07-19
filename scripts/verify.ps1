@@ -154,6 +154,10 @@ Invoke-HostCTest "motion_detector_test" @(
 Invoke-HostCTest "mpu6050_config_test" @(
     (Join-Path $aix "test\mpu6050_config_test.c")
 )
+Invoke-HostCTest "hardware_health_test" @(
+    (Join-Path $main "hardware_health.c"),
+    (Join-Path $aix "test\hardware_health_test.c")
+)
 
 $pneumaticSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "pneumatic_controller.c")
 if ($pneumaticSourceText -notmatch 'action_controller_get_decision\s*\(' -or

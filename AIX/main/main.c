@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "action_controller.h"
 #include "device_identity.h"
+#include "hardware_health.h"
 #include "network_runtime.h"
 #include "mpu6050_sensor.h"
 #include "pneumatic_controller.h"
@@ -124,6 +125,11 @@ void app_main(void)
         ESP_LOGI(TAG, "Local OV5640 capture enabled");
     }
 #endif
+
+    ret = hardware_health_start();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "hardware health monitor unavailable: %s", esp_err_to_name(ret));
+    }
 
     ESP_LOGI(TAG, "AIX active vision closed loop started");
 }

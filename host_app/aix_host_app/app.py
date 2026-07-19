@@ -8,11 +8,10 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .chain_client import PcChainClient
 from .fonts import ensure_cjk_font
-from .models import ActionStatusEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RoadHazardStatusEvent, VoiceStatusEvent
+from .models import ActionStatusEvent, CameraStatusEvent, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RoadHazardStatusEvent, VoiceStatusEvent
 from .parsers import ParseError, parse_event_line
-from .serial_source import SerialLineReader, list_serial_ports
+from .serial_source import SerialLineReader, list_serial_ports, preferred_serial_port
 from .session_recorder import SessionRecorder
-from .simulation import make_simulated_pressure_sample
 from .styles import app_stylesheet
 from .widgets.active_dashboard import ActiveVisionDashboard
 from .widgets.cooperative_scenario import CooperativeScenarioPanel
@@ -45,6 +44,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.service_url = str(os.environ.get("AIX_SERVICE_URL") or settings.value("service_url", "http://127.0.0.1:8008"))
         self.session_recorder = SessionRecorder(Path(settings.value("storage_root", r"F:\OV5640")))
         self.reader: SerialLineReader | None = None
+        self._closing = False
+        self._serial_identity = str(settings.value("serial_identity", ""))
+        self._auto_connect_serial = (
+            os.environ.get("AIX_AUTO_CONNECT_SERIAL", "1") == "1" and
+            QtGui.QGuiApplication.platformName() != "offscreen"
+        )
         self._last_risk_identity: tuple[str, int] | None = None
         self._model_log_offsets: dict[Path, int] = {}
         self._last_chain_state: dict = {}
@@ -172,15 +177,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chain_client.road_hazard_finished.connect(self._accept_road_hazard_submission)
         self.chain_client.road_hazard_error.connect(self._accept_road_hazard_error)
 
-        self.sim_seq = 0
-        self.sim_clock = QtCore.QElapsedTimer()
-        self.sim_timer = QtCore.QTimer(self)
-        self.sim_timer.setInterval(500)
-        self.sim_timer.timeout.connect(self._emit_simulated_sample)
         self._watchdog_timer = QtCore.QTimer(self)
         self._watchdog_timer.setInterval(500)
         self._watchdog_timer.timeout.connect(self._check_chain_timeout)
         self._watchdog_timer.start()
+        self._serial_reconnect_timer = QtCore.QTimer(self)
+        self._serial_reconnect_timer.setInterval(2000)
+        self._serial_reconnect_timer.timeout.connect(self.refresh_ports)
+        self._serial_reconnect_timer.start()
 
         self._wire_settings()
         self.refresh_ports()
@@ -196,11 +200,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.connection_panel.refresh_requested.connect(self.refresh_ports)
         self.connection_panel.connect_requested.connect(self._start_serial)
         self.connection_panel.disconnect_requested.connect(self._stop_serial)
-        self.connection_panel.simulation_changed.connect(self._set_simulation_enabled)
         self.dashboard.pneumatic_panel.command_requested.connect(self.chain_client.send_pneumatic_command)
         self.dashboard.pneumatic_panel.config_requested.connect(self.chain_client.request_pneumatic_config)
 
     def closeEvent(self, event) -> None:
+        self._closing = True
+        self._serial_reconnect_timer.stop()
         self.chain_client.stop()
         self._stop_serial(close_session=False)
         self._capture_model_logs()
@@ -288,7 +293,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.session_root_action.setText(f"目录 · {selected}")
 
     def refresh_ports(self) -> None:
-        self.connection_panel.set_ports(list_serial_ports())
+        options = list_serial_ports()
+        self.connection_panel.set_ports(options)
+        if self.reader is not None or self._closing or not self._auto_connect_serial:
+            return
+        preferred = preferred_serial_port(options, self._serial_identity)
+        if preferred is None:
+            return
+        self._serial_identity = preferred.identity
+        QtCore.QSettings("AIX", "HostApp").setValue("serial_identity", preferred.identity)
+        QtCore.QTimer.singleShot(0, lambda: self._start_serial(preferred.device, 115200))
 
     def _ensure_session(self, serial_port: str = "PC-SERVICE", baudrate: int = 0) -> None:
         if self.session_recorder.session_dir is not None:
@@ -305,8 +319,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dashboard.set_session_path(str(session))
 
     def _start_serial(self, port: str, baudrate: int) -> None:
-        self._set_simulation_enabled(False)
-        self.connection_panel.set_simulation_checked(False)
         self._stop_serial(close_session=False)
         self.reader = SerialLineReader(port, baudrate, self)
         self.reader.line_received.connect(self._handle_raw_line)
@@ -322,8 +334,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.reader.wait(1500)
             self.reader = None
         self.connection_panel.set_connected(False)
-        if not self.connection_panel.is_simulation_selected():
-            self.device_button.setText("● 设备未连接")
+        self.device_button.setText("● 设备未连接")
         if close_session:
             self.session_recorder.close()
 
@@ -339,6 +350,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if connected:
             QtCore.QTimer.singleShot(260, lambda: self.device_button.setChecked(False))
         self.statusBar().showMessage("头盔设备串口已连接" if connected else "头盔设备串口已断开")
+        if not connected and not self._closing:
+            QtCore.QTimer.singleShot(500, self.refresh_ports)
 
     def _handle_error(self, message: str) -> None:
         self.connection_panel.set_status_text(message, warning=True)
@@ -360,6 +373,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"压力数据：序号 {event.seq}，滤波值 {event.filtered_kpa:.2f} 千帕，"
                 f"状态{'有效' if event.valid else '无效'}"
             )
+        elif isinstance(event, HardwareHealthEvent):
+            self.dashboard.apply_hardware_health(event)
         elif isinstance(event, CameraStatusEvent):
             self.dashboard.apply_camera_status(event)
         elif isinstance(event, ActionStatusEvent):
@@ -562,28 +577,3 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_storage_root(self, path: str) -> None:
         self.session_recorder.root = Path(path)
         QtCore.QSettings("AIX", "HostApp").setValue("storage_root", path)
-
-    def _set_simulation_enabled(self, enabled: bool) -> None:
-        if enabled:
-            self._stop_serial(close_session=False)
-            self.sim_seq = 0
-            self.sim_clock.restart()
-            self.sim_timer.start()
-            self.connection_panel.set_connected(False, "模拟数据")
-            self.device_button.setText("● 模拟数据")
-            self.device_button.setProperty("connectionState", "simulation")
-            self.device_button.style().unpolish(self.device_button)
-            self.device_button.style().polish(self.device_button)
-        else:
-            self.sim_timer.stop()
-            if self.reader is None:
-                self.device_button.setText("● 设备未连接")
-
-    def _emit_simulated_sample(self) -> None:
-        self.sim_seq += 1
-        sample = make_simulated_pressure_sample(self.sim_seq, self.sim_clock.elapsed())
-        self._ensure_session()
-        self.session_recorder.record_pressure(sample)
-        self.dashboard.device_log.appendPlainText(
-            f"sim pressure seq={sample.seq} filtered={sample.filtered_kpa:.2f}kPa"
-        )

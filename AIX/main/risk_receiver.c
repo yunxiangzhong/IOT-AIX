@@ -647,6 +647,8 @@ static bool parse_pneumatic_command_type(const char *value, pneumatic_command_ty
         *out = PNEUMATIC_COMMAND_RESET_FAULT;
     } else if (strcmp(value, "save_calibration") == 0) {
         *out = PNEUMATIC_COMMAND_SAVE_CALIBRATION;
+    } else if (strcmp(value, "self_test") == 0) {
+        *out = PNEUMATIC_COMMAND_SELF_TEST;
     } else {
         return false;
     }

@@ -61,6 +61,23 @@ class PneumaticProxyTests(unittest.TestCase):
         with self.assertRaises(StaleDeviceError):
             proxy.command("aix-helmet-01", {"command_id": "cmd-02", "command": "vent"})
 
+    def test_forwards_hardware_self_test_without_calibration_fields(self) -> None:
+        sent = []
+
+        def transport(_url, _token, payload, _timeout_s):
+            sent.append(payload)
+            return {
+                "type": "pneumatic_ack", "version": 1, "boot_id": "0123456789abcdef",
+                "command_id": payload["command_id"], "accepted": True,
+            }
+
+        proxy = PneumaticProxy(self.store, token="unit-secret", post_transport=transport, now_ms=lambda: 11_000)
+        result = proxy.command("aix-helmet-01", {"command_id": "self-test-01", "command": "self_test"})
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(sent[0]["command"], "self_test")
+        self.assertNotIn("target_kpa", sent[0])
+
     def test_rejects_mismatched_ack_boot_or_command_id(self) -> None:
         def transport(_url, _token, payload, _timeout_s):
             return {

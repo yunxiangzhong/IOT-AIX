@@ -11,7 +11,6 @@ class ConnectionPanel(QtWidgets.QFrame):
     refresh_requested = QtCore.Signal()
     connect_requested = QtCore.Signal(str, int)
     disconnect_requested = QtCore.Signal()
-    simulation_changed = QtCore.Signal(bool)
     close_requested = QtCore.Signal()
 
     def __init__(self, parent=None) -> None:
@@ -41,14 +40,6 @@ class ConnectionPanel(QtWidgets.QFrame):
         heading.addLayout(title_box, 1)
         heading.addWidget(self.close_button, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         root.addLayout(heading)
-
-        source_title = QtWidgets.QLabel("数据来源")
-        source_title.setObjectName("fieldLabel")
-        self.source_combo = QtWidgets.QComboBox()
-        self.source_combo.addItem("真实 ESP32", "serial")
-        self.source_combo.addItem("模拟遥测", "simulation")
-        root.addWidget(source_title)
-        root.addWidget(self.source_combo)
 
         port_heading = QtWidgets.QHBoxLayout()
         port_label = QtWidgets.QLabel("串口")
@@ -102,7 +93,6 @@ class ConnectionPanel(QtWidgets.QFrame):
         self.close_button.clicked.connect(self.close_requested.emit)
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
         self.connect_button.clicked.connect(self._toggle_connection)
-        self.source_combo.currentIndexChanged.connect(self._source_changed)
 
     def set_ports(self, ports: list[SerialPortOption]) -> None:
         current_device = self.current_port()
@@ -125,19 +115,15 @@ class ConnectionPanel(QtWidgets.QFrame):
     def current_baudrate(self) -> int:
         return int(self.baud_combo.currentData())
 
-    def is_simulation_selected(self) -> bool:
-        return self.source_combo.currentData() == "simulation"
-
     def set_connected(self, connected: bool, label: str | None = None) -> None:
         self._connected = connected
         self.connect_button.setText("断开设备" if connected else "连接设备")
         self.refresh_button.setEnabled(not connected)
-        self.port_combo.setEnabled(not connected and not self.is_simulation_selected())
-        self.baud_combo.setEnabled(not connected and not self.is_simulation_selected())
-        self.source_combo.setEnabled(not connected)
+        self.port_combo.setEnabled(not connected)
+        self.baud_combo.setEnabled(not connected)
         self.state_label.setText(label or ("已连接" if connected else "未连接"))
         self.state_label.setObjectName("statusOk" if connected else "muted")
-        if connected and not self.is_simulation_selected():
+        if connected:
             self.detail_label.setText(f"{self.current_port()} · {self.current_baudrate()} baud")
         self._refresh_label_style(self.state_label)
 
@@ -146,36 +132,9 @@ class ConnectionPanel(QtWidgets.QFrame):
         self.state_label.setObjectName("statusWarn" if warning else "muted")
         self._refresh_label_style(self.state_label)
 
-    def set_simulation_checked(self, checked: bool) -> None:
-        index = self.source_combo.findData("simulation" if checked else "serial")
-        self.source_combo.blockSignals(True)
-        self.source_combo.setCurrentIndex(max(0, index))
-        self.source_combo.blockSignals(False)
-        self._update_source_controls()
-
-    def _source_changed(self) -> None:
-        self._update_source_controls()
-        self.simulation_changed.emit(self.is_simulation_selected())
-
-    def _update_source_controls(self) -> None:
-        serial_enabled = not self.is_simulation_selected() and not self._connected
-        self.port_combo.setEnabled(serial_enabled)
-        self.baud_combo.setEnabled(serial_enabled)
-        self.refresh_button.setEnabled(serial_enabled)
-        self.connect_button.setText("启用模拟遥测" if self.is_simulation_selected() else ("断开设备" if self._connected else "连接设备"))
-        if self.is_simulation_selected():
-            self.state_label.setText("模拟遥测待启用")
-            self.detail_label.setText("不占用串口，仅生成压力测试数据")
-
     def _toggle_connection(self) -> None:
         if self._connected:
             self.disconnect_requested.emit()
-            return
-        if self.is_simulation_selected():
-            self.simulation_changed.emit(True)
-            self.state_label.setText("模拟数据")
-            self.state_label.setObjectName("statusOk")
-            self._refresh_label_style(self.state_label)
             return
         port = self.current_port()
         if not port:

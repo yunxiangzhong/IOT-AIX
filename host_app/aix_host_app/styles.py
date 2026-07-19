@@ -85,7 +85,6 @@ def app_stylesheet() -> str:
     QPushButton#primaryAction:disabled { background: #C7C7CC; border-color: #C7C7CC; }
     QPushButton#deviceStatusButton { min-width: 128px; font-weight: 650; }
     QPushButton#deviceStatusButton[connectionState="connected"] { color: #248A3D; background: #ECF8EF; border-color: #B9DFC2; }
-    QPushButton#deviceStatusButton[connectionState="simulation"] { color: #A05A00; background: #FFF7E8; border-color: #F2D19A; }
 
     QComboBox, QSpinBox, QLineEdit {
         background: #FFFFFF; color: #1D1D1F; border: 1px solid #D2D2D7;

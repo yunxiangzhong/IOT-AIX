@@ -412,4 +412,15 @@ voice_prompt_result_t voice_prompt_submit(const char *risk_band, const voice_pro
     return result;
 }
 
+bool voice_prompt_is_ready(void)
+{
+    if (!s_started || s_lock == NULL) {
+        return false;
+    }
+    policy_take();
+    const bool ready = s_policy.available;
+    policy_give();
+    return ready;
+}
+
 #endif

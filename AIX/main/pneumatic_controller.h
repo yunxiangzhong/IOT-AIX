@@ -16,6 +16,7 @@ typedef enum {
     PNEUMATIC_COMMAND_EMERGENCY_STOP,
     PNEUMATIC_COMMAND_RESET_FAULT,
     PNEUMATIC_COMMAND_SAVE_CALIBRATION,
+    PNEUMATIC_COMMAND_SELF_TEST,
 } pneumatic_command_type_t;
 
 typedef struct {
@@ -38,6 +39,9 @@ typedef struct {
     bool mpu_calibrated;
     bool mpu_impact;
     bool mpu_rapid_tilt;
+    bool pump_verified;
+    bool valve_verified;
+    bool self_test_failed;
     uint64_t timestamp_ms;
 } pneumatic_status_t;
 
@@ -54,6 +58,7 @@ typedef struct {
 esp_err_t pneumatic_controller_start(void);
 bool pneumatic_controller_is_started(void);
 bool pneumatic_controller_get_status(pneumatic_status_t *out);
+bool pneumatic_controller_get_self_test(bool *pump_verified, bool *valve_verified, bool *self_test_failed);
 esp_err_t pneumatic_controller_execute(
     const pneumatic_command_t *command,
     pneumatic_command_result_t *result);

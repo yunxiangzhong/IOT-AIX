@@ -65,4 +65,5 @@ voice_prompt_result_t voice_prompt_policy_submit(
 
 esp_err_t voice_prompt_start(void);
 voice_prompt_result_t voice_prompt_submit(const char *risk_band, const voice_prompt_request_t *request);
+bool voice_prompt_is_ready(void);
 #endif

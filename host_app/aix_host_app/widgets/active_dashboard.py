@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..models import ActionStatusEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample, VoiceStatusEvent
+from ..models import ActionStatusEvent, CameraStatusEvent, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, VoiceStatusEvent
 from .pneumatic_calibration_panel import PneumaticCalibrationPanel
 from .vision_canvas import VisionCanvas
 
@@ -510,7 +510,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             return
         self.peripheral_panel.set_value("mpu6050", self._peripheral_status("在线", 100.0, event.ts_ms, unit="Hz"))
         self.realtime_panel.set_value("mpu6050", f"{event.accel_norm_g:.2f} g · {event.tilt_deg or 0.0:.1f}°\n{'检测到冲击' if event.impact else '姿态正常'}")
-        self.derived_values["mpu6050"].setText("建议进入气囊仲裁" if event.impact or event.rapid_tilt else "不建议充气\n未满足运动触发条件")
+        self.derived_values["mpu6050"].setText(
+            "检测到运动冲击\n视觉高风险可直接触发充气" if event.impact or event.rapid_tilt
+            else "运动状态正常\n不影响视觉高风险直接充气"
+        )
 
     def apply_pressure(self, sample: PressureSample) -> None:
         self._last_pressure_sample = sample
@@ -558,6 +561,24 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.derived_values["pressure"].setText(
             f"{'允许' if event.vision_fresh and event.pressure_valid else '禁止'}："
             f"{'条件有效' if event.vision_fresh and event.pressure_valid else '视觉或压力数据不新鲜'}"
+        )
+
+    def apply_hardware_health(self, event: HardwareHealthEvent) -> None:
+        labels = {
+            "healthy": "正常", "degraded": "降级", "fault": "故障", "stale": "过期",
+            "disabled": "关闭", "pending": "待自检", "initializing": "初始化",
+        }
+        for key in ("ov5640", "mpu6050", "pressure", "dfplayer", "rgb"):
+            state = event.modules[key]
+            self.peripheral_values[key].setText(f"{labels[state]}\n真实硬件健康心跳")
+        self.peripheral_values["pneumatic"].setText(
+            f"泵 {labels[event.modules['pump']]} · 阀 {labels[event.modules['valve']]}"
+        )
+        self.derived_values["pneumatic"].setText(
+            f"自动闭环{'允许' if event.automatic_ready else '禁止'}\n{event.reason}"
+        )
+        self.protocol_log.appendPlainText(
+            f"硬件健康：{labels[event.overall]} · 自动{'允许' if event.automatic_ready else '禁止'} · {event.reason}"
         )
 
     def apply_health(self, health: dict) -> None:
@@ -653,9 +674,12 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             f"{band_labels.get(band, '状态未知')} · {score if score is not None else '—'} / 100\n"
             f"第 {action.get('frame_seq', '—')} 帧 · {'真实确认' if action.get('confirmed') else '等待反馈'}"
         )
-        self.derived_values["mpu6050"].setText(
-            "建议进入气囊仲裁\n仍需 MPU 与气压条件" if score is not None and score >= 60 else "不建议充气\n视觉风险未达条件"
-        )
+        if score is not None and score >= 80:
+            self.derived_values["mpu6050"].setText("严重风险已触发充气\n等待 ESP32 泵阀串口反馈")
+        elif score is not None and score >= 60:
+            self.derived_values["mpu6050"].setText("高风险已触发充气\n等待 ESP32 泵阀串口反馈")
+        else:
+            self.derived_values["mpu6050"].setText("不触发充气\n视觉风险未达高风险阈值")
         self.derived_values["pressure"].setText(
             "允许进入气动仲裁\n最终以压力与泵阀反馈为准" if risk.get("valid") and not is_stale else "禁止：视觉数据失效或过期"
         )

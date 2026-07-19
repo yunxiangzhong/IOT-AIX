@@ -8,6 +8,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from aix_host_app.app import MainWindow
 from aix_host_app.models import ActionStatusEvent
 from aix_host_app.widgets.active_dashboard import ActiveVisionDashboard
+from aix_host_app.widgets.pneumatic_calibration_panel import PneumaticCalibrationPanel
 
 
 class ActiveVisionDashboardTests(unittest.TestCase):
@@ -25,6 +26,19 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         dashboard.set_diagnostic_mode(False)
         self.assertTrue(dashboard.diagnostics.isHidden())
 
+    def test_threshold_save_reports_success_only_after_esp_config_confirmation(self):
+        panel = PneumaticCalibrationPanel()
+        panel.target_kpa.setValue(8.0)
+        panel._save_calibration()
+        panel.apply_command_result({"accepted": True, "command_id": "save-8", "error": ""})
+        self.assertIn("正在读取 ESP32", panel.status.text())
+        panel.apply_config({
+            "target_kpa": 8.0, "max_kpa": 200.0, "max_inflate_ms": 2000,
+            "calibration_valid": True, "automatic_enabled": True,
+        })
+        self.assertIn("参数修复成功", panel.status.text())
+        self.assertIn("8.0 kPa", panel.status.text())
+
     def test_renders_risk_action_and_stale_states(self):
         dashboard = ActiveVisionDashboard()
         dashboard.apply_chain_state({
@@ -39,6 +53,8 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertEqual(dashboard.risk_score.text(), "71")
         self.assertIn("高风险", dashboard.risk_band.text())
         self.assertIn("橙灯", dashboard.action_pattern.text())
+        self.assertIn("高风险已触发充气", dashboard.derived_values["mpu6050"].text())
+        self.assertNotIn("MPU", dashboard.derived_values["mpu6050"].text())
 
         dashboard.apply_chain_state({
             "device_id": "aix-helmet-01",

@@ -17,6 +17,15 @@ class PressureSample:
 
 
 @dataclass(frozen=True)
+class HardwareHealthEvent:
+    ts_ms: int
+    overall: str
+    automatic_ready: bool
+    modules: dict[str, str]
+    reason: str
+
+
+@dataclass(frozen=True)
 class MotionEvent:
     seq: int
     ts_ms: int

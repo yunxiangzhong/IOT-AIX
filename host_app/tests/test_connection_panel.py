@@ -24,8 +24,7 @@ class ConnectionPanelTests(unittest.TestCase):
         self.assertFalse(hasattr(panel, "storage_root_edit"))
         self.assertFalse(hasattr(panel, "recording_check"))
         self.assertFalse(hasattr(panel, "reduce_motion_check"))
-        self.assertEqual(panel.source_combo.itemData(0), "serial")
-        self.assertEqual(panel.source_combo.itemData(1), "simulation")
+        self.assertFalse(hasattr(panel, "source_combo"))
         self.assertGreaterEqual(panel.minimumWidth(), 420)
 
 

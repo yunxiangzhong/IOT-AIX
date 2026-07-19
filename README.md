@@ -22,10 +22,10 @@ MPU6050 / 压力遥测 → 气动安全策略 → GPIO40 气泵 MOSFET、GPIO41 
 | 路侧货车协同预警 | ESP32 `/road-hazard` 校验、幂等 ACK、TTL、RGB 仲裁和 PC 会话记录已实现 | 路侧相机、云端识别与 ETA 在本 Demo 中为模拟输入；当前固件对路侧事件只仲裁 RGB，不会由此触发 DFPlayer 或气动控制 |
 | GPIO38 RGB 和 action_status | 已实现并构建通过 | 仅作原型语义提示，不是安全执行器 |
 | DFPlayer 视觉风险语音提示 | `/risk.voice_prompt`、UART2 DFPlayer 驱动、三级曲目映射、去重与主机侧测试已实现 | 已在 COM21 看到 `voice_status` 的 `ready`、曲目 1–3 的 `playing`/`finished`，并由实际听音确认；未完成 10 分钟整机/气动/安全验收，语音仅为原型提示 |
-| 压力遥测 | 固件采集、串口协议和上位机记录已实现 | 仍需在最终气路上标定；旧的 180 kPa 是传感器诊断阈值，不是气囊控制目标 |
+| 压力遥测 | 固件采集、串口协议、上位机记录与阈值泄压策略已实现 | XGZP6847A 量程和气动硬上限均为 200 kPa；默认释放阈值为 8 kPa，可保存实际值 |
 | MPU6050 与运动检测 | I2C 驱动、motion v2、运动检测及 C 测试已实现 | 已在 COM21 实测约 99.69 Hz、无读错；仍缺少佩戴状态的静置校准、冲击/误报率和与视觉风险的联调 |
-| 气泵 / 三通电磁阀控制 | GPIO40 / GPIO41、手动脉冲、急停、泄压、压力/超时故障保护、策略测试和固件编译已实现 | MOSFET、两个 SS54、泵、阀、电池和气囊均未在本仓库记录中完成实物验收 |
-| 自动充气 | 策略代码已实现 | 默认关闭，且上位机不能开启；未完成实物标定前不得启用 |
+| 气泵 / 三通电磁阀控制 | GPIO40 / GPIO41、压力阈值泄压、泵阀自检、手动脉冲、急停、泄压、压力/超硬上限故障保护、策略测试和固件编译已实现 | COM21 串口已回传 `vision_critical` 下的泵开、阀通电和有效压力；没有独立泵/阀电流或位置传感器，不能据此宣称气路性能已验收 |
+| 自动充气 | 有效 PC 视觉 `HIGH/CRITICAL` 回调直接触发充气，不等待 MPU 运动事件；达到保存的目标压力、视觉结果失效或压力异常时泄压 | 当前 COM21 运行配置已开启；上位机不能更改 ESP32 的自动开关、阈值、硬上限或故障保护 |
 | PySide6 上位机气动标定页 | 状态显示、配置读取、手动命令、会话记录已实现并有主机测试 | 页面不能绕过固件安全限制，也不代表已驱动真实负载 |
 
 ## 默认安全配置
@@ -39,9 +39,11 @@ CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC=n
 
 因此，当前默认构建不会让 GPIO40 / GPIO41 驱动泵或阀，也不会根据视觉或加速度自动充气。若将来接入硬件，必须先按接线说明仅开启“控制硬件”，保持自动模式关闭，并按验收步骤逐项测试；详见 [气泵、三通电磁阀与 MPU6050 接线说明](docs/hardware/pneumatic-mpu6050-wiring.md)。
 
+本次 COM21 验收使用独立的 `sdkconfig.runtime`（两项均为 `y`）：有效的视觉 HIGH/CRITICAL 回调立刻输出充气；MPU6050 仅为独立遥测/备用触发，不是视觉高风险的前置条件。持续风险不会再因原来的 2 秒计时进入 `inflate_timeout`；达到当前 `8 kPa` 目标、视觉失效或压力异常即关泵阀泄压。
+
 ## 哪些内容是模拟或兼容用途
 
-- 上位机“模拟数据”开关只生成**模拟压力样本**，用于验证 UI、会话记录和显示流程；它不会生成真实 MPU6050 数据、不会调用气动命令、更不会驱动 GPIO。
+- 生产上位机已移除模拟压力数据源，只接收真实串口；自动化测试中的数据不进入生产链路。
 - 自动化测试中的 HTTP、串口和气动输入是测试夹具/模拟数据。测试通过和固件能编译，不能替代泵、阀、气路、二极管、电池与压力传感器的通电测试。
 - 旧的 /v1/infer、/v1/analyze、camera_preview、vision_depth 解析能力仅为兼容或诊断保留，不是当前默认视觉链路。
 
@@ -99,6 +101,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BuildFirmware
 ## 分目录说明
 
 - [AIX/README.md](AIX/README.md)：ESP32-S3 固件、配置开关、气动安全边界和烧录前检查。
-- [host_app/README.md](host_app/README.md)：PC 服务、上位机、模拟数据和会话记录。
+- [host_app/README.md](host_app/README.md)：PC 服务、真实串口上位机和会话记录。
 - [docs/hardware/pneumatic-mpu6050-wiring.md](docs/hardware/pneumatic-mpu6050-wiring.md)：MOSFET、SS54、泵、阀、电池与 MPU6050 的接线及验收顺序。
 - [docs/hardware/dfplayer-voice-wiring.md](docs/hardware/dfplayer-voice-wiring.md)：DFPlayer Mini、UART2、8 Ω 喇叭、TF 卡、供电和语音验收步骤。

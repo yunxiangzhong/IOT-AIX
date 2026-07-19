@@ -2,6 +2,8 @@
 param(
     [string]$DeviceId = "aix-helmet-01",
     [string]$ServiceUrl = "http://192.168.137.1:8008/v1/frames",
+    [ValidateSet("Preserve", "Manual", "Automatic")]
+    [string]$PneumaticMode = "Preserve",
     [switch]$PassThru
 )
 
@@ -66,6 +68,14 @@ if ($tokenLine) {
 }
 $settings.CONFIG_AIX_LINK_TOKEN = '"' + $token + '"'
 
+if ($PneumaticMode -eq "Manual") {
+    $settings.CONFIG_AIX_ENABLE_PNEUMATIC_CONTROL = "y"
+    $settings.CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC = "n"
+} elseif ($PneumaticMode -eq "Automatic") {
+    $settings.CONFIG_AIX_ENABLE_PNEUMATIC_CONTROL = "y"
+    $settings.CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC = "y"
+}
+
 foreach ($key in $settings.Keys) {
     for ($index = $lines.Count - 1; $index -ge 0; $index--) {
         if ($lines[$index] -match ('^' + [regex]::Escape($key) + '=')) {
@@ -85,6 +95,7 @@ $result = [pscustomobject]@{
     RuntimePath = $runtimePath
     DeviceId = $DeviceId
     ServiceUrl = $ServiceUrl
+    PneumaticMode = $PneumaticMode
     Token = $token
     WifiConfigured = -not [string]::IsNullOrWhiteSpace($ssid)
     MigratedFromPreview = (Test-Path -LiteralPath $previewPath)
@@ -93,5 +104,5 @@ if ($PassThru) {
     $result
 } else {
     Write-Output "Runtime config ready: $runtimePath"
-    Write-Output "Device: $DeviceId | service: $ServiceUrl | Wi-Fi configured: $($result.WifiConfigured)"
+    Write-Output "Device: $DeviceId | service: $ServiceUrl | pneumatic: $PneumaticMode | Wi-Fi configured: $($result.WifiConfigured)"
 }

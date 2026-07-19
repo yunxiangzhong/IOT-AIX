@@ -10,12 +10,32 @@ from PySide6 import QtCore
 class SerialPortOption:
     device: str
     description: str
+    vid: int | None = None
+    pid: int | None = None
+    serial_number: str = ""
 
     @property
     def label(self) -> str:
         if self.description and self.description != "n/a":
             return f"{self.device}  {self.description}"
         return self.device
+
+    @property
+    def identity(self) -> str:
+        if self.vid is None or self.pid is None:
+            return ""
+        return f"{self.vid:04X}:{self.pid:04X}:{self.serial_number}"
+
+
+def preferred_serial_port(options: list[SerialPortOption], remembered_identity: str = "") -> SerialPortOption | None:
+    if remembered_identity:
+        for option in options:
+            if option.identity == remembered_identity:
+                return option
+    cp210x = [option for option in options if option.vid == 0x10C4 and option.pid == 0xEA60]
+    if len(cp210x) == 1:
+        return cp210x[0]
+    return options[0] if len(options) == 1 else None
 
 
 def list_serial_ports() -> list[SerialPortOption]:
@@ -26,7 +46,15 @@ def list_serial_ports() -> list[SerialPortOption]:
 
     options: list[SerialPortOption] = []
     for port in list_ports.comports():
-        options.append(SerialPortOption(device=port.device, description=port.description or "n/a"))
+        if port.vid is None or port.pid is None:
+            continue
+        options.append(SerialPortOption(
+            device=port.device,
+            description=port.description or "n/a",
+            vid=port.vid,
+            pid=port.pid,
+            serial_number=port.serial_number or "",
+        ))
     return options
 
 

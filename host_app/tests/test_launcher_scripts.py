@@ -47,6 +47,8 @@ class LauncherScriptTests(unittest.TestCase):
         content = sync_script.read_text(encoding="utf-8")
         self.assertIn("CONFIG_AIX_WIFI_SSID", content)
         self.assertIn("CONFIG_AIX_LINK_TOKEN", content)
+        self.assertIn('ValidateSet("Preserve", "Manual", "Automatic")', content)
+        self.assertIn("CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC", content)
 
 
 if __name__ == "__main__":

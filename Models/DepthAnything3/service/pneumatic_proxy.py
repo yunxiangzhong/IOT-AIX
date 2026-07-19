@@ -12,7 +12,7 @@ from frame_pipeline import LatestFrameStore
 
 PNEUMATIC_DEVICE_FRESH_MS = 3_000
 _COMMAND_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
-_COMMANDS = {"inflate_pulse", "vent", "emergency_stop", "reset_fault", "save_calibration"}
+_COMMANDS = {"inflate_pulse", "vent", "emergency_stop", "reset_fault", "save_calibration", "self_test"}
 
 
 class PneumaticProxyError(RuntimeError):

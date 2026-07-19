@@ -1,6 +1,6 @@
 import unittest
 
-from aix_host_app.models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, RoadHazardStatusEvent, VisionDepthEvent, VoiceStatusEvent
+from aix_host_app.models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, RoadHazardStatusEvent, VisionDepthEvent, VoiceStatusEvent
 from aix_host_app.parsers import ParseError, parse_event_line, parse_pressure_line
 
 
@@ -43,6 +43,21 @@ class MotionParserTests(unittest.TestCase):
         self.assertTrue(event.rapid_tilt)
         self.assertAlmostEqual(event.accel_norm_g, 1.0)
         self.assertFalse(event.speed_valid)
+
+
+class HardwareHealthParserTests(unittest.TestCase):
+    def test_parses_real_module_health_heartbeat(self):
+        event = parse_event_line(
+            '{"type":"hardware_health","version":1,"ts_ms":1000,'
+            '"overall":"degraded","automatic_ready":false,'
+            '"ov5640":"healthy","mpu6050":"healthy","pressure":"healthy",'
+            '"dfplayer":"healthy","rgb":"healthy","pump":"pending","valve":"pending",'
+            '"reason":"awaiting_pneumatic_self_test"}'
+        )
+        self.assertIsInstance(event, HardwareHealthEvent)
+        self.assertEqual(event.modules["ov5640"], "healthy")
+        self.assertFalse(event.automatic_ready)
+        self.assertEqual(event.reason, "awaiting_pneumatic_self_test")
 
 
 class PneumaticStatusParserTests(unittest.TestCase):

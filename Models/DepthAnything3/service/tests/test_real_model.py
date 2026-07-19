@@ -1,4 +1,5 @@
 import math
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -8,12 +9,21 @@ import numpy as np
 
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
+MODEL_ROOT = SERVICE_ROOT.parent
+PROJECT_ROOT = MODEL_ROOT.parents[1]
 sys.path.insert(0, str(SERVICE_ROOT))
 
 from inference import Da3Engine
 
 
-WEIGHTS = SERVICE_ROOT.parent / "weights" / "DA3-SMALL"
+def shared_weights() -> Path:
+    common_git_dir = subprocess.run(
+        ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    return Path(common_git_dir).parent / "Models" / "DepthAnything3" / "weights" / "DA3-SMALL"
 
 
 class RealDa3ModelTests(unittest.TestCase):
@@ -24,7 +34,7 @@ class RealDa3ModelTests(unittest.TestCase):
         ok, encoded = cv2.imencode(".jpg", image)
         self.assertTrue(ok)
 
-        summary = Da3Engine(WEIGHTS).infer_jpeg(encoded.tobytes())
+        summary = Da3Engine(shared_weights()).infer_jpeg(encoded.tobytes())
 
         self.assertTrue(math.isfinite(summary.depth_p10))
         self.assertTrue(math.isfinite(summary.depth_median))
