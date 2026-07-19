@@ -5,7 +5,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from aix_host_app.app import MainWindow
 
@@ -72,6 +72,31 @@ class MainWindowEventRoutingTests(unittest.TestCase):
             self.assertEqual(window.dashboard.risk_score.text(), "72")
             self.assertIn("第 18 帧", window.dashboard.action_ack.text())
             window.close()
+
+    def test_pc_snapshot_is_displayed_from_materialized_png(self):
+        with tempfile.TemporaryDirectory() as root:
+            window = self.make_window(root)
+            try:
+                image = QtGui.QImage(16, 12, QtGui.QImage.Format.Format_RGB32)
+                image.fill(QtGui.QColor("#234567"))
+                buffer = QtCore.QBuffer()
+                buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+                self.assertTrue(image.save(buffer, "JPG"))
+                state = {
+                    "type": "chain_state", "device_id": "aix-helmet-01", "boot_id": "0123456789abcdef",
+                    "display": {"ready": True, "boot_id": "0123456789abcdef", "frame_seq": 19, "capture_ts_ms": 7600, "detections": []},
+                    "upload": {}, "model": {}, "callback": {}, "risk": {}, "action": {},
+                }
+
+                window._accept_pc_snapshot(bytes(buffer.data()), 19, 7600, state)
+
+                snapshot_path = Path(root) / "latest_processed.png"
+                self.assertTrue(snapshot_path.exists())
+                self.assertEqual(snapshot_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertIn("第 00000019 帧", window.dashboard.frame_telemetry.text())
+                self.assertIn("PC PNG 静态快照", window.dashboard.frame_telemetry.text())
+            finally:
+                window.close()
 
 
 if __name__ == "__main__":

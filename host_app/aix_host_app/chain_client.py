@@ -8,6 +8,9 @@ from PySide6 import QtCore, QtNetwork
 from .networking import build_get_request
 
 
+SNAPSHOT_POLL_INTERVAL_MS = 500
+
+
 def normalize_service_url(url: str) -> str:
     return url.strip().rstrip("/")
 
@@ -44,7 +47,7 @@ class PcChainClient(QtCore.QObject):
         self.token = token
         self._network = QtNetwork.QNetworkAccessManager(self)
         self._timer = QtCore.QTimer(self)
-        self._timer.setInterval(400)
+        self._timer.setInterval(SNAPSHOT_POLL_INTERVAL_MS)
         self._timer.timeout.connect(self._poll)
         self._state_reply: QtNetwork.QNetworkReply | None = None
         self._frame_reply: QtNetwork.QNetworkReply | None = None

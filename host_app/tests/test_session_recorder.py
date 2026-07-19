@@ -1,12 +1,36 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from aix_host_app.session_recorder import SessionRecorder
 
 
 class SessionRecorderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_materializes_latest_processed_png_for_static_pc_preview(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image = QtGui.QImage(16, 12, QtGui.QImage.Format.Format_RGB32)
+            image.fill(QtGui.QColor("#234567"))
+            jpeg = QtCore.QBuffer()
+            jpeg.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+            self.assertTrue(image.save(jpeg, "JPG"))
+
+            recorder = SessionRecorder(Path(temp_dir))
+            snapshot_path = recorder.save_png_snapshot(bytes(jpeg.data()))
+
+            self.assertEqual(snapshot_path, Path(temp_dir) / "latest_processed.png")
+            self.assertTrue(snapshot_path.exists())
+            self.assertEqual(snapshot_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
     def test_creates_session_and_writes_frame_telemetry_and_risk(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             recorder = SessionRecorder(Path(temp_dir))

@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from PySide6 import QtGui
+
 
 class SessionRecorder:
     def __init__(self, root: Path) -> None:
@@ -64,6 +66,19 @@ class SessionRecorder:
             return path
         path.write_bytes(data)
         self._saved_frames.add(identity)
+        return path
+
+    def save_png_snapshot(self, data: bytes) -> Path:
+        """Atomically materialize the latest analysed image as a PC-side PNG."""
+        image = QtGui.QImage.fromData(data)
+        if image.isNull():
+            raise ValueError("processed frame is not a valid image")
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / "latest_processed.png"
+        temporary = self.root / ".latest_processed.tmp"
+        if not image.save(str(temporary), "PNG"):
+            raise OSError("unable to encode processed PNG snapshot")
+        temporary.replace(path)
         return path
 
     def record_event(self, raw_line: str) -> None:

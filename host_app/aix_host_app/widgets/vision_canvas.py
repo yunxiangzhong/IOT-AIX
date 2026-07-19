@@ -42,8 +42,8 @@ class VisionCanvas(QtWidgets.QWidget):
     def minimumSizeHint(self) -> QtCore.QSize:  # noqa: N802 - Qt API
         return QtCore.QSize(480, 270)
 
-    def set_snapshot(self, jpeg: bytes, detections: list[dict]) -> bool:
-        image = QtGui.QImage.fromData(jpeg, "JPG")
+    def set_snapshot(self, image_data: bytes, detections: list[dict]) -> bool:
+        image = QtGui.QImage.fromData(image_data)
         if image.isNull():
             return False
         self._image = image

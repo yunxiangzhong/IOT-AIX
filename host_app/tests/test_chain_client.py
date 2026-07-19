@@ -1,9 +1,12 @@
 import unittest
 
-from aix_host_app.chain_client import frame_identity_from_state, normalize_service_url
+from aix_host_app.chain_client import SNAPSHOT_POLL_INTERVAL_MS, frame_identity_from_state, normalize_service_url
 
 
 class ChainClientTests(unittest.TestCase):
+    def test_static_snapshot_polling_is_half_second(self):
+        self.assertEqual(SNAPSHOT_POLL_INTERVAL_MS, 500)
+
     def test_normalizes_service_url_and_extracts_frame_identity(self):
         self.assertEqual(normalize_service_url("http://127.0.0.1:8008/"), "http://127.0.0.1:8008")
         self.assertEqual(

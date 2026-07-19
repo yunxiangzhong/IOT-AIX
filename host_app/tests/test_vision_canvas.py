@@ -38,6 +38,16 @@ class VisionCanvasTests(unittest.TestCase):
         self.assertFalse(canvas.set_snapshot(b"broken", []))
         self.assertEqual(canvas.detections, ())
 
+    def test_accepts_png_static_snapshot(self):
+        canvas = VisionCanvas()
+        image = QtGui.QImage(16, 12, QtGui.QImage.Format.Format_RGB32)
+        image.fill(QtGui.QColor("#234567"))
+        buffer = QtCore.QBuffer()
+        buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        self.assertTrue(image.save(buffer, "PNG"))
+
+        self.assertTrue(canvas.set_snapshot(bytes(buffer.data()), []))
+
 
 if __name__ == "__main__":
     unittest.main()

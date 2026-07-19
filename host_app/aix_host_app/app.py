@@ -510,15 +510,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.session_recorder.record_road_hazard({"type": "road_hazard_reset"})
 
     def _accept_pc_snapshot(self, data: bytes, frame_seq: int, capture_ts_ms: int, state: dict) -> None:
-        if not self.dashboard.apply_snapshot(data, frame_seq, capture_ts_ms, state):
-            self.dashboard.protocol_log.appendPlainText("上位机帧服务返回了无效图像数据")
-            return
-        self._accept_chain_state(state)
         self._ensure_session()
         try:
-            self.session_recorder.save_frame(data, frame_seq, capture_ts_ms)
-        except OSError as exc:
-            self.dashboard.protocol_log.appendPlainText(f"图像帧保存失败：{exc}")
+            snapshot_path = self.session_recorder.save_png_snapshot(data)
+            png_snapshot = snapshot_path.read_bytes()
+        except (OSError, ValueError) as exc:
+            self.dashboard.protocol_log.appendPlainText(f"PC 静态 PNG 保存失败：{exc}")
+            return
+        if not self.dashboard.apply_snapshot(png_snapshot, frame_seq, capture_ts_ms, state):
+            self.dashboard.protocol_log.appendPlainText("上位机帧服务返回了无效图像数据")
+            return
+        self.dashboard.frame_telemetry.setText(
+            f"PC PNG 静态快照 · 每 0.5 秒读取 · 第 {frame_seq:08d} 帧 · 采集 {capture_ts_ms} ms"
+        )
+        self._accept_chain_state(state)
 
     def _accept_health(self, health: dict) -> None:
         self.dashboard.apply_health(health)
