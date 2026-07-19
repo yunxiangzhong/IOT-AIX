@@ -31,6 +31,7 @@ typedef struct {
     pneumatic_policy_config_t config;
     pneumatic_policy_output_t output;
     float pressure_kpa;
+    bool pressure_raw_valid;
     bool pressure_valid;
     uint32_t pressure_age_ms;
     action_state_t vision_state;

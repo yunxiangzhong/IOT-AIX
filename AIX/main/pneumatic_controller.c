@@ -160,7 +160,7 @@ static void emit_status(const pneumatic_status_t *status)
     printf("{\"type\":\"pneumatic_status\",\"version\":1,\"ts_ms\":%llu,"
            "\"state\":\"%s\",\"fault\":\"%s\",\"trigger\":\"%s\","
            "\"operation\":%d,\"pump_on\":%s,\"valve_on\":%s,"
-           "\"pressure_kpa\":%.2f,\"pressure_valid\":%s,\"pressure_age_ms\":%lu,"
+           "\"pressure_kpa\":%.2f,\"pressure_raw_valid\":%s,\"pressure_valid\":%s,\"pressure_age_ms\":%lu,"
            "\"pump_verified\":%s,\"valve_verified\":%s,\"self_test_failed\":%s,"
            "\"vision_state\":\"%s\",\"vision_fresh\":%s,\"mpu_available\":%s,"
            "\"mpu_calibrated\":%s,\"impact\":%s,\"rapid_tilt\":%s}\n",
@@ -172,6 +172,7 @@ static void emit_status(const pneumatic_status_t *status)
            status->output.pump_on ? "true" : "false",
            status->output.valve_on ? "true" : "false",
            status->pressure_kpa,
+           status->pressure_raw_valid ? "true" : "false",
            status->pressure_valid ? "true" : "false",
            (unsigned long)status->pressure_age_ms,
            status->pump_verified ? "true" : "false",
@@ -278,6 +279,7 @@ static void controller_task(void *arg)
             .config = s_policy.config,
             .output = output,
             .pressure_kpa = pressure.filtered_kpa,
+            .pressure_raw_valid = has_pressure && pressure.raw_valid,
             .pressure_valid = has_pressure && pressure.valid,
             .pressure_age_ms = !has_pressure || timestamp_ms < pressure.timestamp_ms
                                 ? UINT32_MAX

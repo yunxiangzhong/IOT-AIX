@@ -15,6 +15,9 @@ typedef struct {
     float pressure_kpa;
     float filtered_kpa;
     bool over_pressure;
+    /* `valid` is the debounced value used by the safety controller.  This
+     * separately exposes the instantaneous ADC result for diagnostics. */
+    bool raw_valid;
     bool valid;
     uint32_t sample_count;
     uint64_t timestamp_ms;
@@ -38,6 +41,11 @@ static inline float pressure_sensor_voltage_to_kpa(int voltage_mv)
 static inline bool pressure_sensor_is_over_pressure(float pressure_kpa)
 {
     return pressure_kpa >= PRESSURE_SENSOR_OVER_PRESSURE_KPA;
+}
+
+static inline bool pressure_sensor_voltage_is_raw_valid(int voltage_mv)
+{
+    return voltage_mv >= 100 && voltage_mv <= 2900;
 }
 
 #ifdef ESP_PLATFORM

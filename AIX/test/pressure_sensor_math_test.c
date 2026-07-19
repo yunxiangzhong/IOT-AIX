@@ -33,6 +33,14 @@ int main(void)
                              pressure_sensor_voltage_to_kpa(3000),
                              200.0f);
 
+    if (pressure_sensor_voltage_is_raw_valid(99) ||
+        !pressure_sensor_voltage_is_raw_valid(100) ||
+        !pressure_sensor_voltage_is_raw_valid(2900) ||
+        pressure_sensor_voltage_is_raw_valid(2901)) {
+        printf("raw voltage validity bounds are incorrect\n");
+        failures++;
+    }
+
     if (pressure_sensor_is_over_pressure(179.9f)) {
         printf("over pressure threshold: 179.9 should be safe\n");
         failures++;

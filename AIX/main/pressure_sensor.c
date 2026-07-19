@@ -21,6 +21,10 @@
 #define PRESSURE_SENSOR_TASK_PRIORITY 5
 #define PRESSURE_SENSOR_VALID_LOW_MV 100
 #define PRESSURE_SENSOR_VALID_HIGH_MV 2900
+/* Pump switching can briefly pull the analog reading below 100 mV.  Keep a
+ * known-good pressure value for at most one second; a real disconnected or
+ * failed sensor still becomes invalid and vents the airbag. */
+#define PRESSURE_SENSOR_LOW_GLITCH_MAX_SAMPLES 50U
 
 static const char *TAG = "AIX_PRESSURE";
 
@@ -32,6 +36,7 @@ static bool s_filter_ready;
 static bool s_task_started;
 static float s_filtered_kpa;
 static uint32_t s_sample_count;
+static uint32_t s_consecutive_low_invalid_samples;
 static portMUX_TYPE s_latest_lock = portMUX_INITIALIZER_UNLOCKED;
 static pressure_sensor_sample_t s_latest_sample;
 static bool s_has_latest_sample;
@@ -142,8 +147,21 @@ esp_err_t pressure_sensor_read(pressure_sensor_sample_t *out)
     }
 
     const float pressure_kpa = pressure_sensor_voltage_to_kpa(voltage_mv);
-    const bool valid = (voltage_mv >= PRESSURE_SENSOR_VALID_LOW_MV) &&
-                       (voltage_mv <= PRESSURE_SENSOR_VALID_HIGH_MV);
+    const bool raw_valid = pressure_sensor_voltage_is_raw_valid(voltage_mv);
+    const bool low_voltage_glitch = voltage_mv < PRESSURE_SENSOR_VALID_LOW_MV;
+    bool valid = raw_valid;
+
+    if (raw_valid) {
+        s_consecutive_low_invalid_samples = 0;
+    } else if (low_voltage_glitch && s_filter_ready &&
+               s_consecutive_low_invalid_samples < PRESSURE_SENSOR_LOW_GLITCH_MAX_SAMPLES) {
+        /* Preserve the last verified filtered value through short pump noise. */
+        s_consecutive_low_invalid_samples++;
+        valid = true;
+    } else {
+        s_consecutive_low_invalid_samples++;
+    }
+
     if (!valid) {
         s_filter_ready = false;
         s_filtered_kpa = 0.0f;
@@ -161,6 +179,7 @@ esp_err_t pressure_sensor_read(pressure_sensor_sample_t *out)
     out->pressure_kpa = pressure_kpa;
     out->filtered_kpa = s_filtered_kpa;
     out->over_pressure = valid && pressure_sensor_is_over_pressure(s_filtered_kpa);
+    out->raw_valid = raw_valid;
     out->valid = valid;
     out->sample_count = s_sample_count;
     out->timestamp_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
@@ -205,7 +224,7 @@ static void pressure_sensor_task(void *arg)
                 printf("{\"type\":\"pressure\",\"version\":1,\"seq\":%lu,"
                        "\"ts_ms\":%lu,\"raw\":%d,\"mv\":%d,\"kpa\":%.2f,"
                        "\"filtered_kpa\":%.2f,\"over_pressure\":%s,"
-                       "\"valid\":%s}\n",
+                       "\"raw_valid\":%s,\"valid\":%s}\n",
                        (unsigned long)sample.sample_count,
                        (unsigned long)ts_ms,
                        sample.raw,
@@ -213,6 +232,7 @@ static void pressure_sensor_task(void *arg)
                        sample.pressure_kpa,
                        sample.filtered_kpa,
                        sample.over_pressure ? "true" : "false",
+                       sample.raw_valid ? "true" : "false",
                        sample.valid ? "true" : "false");
                 fflush(stdout);
                 last_log_tick = now;
