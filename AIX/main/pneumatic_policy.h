@@ -12,11 +12,14 @@
 #define PNEUMATIC_CALIBRATION_TOTAL_PUMP_MS 2000ULL
 #define PNEUMATIC_CALIBRATION_CEILING_KPA 200.0f
 #define PNEUMATIC_RELEASE_HYSTERESIS_KPA 1.0f
+#define PNEUMATIC_REFILL_HYSTERESIS_KPA 0.3f
 #define PNEUMATIC_HOLD_MAX_MS 15000ULL
 #define PNEUMATIC_CLEAR_CONFIRM_MS 5000ULL
 #define PNEUMATIC_VENT_TIMEOUT_MS 5000ULL
-#define PNEUMATIC_COOLDOWN_MS 10000ULL
+#define PNEUMATIC_COOLDOWN_MS 1000ULL
 #define PNEUMATIC_VENTED_PRESSURE_KPA 0.5f
+#define PNEUMATIC_PREVENTIVE_RISE_KPA 0.8f
+#define PNEUMATIC_CONFIG_HARD_LIMIT_KPA 20.0f
 
 typedef enum {
     PNEUMATIC_STATE_DISABLED = 0,
@@ -44,6 +47,7 @@ typedef enum {
     PNEUMATIC_TRIGGER_NONE = 0,
     PNEUMATIC_TRIGGER_VISION_CRITICAL,
     PNEUMATIC_TRIGGER_VISION_HIGH,
+    PNEUMATIC_TRIGGER_VISION_ATTENTION,
     PNEUMATIC_TRIGGER_MPU_IMPACT,
     PNEUMATIC_TRIGGER_MPU_RAPID_TILT,
     PNEUMATIC_TRIGGER_MANUAL_CALIBRATION,
@@ -76,6 +80,7 @@ typedef struct {
     float pressure_kpa;
     uint64_t pressure_timestamp_ms;
     bool manual_inflate_pulse;
+    uint32_t manual_inflate_duration_ms;
     bool vent_request;
     bool emergency_stop;
     bool reset_fault;
@@ -92,6 +97,7 @@ typedef struct {
     uint64_t pressure_invalid_started_ms;
     uint64_t clear_started_ms;
     uint32_t calibration_pump_on_ms;
+    float active_target_kpa;
 } pneumatic_policy_t;
 
 typedef struct {

@@ -188,6 +188,9 @@ def _parse_pneumatic_status_payload(payload: dict[str, Any]) -> PneumaticStatusE
             mpu_available=_as_bool(payload["mpu_available"], "mpu_available"),
             mpu_calibrated=_as_bool(payload["mpu_calibrated"], "mpu_calibrated"),
             impact=_as_bool(payload["impact"], "impact"), rapid_tilt=_as_bool(payload["rapid_tilt"], "rapid_tilt"),
+            pump_verified=_as_bool(payload.get("pump_verified", False), "pump_verified"),
+            valve_verified=_as_bool(payload.get("valve_verified", False), "valve_verified"),
+            self_test_failed=_as_bool(payload.get("self_test_failed", False), "self_test_failed"),
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc

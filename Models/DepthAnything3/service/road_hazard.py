@@ -361,7 +361,10 @@ class RoadHazardSender:
             raise RoadHazardDeliveryError("ACK expires_in_ms is invalid")
         if not isinstance(ack.get("effective_rgb_pattern"), str):
             raise RoadHazardDeliveryError("ACK effective_rgb_pattern is invalid")
-        if ack.get("voice_state") != "not_configured":
+        if ack.get("voice_state") not in {
+            "not_configured", "not_requested", "queued", "duplicate",
+            "suppressed", "rejected", "unavailable",
+        }:
             raise RoadHazardDeliveryError("ACK voice_state is invalid")
         if not isinstance(ack.get("error"), str):
             raise RoadHazardDeliveryError("ACK error is invalid")

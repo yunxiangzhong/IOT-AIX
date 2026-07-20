@@ -28,6 +28,16 @@ static pneumatic_trigger_t current_automatic_trigger(const pneumatic_policy_inpu
     return PNEUMATIC_TRIGGER_NONE;
 }
 
+static float target_for_trigger(
+    const pneumatic_policy_t *policy,
+    const pneumatic_policy_input_t *input,
+    pneumatic_trigger_t trigger)
+{
+    (void)input;
+    (void)trigger;
+    return policy->config.target_kpa;
+}
+
 static void enter_state(pneumatic_policy_t *policy, pneumatic_state_t state, uint64_t now_ms) {
     policy->state = state;
     policy->state_started_ms = now_ms;
@@ -64,16 +74,18 @@ pneumatic_policy_config_t pneumatic_policy_default_config(void) {
         .automatic_enabled = false,
         .calibration_valid = false,
         .target_kpa = 8.0f,
-        .max_kpa = 200.0f,
-        .max_inflate_ms = 2000,
+        .max_kpa = 12.0f,
+        .max_inflate_ms = 5000,
     };
 }
 
 bool pneumatic_policy_config_is_valid(const pneumatic_policy_config_t *config) {
-    if (config == NULL || config->target_kpa < 6.0f || config->target_kpa > 200.0f) {
+    if (config == NULL || config->target_kpa < 6.0f ||
+        config->target_kpa > PNEUMATIC_CONFIG_HARD_LIMIT_KPA) {
         return false;
     }
-    if (config->max_kpa < config->target_kpa || config->max_kpa > 200.0f) {
+    if (config->max_kpa < config->target_kpa ||
+        config->max_kpa > PNEUMATIC_CONFIG_HARD_LIMIT_KPA) {
         return false;
     }
     return config->max_inflate_ms >= 200U && config->max_inflate_ms <= 5000U;
@@ -97,6 +109,7 @@ void pneumatic_policy_init(pneumatic_policy_t *policy, const pneumatic_policy_co
     policy->pressure_invalid_started_ms = 0;
     policy->clear_started_ms = 0;
     policy->calibration_pump_on_ms = 0;
+    policy->active_target_kpa = policy->config.target_kpa;
     if (policy->fault != PNEUMATIC_FAULT_NONE) {
         policy->state = PNEUMATIC_STATE_FAULT_VENT;
     }
@@ -136,24 +149,23 @@ pneumatic_policy_output_t pneumatic_policy_step(
         enter_fault(policy, PNEUMATIC_FAULT_EMERGENCY_STOP, now_ms);
         return output_from_policy(policy);
     }
-    if (!input->pressure_valid) {
+    if (!input->pressure_valid || !pressure_fresh) {
         // The pump switching noise observed on the physical harness can make
-        // one 20 ms ADC sample invalid.  Keep the last safe output for a
-        // short, bounded grace window; a sustained missing/invalid sensor
-        // remains a hard fault and immediately exhausts the airbag.
+        // one 20 ms ADC sample invalid or stale. Keep the last safe output for
+        // a short, bounded grace window. This also prevents the controller
+        // from latching a stale fault before the first pressure task sample.
         if (policy->pressure_invalid_started_ms == 0) {
             policy->pressure_invalid_started_ms = now_ms;
         }
         if (now_ms - policy->pressure_invalid_started_ms >= PNEUMATIC_PRESSURE_INVALID_GRACE_MS) {
-            enter_fault(policy, PNEUMATIC_FAULT_PRESSURE_INVALID, now_ms);
+            enter_fault(
+                policy,
+                input->pressure_valid ? PNEUMATIC_FAULT_PRESSURE_STALE : PNEUMATIC_FAULT_PRESSURE_INVALID,
+                now_ms);
         }
         return output_from_policy(policy);
     }
     policy->pressure_invalid_started_ms = 0;
-    if (!pressure_fresh) {
-        enter_fault(policy, PNEUMATIC_FAULT_PRESSURE_STALE, now_ms);
-        return output_from_policy(policy);
-    }
     if (input->pressure_kpa > policy->config.max_kpa) {
         enter_fault(policy, PNEUMATIC_FAULT_PRESSURE_OVER_MAX, now_ms);
         return output_from_policy(policy);
@@ -170,6 +182,7 @@ pneumatic_policy_output_t pneumatic_policy_step(
             if (automatic_allowed && automatic_trigger != PNEUMATIC_TRIGGER_NONE) {
                 policy->operation = PNEUMATIC_OPERATION_AUTOMATIC;
                 policy->trigger_source = automatic_trigger;
+                policy->active_target_kpa = target_for_trigger(policy, input, automatic_trigger);
                 enter_state(policy, PNEUMATIC_STATE_PRIME_VALVE, now_ms);
             } else if (policy->config.calibration_enabled && input->manual_inflate_pulse &&
                        input->pressure_kpa < PNEUMATIC_CALIBRATION_CEILING_KPA &&
@@ -188,19 +201,20 @@ pneumatic_policy_output_t pneumatic_policy_step(
 
         case PNEUMATIC_STATE_INFLATING: {
             if (policy->operation == PNEUMATIC_OPERATION_AUTOMATIC) {
-                // An active visual high/critical risk keeps the pump running
-                // until the configured pressure threshold is reached.  The
-                // generic 2 s calibration/manual timeout must never turn an
-                // ongoing danger into an inflate_timeout fault.
-                if (input->pressure_kpa >= policy->config.target_kpa ||
-                    automatic_trigger == PNEUMATIC_TRIGGER_NONE) {
-                    enter_state(policy, PNEUMATIC_STATE_VENTING, now_ms);
+                const uint64_t elapsed_ms = now_ms - policy->inflate_started_ms;
+                if (input->pressure_kpa >= policy->active_target_kpa) {
+                    enter_state(policy, PNEUMATIC_STATE_HOLDING, now_ms);
+                } else if (elapsed_ms >= policy->config.max_inflate_ms) {
+                    enter_fault(policy, PNEUMATIC_FAULT_INFLATE_TIMEOUT, now_ms);
                 }
             } else if (policy->operation == PNEUMATIC_OPERATION_CALIBRATION &&
                        input->pressure_kpa >= PNEUMATIC_CALIBRATION_CEILING_KPA) {
                 enter_state(policy, PNEUMATIC_STATE_HOLDING, now_ms);
             } else if (policy->operation == PNEUMATIC_OPERATION_CALIBRATION &&
-                       now_ms - policy->inflate_started_ms >= PNEUMATIC_CALIBRATION_PULSE_MS) {
+                       now_ms - policy->inflate_started_ms >=
+                           (input->manual_inflate_duration_ms > 0U
+                                ? input->manual_inflate_duration_ms
+                                : PNEUMATIC_CALIBRATION_PULSE_MS)) {
                 policy->calibration_pump_on_ms += (uint32_t)(now_ms - policy->inflate_started_ms);
                 enter_state(policy, PNEUMATIC_STATE_HOLDING, now_ms);
             }
@@ -208,6 +222,32 @@ pneumatic_policy_output_t pneumatic_policy_step(
         }
 
         case PNEUMATIC_STATE_HOLDING:
+            if (policy->operation == PNEUMATIC_OPERATION_AUTOMATIC) {
+                if (automatic_trigger == PNEUMATIC_TRIGGER_NONE) {
+                    if (policy->clear_started_ms == 0U) {
+                        policy->clear_started_ms = now_ms;
+                    } else if (now_ms - policy->clear_started_ms >= PNEUMATIC_CLEAR_CONFIRM_MS) {
+                        policy->operation = PNEUMATIC_OPERATION_NONE;
+                        policy->trigger_source = PNEUMATIC_TRIGGER_NONE;
+                        enter_state(policy, PNEUMATIC_STATE_VENTING, now_ms);
+                    }
+                } else {
+                    policy->clear_started_ms = 0U;
+                    if (policy->trigger_source == PNEUMATIC_TRIGGER_VISION_ATTENTION &&
+                        automatic_trigger != PNEUMATIC_TRIGGER_VISION_ATTENTION &&
+                        input->pressure_kpa < policy->config.target_kpa) {
+                        policy->active_target_kpa = policy->config.target_kpa;
+                        policy->trigger_source = automatic_trigger;
+                        enter_state(policy, PNEUMATIC_STATE_PRIME_VALVE, now_ms);
+                        break;
+                    }
+                    policy->trigger_source = automatic_trigger;
+                    if (input->pressure_kpa <
+                        policy->active_target_kpa - PNEUMATIC_REFILL_HYSTERESIS_KPA) {
+                        enter_state(policy, PNEUMATIC_STATE_PRIME_VALVE, now_ms);
+                    }
+                }
+            }
             if (policy->state == PNEUMATIC_STATE_HOLDING &&
                 now_ms - policy->state_started_ms >= PNEUMATIC_HOLD_MAX_MS) {
                 if (policy->operation == PNEUMATIC_OPERATION_CALIBRATION) {
@@ -284,6 +324,7 @@ const char *pneumatic_trigger_name(pneumatic_trigger_t trigger) {
         case PNEUMATIC_TRIGGER_NONE: return "none";
         case PNEUMATIC_TRIGGER_VISION_CRITICAL: return "vision_critical";
         case PNEUMATIC_TRIGGER_VISION_HIGH: return "vision_high";
+        case PNEUMATIC_TRIGGER_VISION_ATTENTION: return "vision_attention";
         case PNEUMATIC_TRIGGER_MPU_IMPACT: return "mpu_impact";
         case PNEUMATIC_TRIGGER_MPU_RAPID_TILT: return "mpu_rapid_tilt";
         case PNEUMATIC_TRIGGER_MANUAL_CALIBRATION: return "manual_calibration";

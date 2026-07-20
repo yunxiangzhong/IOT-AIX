@@ -127,10 +127,11 @@ int risk_receiver_format_road_hazard_ack(
     uint32_t expires_in_ms,
     const char *severity,
     const char *effective_rgb_pattern,
+    const char *voice_state,
     const char *error)
 {
     if (buffer == NULL || capacity == 0U || device_id == NULL || boot_id == NULL ||
-        event_id == NULL || severity == NULL || effective_rgb_pattern == NULL) {
+        event_id == NULL || severity == NULL || effective_rgb_pattern == NULL || voice_state == NULL) {
         return -1;
     }
     const int written = snprintf(
@@ -138,10 +139,10 @@ int risk_receiver_format_road_hazard_ack(
         "{\"type\":\"road_hazard_ack\",\"version\":1,\"device_id\":\"%s\",\"boot_id\":\"%s\","
         "\"accepted\":%s,\"duplicate\":%s,\"event_id\":\"%s\",\"expires_in_ms\":%lu,"
         "\"severity\":\"%s\",\"effective_rgb_pattern\":\"%s\","
-        "\"voice_state\":\"not_configured\",\"error\":\"%s\"}",
+        "\"voice_state\":\"%s\",\"error\":\"%s\"}",
         device_id, boot_id, accepted ? "true" : "false", duplicate ? "true" : "false",
         event_id, (unsigned long)expires_in_ms, severity, effective_rgb_pattern,
-        error != NULL ? error : "");
+        voice_state, error != NULL ? error : "");
     return written >= 0 && (size_t)written < capacity ? written : -1;
 }
 
@@ -340,6 +341,7 @@ static esp_err_t send_road_hazard_ack(
     const char *event_id,
     uint32_t expires_in_ms,
     const char *severity,
+    const char *voice_state,
     const char *error,
     uint64_t now_ms)
 {
@@ -348,7 +350,7 @@ static esp_err_t send_road_hazard_ack(
     if (risk_receiver_format_road_hazard_ack(
             body, sizeof(body), device_identity_device_id(), device_identity_boot_id(),
             accepted, duplicate, event_id, expires_in_ms, severity,
-            rgb_pattern_name(effective.pattern), error) < 0) {
+            rgb_pattern_name(effective.pattern), voice_state, error) < 0) {
         return ESP_ERR_INVALID_SIZE;
     }
     if (http_status != NULL) httpd_resp_set_status(request, http_status);
@@ -366,7 +368,9 @@ static esp_err_t reject_road_hazard(
 {
     const alert_effective_t effective = alert_arbiter_runtime_get_effective(now_ms);
     emit_road_hazard_status("rejected", event_id, reason, 0U, rgb_pattern_name(effective.pattern));
-    return send_road_hazard_ack(request, http_status, false, false, event_id, 0U, severity, reason, now_ms);
+    return send_road_hazard_ack(
+        request, http_status, false, false, event_id, 0U, severity,
+        "not_requested", reason, now_ms);
 }
 
 static const char *json_string(const cJSON *item)
@@ -461,6 +465,7 @@ static esp_err_t road_hazard_handler(httpd_req_t *request)
     }
 
     const alert_effective_t effective = alert_arbiter_runtime_get_effective(current_ms);
+    const char *accepted_severity = road_hazard_severity_name(outcome.severity);
     if (result == ROAD_HAZARD_ACCEPTED) {
         emit_road_hazard_status(
             "active", outcome.event_id, "accepted", outcome.expires_in_ms,
@@ -468,7 +473,8 @@ static esp_err_t road_hazard_handler(httpd_req_t *request)
     }
     return send_road_hazard_ack(
         request, NULL, true, result == ROAD_HAZARD_DUPLICATE, outcome.event_id,
-        outcome.expires_in_ms, road_hazard_severity_name(outcome.severity), "", current_ms);
+        outcome.expires_in_ms, accepted_severity,
+        alert_arbiter_runtime_last_voice_state(), "", current_ms);
 }
 
 static esp_err_t risk_handler(httpd_req_t *request)

@@ -53,6 +53,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_risk_identity: tuple[str, int] | None = None
         self._model_log_offsets: dict[Path, int] = {}
         self._last_chain_state: dict = {}
+        self._last_health: dict = {}
         self._chain_clock = QtCore.QElapsedTimer()
         self._chain_clock.start()
         self._watchdog_fault_shown = False
@@ -165,7 +166,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.chain_client = PcChainClient(
             self.service_url, self.device_id,
-            token=str(os.environ.get("AIX_TOKEN") or settings.value("token", "")), parent=self,
+            token=str(
+                os.environ.get("AIX_LINK_TOKEN")
+                or os.environ.get("AIX_TOKEN")
+                or settings.value("token", "")
+            ),
+            parent=self,
         )
         self.chain_client.state_received.connect(self._accept_chain_state)
         self.chain_client.snapshot_received.connect(self._accept_pc_snapshot)
@@ -407,7 +413,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 "state": event.state, "fault": event.fault, "trigger": event.trigger,
                 "operation": event.operation, "pump_on": event.pump_on, "valve_on": event.valve_on,
                 "pressure_kpa": event.pressure_kpa, "pressure_valid": event.pressure_valid,
-                "pressure_age_ms": event.pressure_age_ms, "vision_state": event.vision_state,
+                "pressure_age_ms": event.pressure_age_ms,
+                "pump_verified": event.pump_verified, "valve_verified": event.valve_verified,
+                "self_test_failed": event.self_test_failed, "vision_state": event.vision_state,
                 "vision_fresh": event.vision_fresh, "mpu_available": event.mpu_available,
                 "mpu_calibrated": event.mpu_calibrated, "impact": event.impact, "rapid_tilt": event.rapid_tilt,
             })
@@ -423,10 +431,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _accept_chain_state(self, state: dict) -> None:
         self._ensure_session()
+        recovering_from_watchdog = self._watchdog_fault_shown
         self._last_chain_state = state
         self._chain_clock.restart()
         self._watchdog_fault_shown = False
-        self.dashboard.apply_chain_state(state)
+        self.dashboard.apply_chain_state(state, force=recovering_from_watchdog)
         self.scenario_panel.apply_chain_state(state)
         hazard = state.get("road_hazard", {})
         if isinstance(hazard, dict) and hazard.get("event_id"):
@@ -526,7 +535,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._accept_chain_state(state)
 
     def _accept_health(self, health: dict) -> None:
+        self._last_health = health
         self.dashboard.apply_health(health)
+        if self._watchdog_fault_shown:
+            self.dashboard.apply_chain_state(self._build_chain_timeout_state(), force=True)
         compute_label = "显卡" if str(health.get("gpu", "cuda")).lower() == "cuda" else "处理器"
         model_label = {"ready": "已就绪", "loading": "加载中", "error": "异常"}.get(
             str(health.get("model_state", "loading")), "状态未知"
@@ -564,20 +576,31 @@ class MainWindow(QtWidgets.QMainWindow):
     def _check_chain_timeout(self) -> None:
         if self._chain_clock.elapsed() < 3000 or self._watchdog_fault_shown:
             return
+        self.dashboard.apply_chain_state(self._build_chain_timeout_state(), force=True)
+        self._watchdog_fault_shown = True
+
+    def _build_chain_timeout_state(self) -> dict:
         previous = self._last_chain_state
-        fault_state = {
+        health = self._last_health
+        health_model_state = str(health.get("model_state") or "error")
+        model_ready = bool(health.get("model_ready")) and health_model_state == "ready"
+        return {
             "type": "chain_state",
             "device_id": previous.get("device_id", self.device_id),
             "boot_id": previous.get("boot_id", ""),
             "upload": {**previous.get("upload", {}), "state": "failed", "fps": 0, "frame_age_ms": self._chain_clock.elapsed()},
-            "model": {**previous.get("model", {}), "state": "error", "error": "PC 服务不可用"},
+            "model": {
+                **previous.get("model", {}),
+                "state": "ready" if model_ready else health_model_state,
+                "name": health.get("model") or previous.get("model", {}).get("name"),
+                "gpu": health.get("gpu") or health.get("device") or previous.get("model", {}).get("gpu", "cuda"),
+                "error": "" if model_ready else str(health.get("model_error") or "PC 模型服务不可用"),
+            },
             "callback": {**previous.get("callback", {}), "state": "failed"},
             "risk": {**previous.get("risk", {}), "valid": False},
             "action": {**previous.get("action", {}), "state": "fault", "rgb_pattern": "purple_blink_1hz", "stale": True},
-            "last_error": "PC 服务超过 3 秒无响应",
+            "last_error": "ESP32 超过 3 秒未上传设备画面",
         }
-        self.dashboard.apply_chain_state(fault_state)
-        self._watchdog_fault_shown = True
 
     def _set_storage_root(self, path: str) -> None:
         self.session_recorder.root = Path(path)

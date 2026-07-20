@@ -203,7 +203,6 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
 
     EVENT_DURATION_MS = 5000
     CLOUD_DISPATCH_MS = 850
-    DEMO_RESPONSE_MS = 2300
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -304,7 +303,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.event_value = self._value("事件 ID · 等待演示")
         self.network_value = self._value("网络耗时 · —")
         self.rgb_value = self._value("RGB · 等待 ACK")
-        self.voice_value = self._value("语音 · 专用语音待配置")
+        self.voice_value = self._value("语音 · 等待真实反馈")
         self.serial_status = self._value("串口状态 · 等待")
         for value in (self.event_value, self.network_value, self.rgb_value, self.voice_value, self.serial_status):
             value.setWordWrap(True)
@@ -398,7 +397,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.event_value.setText("事件 ID · 等待演示")
         self.network_value.setText("网络耗时 · —")
         self.rgb_value.setText("RGB · 等待 ACK")
-        self.voice_value.setText("语音 · 专用语音待配置")
+        self.voice_value.setText("语音 · 等待真实反馈")
         self.serial_status.setText("串口状态 · 等待")
         self.detection_value[1].setText("等待检测")
         self.cloud_status[1].setText("等待上传")
@@ -454,12 +453,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
             if not self._ack_received:
                 self.stages[4].set_state(f"等待响应 · 剩余 {eta:.1f} 秒", "waiting")
 
-        # This is an explicit virtual-scene fallback, not a hardware claim. It keeps the
-        # presentation complete when no serial helmet is attached; real ACKs replace it.
-        if not self._ack_received and elapsed_ms >= self.DEMO_RESPONSE_MS:
-            self._accept_response(elapsed_ms, simulated=True)
-
-        # 骑行者先按正常速度接近路口。只有真实 ACK 到达后才呈现语音、气动演示和减速效果。
+        # 骑行者先按正常速度接近路口；只有真实 ACK 才改变演示结果。
         rider_progress = min(0.82, progress * 0.82)
         rider_slowed = False
         rider_speed_kmh = 18
@@ -467,24 +461,16 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
             after_ack_ms = max(0, elapsed_ms - self._ack_elapsed_ms)
             base_progress = min(0.82, self._ack_elapsed_ms / self.EVENT_DURATION_MS * 0.82)
             rider_progress = min(0.92, base_progress + max(0, after_ack_ms - 700) / self.EVENT_DURATION_MS * 0.10)
-            if after_ack_ms < 350:
-                phase = "ESP32 已确认，正在语音提醒骑行者"
+            if after_ack_ms < 700:
+                phase = "ESP32 已确认，等待真实执行反馈"
                 self.rider_status[1].setText("收到预警 · 准备减速")
-                self.protection_status[1].setText("语音播报中 · 右侧盲区货车，请减速")
-                self.voice_value.setText("语音 · 正在播报预警内容")
-            elif after_ack_ms < 700:
-                phase = "语音播报完成，保护动作演示中"
-                self.rider_status[1].setText("听到提醒 · 正在减速")
-                self.protection_status[1].setText("保护气囊 · 演示充气操作中")
-                self.voice_value.setText("语音 · 播报完成")
+                self.protection_status[1].setText("等待真实 DFPlayer 与泵阀状态")
             else:
-                phase = "提示生效，骑行者已减速通过路口"
+                phase = "预警已确认，模拟骑行者减速通过路口"
                 rider_slowed = True
                 rider_speed_kmh = 6
-                self.rider_status[1].setText("已减速 · 6 km/h · 保持安全距离")
-                self.protection_status[1].setText("语音完成 · 保护气囊演示操作完成")
-                self.voice_value.setText("语音 · 播报完成")
-                self.map_badge.setText("● 提示生效，骑行者减速")
+                self.rider_status[1].setText("模拟减速 · 6 km/h · 保持安全距离")
+                self.map_badge.setText("● 真实 ACK 已确认")
         else:
             self.rider_status[1].setText("正常骑行 · 18 km/h")
             self.protection_status[1].setText("等待 ESP32 确认")
@@ -542,6 +528,8 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         )
         if real_ack and elapsed < self.EVENT_DURATION_MS:
             self._accept_response(elapsed, simulated=False)
+            voice_state = str(payload.get("voice_state") or "not_requested")
+            self.voice_value.setText(f"语音 · {voice_state}")
         elif real_ack:
             self.stages[4].set_state("收到 ACK，但已超过到达期限", "failed")
             self.helmet_status[1].setText("响应超时：ACK 晚于货车到达时间")
@@ -563,7 +551,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.map_badge.setText("● 下发失败")
 
     def _accept_response(self, elapsed_ms: int, *, simulated: bool) -> None:
-        """Record either a real serial ACK or a clearly labelled virtual-scene response."""
+        """Record a response; production flow only calls this for a real ESP32 ACK."""
         self._ack_received = True
         self._ack_is_simulated = simulated
         self._ack_remaining_ms = self.EVENT_DURATION_MS - elapsed_ms
@@ -596,6 +584,9 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
 
     def apply_pneumatic_status(self, event) -> None:
         """Surface true pump/valve telemetry without pretending an animation is hardware proof."""
+        if bool(getattr(event, "self_test_failed", False)):
+            self.protection_status[1].setText("气动自检失败 · 压力未上升 · 自动充气已锁止")
+            return
         pump = "开" if bool(getattr(event, "pump_on", False)) else "关"
         valve = "开" if bool(getattr(event, "valve_on", False)) else "关"
         state = str(getattr(event, "state", "未知"))

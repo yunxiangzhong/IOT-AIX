@@ -648,19 +648,32 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
 
     def apply_pneumatic_status(self, event: PneumaticStatusEvent) -> None:
         self.pneumatic_panel.apply_status(event)
+        pneumatic_failed = event.self_test_failed
         self._queue_mapping_value(self.realtime_panel, "pneumatic",
             f"泵{'开' if event.pump_on else '关'} · 阀{'通电' if event.valve_on else '断电'}\n"
             f"{event.pressure_kpa:.1f} kPa · {'有效' if event.pressure_valid else '无效'}",
             source="pneumatic_status",
-            immediate=not event.pressure_valid,
-            tone="ok" if event.pressure_valid else "fault",
+            immediate=pneumatic_failed or not event.pressure_valid,
+            tone="fault" if pneumatic_failed or not event.pressure_valid else "ok",
+        )
+        feedback = (
+            "气动自检失败：泵已输出但压力未上升\n自动充气已锁止，请检查供电、触发电平和阀气路"
+            if pneumatic_failed
+            else f"真实反馈：泵{'开' if event.pump_on else '关'} · 阀{'通电' if event.valve_on else '断电'}\n"
+                 f"状态 {event.state} · 故障 {event.fault}"
         )
         self._queue_mapping_value(
             self.decision_panel, "pneumatic",
-            f"真实反馈：泵{'开' if event.pump_on else '关'} · 阀{'通电' if event.valve_on else '断电'}\n状态 {event.state} · 故障 {event.fault}",
-            source="pneumatic_status", immediate=event.fault != "none",
-            tone="fault" if event.fault != "none" else "ok",
+            feedback,
+            source="pneumatic_status", immediate=pneumatic_failed or event.fault != "none",
+            tone="fault" if pneumatic_failed or event.fault != "none" else "ok",
         )
+        if pneumatic_failed:
+            self._queue_mapping_value(
+                self.decision_panel, "mpu6050",
+                "充气请求已触发，但气动自检失败\n自动充气已锁止",
+                source="pneumatic_status", immediate=True, tone="fault",
+            )
         self._queue_mapping_value(self.decision_panel, "pressure",
             f"{'允许' if event.vision_fresh and event.pressure_valid else '禁止'}："
             f"{'条件有效' if event.vision_fresh and event.pressure_valid else '视觉或压力数据不新鲜'}",

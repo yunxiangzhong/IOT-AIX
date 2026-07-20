@@ -35,7 +35,7 @@ static void test_unverified_pump_and_valve_do_not_block_pressure_release_mode(vo
     input.valve_verified = false;
     const hardware_health_snapshot_t health = hardware_health_evaluate(&input);
     assert(health.overall == HARDWARE_HEALTH_DEGRADED);
-    assert(health.automatic_ready);
+    assert(!health.automatic_ready);
     assert(health.pump == HARDWARE_HEALTH_PENDING);
     assert(health.valve == HARDWARE_HEALTH_PENDING);
 }

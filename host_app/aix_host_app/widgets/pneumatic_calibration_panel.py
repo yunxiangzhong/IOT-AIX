@@ -31,17 +31,20 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         layout.addWidget(self.status)
         self._pending_saved_target_kpa: float | None = None
         self._last_command = ""
+        self._last_state = ""
+        self._last_fault = "none"
+        self._self_test_queued = False
 
         controls = QtWidgets.QGridLayout()
         self.target_kpa = QtWidgets.QDoubleSpinBox()
-        self.target_kpa.setRange(6.0, 200.0)
+        self.target_kpa.setRange(6.0, 20.0)
         self.target_kpa.setDecimals(1)
         self.target_kpa.setValue(8.0)
         self.target_kpa.setSuffix(" kPa")
         self.max_kpa = QtWidgets.QDoubleSpinBox()
-        self.max_kpa.setRange(6.0, 200.0)
+        self.max_kpa.setRange(6.0, 20.0)
         self.max_kpa.setDecimals(1)
-        self.max_kpa.setValue(200.0)
+        self.max_kpa.setValue(12.0)
         self.max_kpa.setSuffix(" kPa")
         self.max_inflate_ms = QtWidgets.QSpinBox()
         self.max_inflate_ms.setRange(200, 5000)
@@ -78,7 +81,7 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         self.stop_button.clicked.connect(lambda: self._request("emergency_stop"))
         self.reset_button.clicked.connect(lambda: self._request("reset_fault"))
         self.save_button.clicked.connect(self._save_calibration)
-        self.self_test_button.clicked.connect(lambda: self._request("self_test"))
+        self.self_test_button.clicked.connect(self._request_self_test)
         self.refresh_button.clicked.connect(self.config_requested)
 
     @staticmethod
@@ -88,6 +91,18 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
     def _request(self, command: str) -> None:
         self._last_command = command
         self.command_requested.emit({"command_id": self._command_id(), "command": command})
+
+    def _request_self_test(self) -> None:
+        if self._last_fault != "none":
+            self._self_test_queued = False
+            self.status.setText("自检未启动：当前存在锁存故障，请将模块放稳 5 秒后先点击“安全条件下复位锁存”。")
+            return
+        if self._last_state == "vented":
+            self._request("self_test")
+            return
+        self._self_test_queued = True
+        self.status.setText("自检已排队：正在泄压并等待冷却完成，进入 vented 后将自动执行。")
+        self._request("vent")
 
     def _save_calibration(self) -> None:
         self._last_command = "save_calibration"
@@ -101,12 +116,21 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         })
 
     def apply_status(self, event: PneumaticStatusEvent) -> None:
+        self._last_state = event.state
+        self._last_fault = event.fault
+        if self._self_test_queued and event.fault != "none":
+            self._self_test_queued = False
+        elif self._self_test_queued and event.state == "vented":
+            self._self_test_queued = False
+            QtCore.QTimer.singleShot(0, lambda: self._request("self_test"))
         self.status.setText(
             f"气动状态：{event.state} · 故障：{event.fault} · 压力 {event.pressure_kpa:.2f} kPa · "
             f"泵{'开' if event.pump_on else '关'} / 阀{'通电' if event.valve_on else '断电泄压'}"
         )
 
     def apply_command_result(self, payload: dict) -> None:
+        if self._last_command == "self_test" and not payload.get("accepted"):
+            self._self_test_queued = False
         if self._last_command == "save_calibration" and payload.get("accepted"):
             self.status.setText("阈值保存请求已接受，正在读取 ESP32 实际配置确认…")
             return

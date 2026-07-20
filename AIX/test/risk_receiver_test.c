@@ -49,9 +49,9 @@ int main(void)
     }
     if (risk_receiver_format_road_hazard_ack(
             hazard_ack, sizeof(hazard_ack), "helmet-01", "boot-01", true, false,
-            "evt-1", 2500U, "high", "orange_blink_2hz", "") < 0 ||
+            "evt-1", 2500U, "high", "orange_blink_2hz", "queued", "") < 0 ||
         strstr(hazard_ack, "\"type\":\"road_hazard_ack\"") == NULL ||
-        strstr(hazard_ack, "\"voice_state\":\"not_configured\"") == NULL ||
+        strstr(hazard_ack, "\"voice_state\":\"queued\"") == NULL ||
         strstr(hazard_ack, "\"duplicate\":false") == NULL ||
         strstr(hazard_ack, "\"expires_in_ms\":2500") == NULL) {
         printf("road hazard ACK contract is incomplete\n");

@@ -135,9 +135,42 @@ alert_effective_t alert_arbiter_get_effective(alert_arbiter_t *arbiter, uint64_t
 #include "esp_timer.h"
 #include "rgb_status.h"
 #include "risk_receiver.h"
+#include "voice_prompt.h"
 
 static alert_arbiter_t s_runtime;
 static bool s_runtime_started;
+static const char *s_last_voice_state = "not_requested";
+
+static uint64_t voice_event_hash(const char *event_id)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t index = 0; event_id != NULL && event_id[index] != '\0'; ++index) {
+        hash ^= (unsigned char)event_id[index];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static void submit_hazard_voice(const road_hazard_outcome_t *outcome)
+{
+    const char *severity = road_hazard_severity_name(outcome->severity);
+    uint8_t track = 0U;
+    if (!voice_prompt_track_for_band(severity, &track)) {
+        s_last_voice_state = "not_requested";
+        return;
+    }
+    char command_id[VOICE_PROMPT_COMMAND_ID_CAPACITY];
+    snprintf(
+        command_id, sizeof(command_id), "road:%016llx:%u",
+        (unsigned long long)voice_event_hash(outcome->event_id), (unsigned int)track);
+    const voice_prompt_request_t request = {
+        .command_id = command_id,
+        .track = track,
+        .frame_seq = 0U,
+    };
+    const voice_prompt_result_t result = voice_prompt_submit(severity, &request);
+    s_last_voice_state = voice_prompt_status_name(result.status);
+}
 
 static uint64_t runtime_now_ms(void)
 {
@@ -202,12 +235,23 @@ road_hazard_result_t alert_arbiter_runtime_submit(
     road_hazard_outcome_t *outcome)
 {
     if (!s_runtime_started) return ROAD_HAZARD_REJECT_SCHEMA;
-    return alert_arbiter_submit(&s_runtime, request, now_ms, outcome);
+    const road_hazard_result_t result = alert_arbiter_submit(&s_runtime, request, now_ms, outcome);
+    if (result == ROAD_HAZARD_ACCEPTED || result == ROAD_HAZARD_DUPLICATE) {
+        submit_hazard_voice(outcome);
+    } else {
+        s_last_voice_state = "not_requested";
+    }
+    return result;
 }
 
 alert_effective_t alert_arbiter_runtime_get_effective(uint64_t now_ms)
 {
     return alert_arbiter_get_effective(&s_runtime, now_ms);
+}
+
+const char *alert_arbiter_runtime_last_voice_state(void)
+{
+    return s_last_voice_state;
 }
 
 #endif

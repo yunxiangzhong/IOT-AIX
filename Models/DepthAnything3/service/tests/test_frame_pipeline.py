@@ -353,6 +353,61 @@ class AsyncPipelineTests(unittest.TestCase):
             self.assertEqual(state["action"]["frame_seq"], 21)
             self.assertEqual(state["action"]["rgb_pattern"], "yellow_blink_1hz")
 
+    def test_successful_frame_clears_a_previous_model_error_in_frame_ack(self) -> None:
+        class FlakyAnalyzer:
+            depth_model_name = "DA3-SMALL"
+            detector_model_name = "YOLO26m-COCO"
+            backend = "pytorch-cuda-fp16"
+            device = "cuda"
+
+            def __init__(self):
+                self.calls = 0
+
+            def analyze_jpeg(self, image_bytes, *, frame_seq, capture_ts_ms, session_id):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("temporary inference failure")
+                return {
+                    "type": "vision_risk", "version": 1,
+                    "frame_seq": frame_seq, "capture_ts_ms": capture_ts_ms,
+                    "risk_score": 20, "risk_band": "low",
+                    "dominant_class": "", "reason": "scene_proximity",
+                    "latency_ms": 12.0, "valid": True,
+                }
+
+        def transport(url, token, payload, timeout_s):
+            return {
+                "type": "action_ack", "version": 1, "frame_seq": payload["frame_seq"],
+                "accepted": True, "stale": False, "action_state": "safe",
+                "rgb_pattern": "green_solid",
+            }
+
+        analyzer = FlakyAnalyzer()
+        callback = RiskCallbackClient(token="secret", transport=transport, retry_delays_s=(0,))
+        app = create_app(None, analyzer=analyzer, token="secret", callback_client=callback)
+        headers = {
+            "X-AIX-Token": "secret", "X-Device-Id": "aix-helmet-01",
+            "X-Boot-Id": "0123456789abcdef", "X-Capture-Ts-Ms": "1000",
+        }
+        with TestClient(app) as client:
+            client.post("/v1/frames", content=JPEG_A, headers={**headers, "X-Frame-Seq": "1"})
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and client.get("/healthz").json()["model_state"] != "error":
+                time.sleep(0.01)
+            self.assertEqual(client.get("/healthz").json()["model_state"], "error")
+
+            client.post("/v1/frames", content=JPEG_A, headers={**headers, "X-Frame-Seq": "2"})
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and client.get("/healthz").json()["model_state"] != "ready":
+                time.sleep(0.01)
+            self.assertEqual(client.get("/healthz").json()["model_state"], "ready")
+
+            response = client.post(
+                "/v1/frames", content=JPEG_A,
+                headers={**headers, "X-Frame-Seq": "3"},
+            )
+            self.assertEqual(response.json()["model_state"], "ready")
+
 
 if __name__ == "__main__":
     unittest.main()

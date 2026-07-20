@@ -31,7 +31,9 @@ hardware_health_snapshot_t hardware_health_evaluate(const hardware_health_input_
         .reason = "ready",
     };
     snapshot.automatic_ready = input->camera_healthy && input->network_healthy &&
-                               input->pressure_healthy && input->pneumatic_started;
+                               input->pressure_healthy && input->pneumatic_started &&
+                               input->pump_verified && input->valve_verified &&
+                               !input->self_test_failed;
     if (!input->pressure_healthy) {
         snapshot.overall = HARDWARE_HEALTH_FAULT;
         snapshot.reason = "pressure_unhealthy";

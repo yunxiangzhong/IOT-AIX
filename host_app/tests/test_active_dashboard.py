@@ -1,12 +1,13 @@
 import os
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from aix_host_app.app import MainWindow
-from aix_host_app.models import ActionStatusEvent
+from aix_host_app.models import ActionStatusEvent, PneumaticStatusEvent
 from aix_host_app.widgets.active_dashboard import ActiveVisionDashboard
 from aix_host_app.widgets.pneumatic_calibration_panel import PneumaticCalibrationPanel
 
@@ -33,11 +34,30 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         panel.apply_command_result({"accepted": True, "command_id": "save-8", "error": ""})
         self.assertIn("正在读取 ESP32", panel.status.text())
         panel.apply_config({
-            "target_kpa": 8.0, "max_kpa": 200.0, "max_inflate_ms": 2000,
+            "target_kpa": 8.0, "max_kpa": 12.0, "max_inflate_ms": 2000,
             "calibration_valid": True, "automatic_enabled": True,
         })
         self.assertIn("参数修复成功", panel.status.text())
         self.assertIn("8.0 kPa", panel.status.text())
+
+    def test_self_test_waits_for_vented_state_before_dispatch(self):
+        panel = PneumaticCalibrationPanel()
+        commands = []
+        panel.command_requested.connect(commands.append)
+        base = dict(
+            ts_ms=1000, fault="none", trigger="none", operation=0,
+            pump_on=False, valve_on=False, pressure_kpa=5.5,
+            pressure_valid=True, pressure_age_ms=10, vision_state="safe",
+            vision_fresh=True, mpu_available=True, mpu_calibrated=True,
+            impact=False, rapid_tilt=False,
+        )
+        panel.apply_status(PneumaticStatusEvent(state="cooldown", **base))
+        panel._request_self_test()
+        self.assertEqual(commands[-1]["command"], "vent")
+
+        panel.apply_status(PneumaticStatusEvent(state="vented", **base))
+        QtWidgets.QApplication.processEvents()
+        self.assertEqual(commands[-1]["command"], "self_test")
 
     def test_renders_risk_action_and_stale_states(self):
         dashboard = ActiveVisionDashboard()
@@ -195,6 +215,54 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         window.resize(1440, 900)
         self.app.processEvents()
         self.assertFalse(window.dashboard.safety_note.isHidden())
+        window.close()
+
+    def test_main_window_uses_runtime_link_token_for_cooperative_requests(self):
+        with mock.patch.dict(os.environ, {"AIX_LINK_TOKEN": "runtime-link-token"}):
+            window = MainWindow()
+        self.assertEqual(window.chain_client.token, "runtime-link-token")
+        window.close()
+
+    def test_chain_timeout_preserves_healthy_model_and_recovers_same_revision(self):
+        class ExpiredClock:
+            def elapsed(self):
+                return 4000
+
+            def restart(self):
+                return 0
+
+        window = MainWindow()
+        window.chain_client.stop()
+        window._watchdog_timer.stop()
+        window._last_health = {
+            "model": "DA3-SMALL", "model_state": "loading", "model_ready": False,
+            "gpu": "cuda", "model_error": "",
+        }
+        window._last_chain_state = {
+            "revision": 7,
+            "device_id": "aix-helmet-01",
+            "upload": {"state": "healthy", "last_frame_seq": 18, "fps": 1.0},
+            "model": {"state": "ready", "name": "DA3-SMALL", "gpu": "cuda"},
+            "callback": {"state": "confirmed"},
+            "risk": {"valid": True, "score": 71, "band": "high", "frame_seq": 18},
+            "action": {"confirmed": True, "state": "high", "frame_seq": 18, "stale": False},
+        }
+        window._chain_clock = ExpiredClock()
+
+        window._check_chain_timeout()
+
+        self.assertTrue(window._watchdog_fault_shown)
+        window._accept_health({
+            "model": "DA3-SMALL", "model_state": "ready", "model_ready": True,
+            "gpu": "cuda", "model_error": "",
+        })
+        self.assertIn("CUDA GPU", window.dashboard.model_value.text())
+        self.assertIn("已就绪", window.dashboard.model_value.text())
+
+        recovered = dict(window._last_chain_state)
+        window._accept_chain_state(recovered)
+        self.assertFalse(window._watchdog_fault_shown)
+        self.assertIn("1.00", window.dashboard.upload_stage.meta.text())
         window.close()
 
     def test_compact_height_prioritizes_core_closed_loop_information(self):

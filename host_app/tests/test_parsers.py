@@ -67,12 +67,16 @@ class PneumaticStatusParserTests(unittest.TestCase):
             '"state":"holding","fault":"none","trigger":"vision_high",'
             '"operation":1,"pump_on":false,"valve_on":true,'
             '"pressure_kpa":2.1,"pressure_valid":true,"pressure_age_ms":20,'
+            '"pump_verified":true,"valve_verified":true,"self_test_failed":false,'
             '"vision_state":"high","vision_fresh":true,"mpu_available":true,'
             '"mpu_calibrated":true,"impact":false,"rapid_tilt":false}'
         )
         self.assertIsInstance(event, PneumaticStatusEvent)
         self.assertEqual(event.state, "holding")
         self.assertTrue(event.valve_on)
+        self.assertTrue(event.pump_verified)
+        self.assertTrue(event.valve_verified)
+        self.assertFalse(event.self_test_failed)
 
 
 class CameraStatusParserTests(unittest.TestCase):

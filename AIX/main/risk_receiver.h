@@ -34,6 +34,7 @@ int risk_receiver_format_road_hazard_ack(
     uint32_t expires_in_ms,
     const char *severity,
     const char *effective_rgb_pattern,
+    const char *voice_state,
     const char *error);
 int risk_receiver_format_road_hazard_status(
     char *buffer,

@@ -124,7 +124,7 @@ class CooperativeWarningUiTests(unittest.TestCase):
         overview.apply_voice_status(VoiceStatusEvent("error", "road-risk-7", 2, "tf_card_not_ready"))
         self.assertIn("错误", overview.voice_status_value.text())
         window._accept_road_hazard_status(RoadHazardStatusEvent("active", "roadside-test", "high", "orange_blink_2hz", ""))
-        self.assertIn("专用语音待配置", window.scenario_panel.voice_value.text())
+        self.assertIn("等待真实反馈", window.scenario_panel.voice_value.text())
         self.assertIn("active", window.scenario_panel.serial_status.text())
         window.close()
 
@@ -164,9 +164,11 @@ class CooperativeWarningUiTests(unittest.TestCase):
             "event_id": event_id, "delivery": {"state": "completed"},
             "ack": {"state": "completed", "payload": {
                 "type": "road_hazard_ack", "accepted": True, "event_id": event_id,
+                "voice_state": "queued",
             }}, "network_latency_ms": 32, "effective_rgb_pattern": "orange_blink_2hz",
         }})
         self.assertIn("真实 ACK", scene.stages[-1].meta.text())
+        self.assertIn("queued", scene.voice_value.text())
         self.assertIsNotNone(scene._ack_remaining_ms)
         self.assertGreater(scene._ack_remaining_ms, 0)
 
@@ -175,19 +177,16 @@ class CooperativeWarningUiTests(unittest.TestCase):
         self.assertTrue(scene.road_map.rider_slowed)
         self.assertGreater(scene.road_map.rider_progress, before_response)
         self.assertLess(scene.road_map.rider_progress, 2100 / scene.EVENT_DURATION_MS * 0.82)
-        self.assertIn("已减速", scene.rider_status[1].text())
-        self.assertIn("演示操作完成", scene.protection_status[1].text())
+        self.assertIn("模拟减速", scene.rider_status[1].text())
+        self.assertIn("模拟减速", scene.rider_status[1].text())
 
-    def test_scene_uses_labelled_demo_response_and_slows_rider_before_arrival(self):
+    def test_scene_never_fabricates_ack_or_hardware_feedback(self):
         scene = CooperativeScenarioPanel()
         scene.begin_demo()
-        scene._update_from_elapsed(scene.DEMO_RESPONSE_MS)
-        self.assertTrue(scene._ack_received)
-        self.assertTrue(scene._ack_is_simulated)
-        self.assertIn("演示响应", scene.stages[-1].meta.text())
-        scene._update_from_elapsed(scene.DEMO_RESPONSE_MS + 800)
-        self.assertTrue(scene.road_map.rider_slowed)
-        self.assertLess(scene.DEMO_RESPONSE_MS + 800, scene.EVENT_DURATION_MS)
+        scene._update_from_elapsed(3100)
+        self.assertFalse(scene._ack_received)
+        self.assertFalse(scene.road_map.rider_slowed)
+        self.assertIn("等待响应", scene.stages[-1].meta.text())
         scene._update_from_elapsed(scene.EVENT_DURATION_MS)
         self.assertEqual(scene.road_map.eta_seconds, 0.0)
         self.assertAlmostEqual(scene.road_map.progress, 1.0)

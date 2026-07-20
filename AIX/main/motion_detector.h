@@ -35,6 +35,12 @@ typedef struct {
     bool calibrated;
     uint16_t calibration_samples;
     bool calibration_window_stationary;
+    float calibration_accel_x_sum;
+    float calibration_accel_y_sum;
+    float calibration_accel_z_sum;
+    float gravity_x_g;
+    float gravity_y_g;
+    float gravity_z_g;
     uint8_t impact_consecutive_samples;
     uint64_t rapid_tilt_started_ms;
     uint64_t stable_started_ms;

@@ -66,6 +66,9 @@ class PneumaticStatusEvent:
     mpu_calibrated: bool
     impact: bool
     rapid_tilt: bool
+    pump_verified: bool = False
+    valve_verified: bool = False
+    self_test_failed: bool = False
 
 
 @dataclass(frozen=True)

@@ -528,6 +528,13 @@ class AnalysisWorker:
                     capture_ts_ms=item.capture_ts_ms,
                     session_id=f"{item.device_id}:{item.boot_id}",
                 )
+                self._states.set_model(
+                    "ready",
+                    model=getattr(analyzer, "depth_model_name", "DA3-SMALL"),
+                    detector=getattr(analyzer, "detector_model_name", ""),
+                    backend=getattr(analyzer, "backend", "cuda"),
+                    gpu=getattr(analyzer, "device", "cuda"),
+                )
                 risk.update(device_id=item.device_id, boot_id=item.boot_id)
                 self._store.commit_processed(item)
                 self._states.record_risk(item, risk, (time.perf_counter() - started) * 1000.0)

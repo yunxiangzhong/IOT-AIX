@@ -46,4 +46,5 @@ road_hazard_result_t alert_arbiter_runtime_submit(
     uint64_t now_ms,
     road_hazard_outcome_t *outcome);
 alert_effective_t alert_arbiter_runtime_get_effective(uint64_t now_ms);
+const char *alert_arbiter_runtime_last_voice_state(void);
 #endif

@@ -129,6 +129,16 @@ action_decision_t action_controller_get_decision(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     result = action_policy_decide(&s_policy, now_ms());
     xSemaphoreGive(s_lock);
+    const alert_effective_t effective = alert_arbiter_runtime_get_effective(now_ms());
+    if (effective.remote) {
+        result.state = effective.state;
+        result.rgb_pattern = effective.pattern;
+        result.risk_score = effective.state == ACTION_STATE_CRITICAL ? 80U
+                            : effective.state == ACTION_STATE_HIGH ? 60U
+                                                                   : 30U;
+        result.valid = true;
+        result.stale = false;
+    }
     return result;
 }
 

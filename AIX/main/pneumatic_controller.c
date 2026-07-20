@@ -29,9 +29,10 @@
 #define PNEUMATIC_STATUS_PERIOD_MS 1000ULL
 #define PNEUMATIC_NVS_NAMESPACE "pneumatic"
 #define PNEUMATIC_NVS_KEY "cal_v1"
-#define PNEUMATIC_CALIBRATION_VERSION 2U
+#define PNEUMATIC_CALIBRATION_VERSION 3U
 #define PNEUMATIC_SELF_TEST_MIN_RISE_KPA 0.3f
 #define PNEUMATIC_SELF_TEST_TIMEOUT_MS 6000ULL
+#define PNEUMATIC_SELF_TEST_PUMP_MS 800U
 
 static const char *TAG = "AIX_PNEUMATIC";
 
@@ -251,7 +252,8 @@ static void controller_task(void *arg)
         const bool pressure_fresh = has_pressure && pressure.valid &&
                                     timestamp_ms >= pressure.timestamp_ms &&
                                     timestamp_ms - pressure.timestamp_ms <= PNEUMATIC_PRESSURE_STALE_MS;
-        const bool common_automatic_ready = pressure_fresh;
+        const bool common_automatic_ready = pressure_fresh && s_pump_verified &&
+                                            s_valve_verified && !s_self_test_failed;
         pneumatic_policy_input_t input = {
             .vision_state = decision.state,
             .vision_fresh = decision.valid && !decision.stale,
@@ -267,6 +269,9 @@ static void controller_task(void *arg)
 
         xSemaphoreTake(s_lock, portMAX_DELAY);
         input.manual_inflate_pulse = s_pending.inflate_pulse;
+        input.manual_inflate_duration_ms = s_self_test.phase != PNEUMATIC_SELF_TEST_IDLE
+                                               ? PNEUMATIC_SELF_TEST_PUMP_MS
+                                               : PNEUMATIC_CALIBRATION_PULSE_MS;
         input.vent_request = s_pending.vent;
         input.emergency_stop = s_pending.emergency_stop;
         input.reset_fault = s_pending.reset_fault;
