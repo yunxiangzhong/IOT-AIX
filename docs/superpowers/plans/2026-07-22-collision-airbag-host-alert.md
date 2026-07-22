@@ -843,7 +843,7 @@ Run: `powershell -ExecutionPolicy Bypass -File scripts/verify.ps1`
 
 Expected: all Python suites, C safety tests, compile checks, and source ownership invariants pass.
 
-- [ ] **Step 3: Run a clean ESP-IDF 5.4.4 runtime build without flashing**
+- [ ] **Step 3: Run a clean ESP-IDF 5.4.4 runtime build**
 
 Run:
 
@@ -852,9 +852,13 @@ powershell -ExecutionPolicy Bypass -File AIX/sync_runtime_config.ps1
 powershell -ExecutionPolicy Bypass -File scripts/verify.ps1 -BuildFirmware
 ```
 
-Expected: configuration reports `CONFIG_AIX_ENABLE_PNEUMATIC_CONTROL=y` and `CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC=y`; `AIX/build-verify/AIX.bin` and `AIX/build-verify/firmware-manifest.json` are produced. Do not run `idf.py flash` or open a serial port.
+Expected: configuration reports `CONFIG_AIX_ENABLE_PNEUMATIC_CONTROL=y` and `CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC=y`; `AIX/build-verify/AIX.bin` and `AIX/build-verify/firmware-manifest.json` are produced. The user has explicitly authorized flashing in this run, but only after the complete regression and clean build pass.
 
-- [ ] **Step 4: Inspect final evidence and commit any verification-only adjustment**
+- [ ] **Step 4: Flash the verified image to the explicitly identified ESP32-S3**
+
+Check `[System.IO.Ports.SerialPort]::GetPortNames()` and the device/serial state first. Do not kill or seize an unknown process. If the target board and port cannot be identified unambiguously, stop and report the evidence. Otherwise run `idf.py -B build-verify -p COMxx flash` from `AIX` using the just-built `AIX/build-verify` directory. Capture the flash result and, when safely available, boot log separately; a successful flash is not physical pump/valve/airbag acceptance.
+
+- [ ] **Step 5: Inspect final evidence and commit any verification-only adjustment**
 
 ```powershell
 git status --short --branch
@@ -864,6 +868,6 @@ Get-FileHash AIX/build-verify/AIX.bin -Algorithm SHA256
 
 Expected: only intentional source/docs commits are ahead of `origin/main`; generated build outputs remain ignored. If verification required an in-scope correction, rerun the affected focused test and commit only those intentional files with `git add -- <exact paths>`.
 
-- [ ] **Step 5: Report the hardware verification boundary**
+- [ ] **Step 6: Report the hardware verification boundary**
 
-Report three distinct results: implemented in source, verified by automated tests/build, and not yet verified on the physical pump/valve/airbag. State explicitly that no board was flashed in this work.
+Report independent results for source implementation, automated tests/build, flash/boot evidence, and the still-separate physical pump/valve/airbag safety acceptance. Do not treat a successful flash or boot as proof that the airbag hardware inflated safely.
