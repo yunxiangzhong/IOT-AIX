@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 from unittest.mock import Mock
@@ -191,6 +192,45 @@ class MainWindowEventRoutingTests(unittest.TestCase):
 
                 self.assertIn("inflating", window.collision_alert_dialog.pneumatic_label.text())
                 self.assertIn("安全条件有效", window.collision_alert_dialog.readiness_label.text())
+            finally:
+                window.close()
+
+    def test_collision_log_records_pressure_transition_but_deduplicates_same_heartbeat(self):
+        impact = (
+            '{"type":"motion","version":2,"seq":201,"ts_ms":4200,'
+            '"accel_g":{"x":0.0,"y":0.0,"z":2.31},'
+            '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+            '"accel_norm_g":2.31,"accel_delta_g":1.31,"sample_interval_ms":10,'
+            '"impact_event":true,"impact_count":1,"tilt_deg":3.0,"impact":true,'
+            '"rapid_tilt":false,"danger_latched":true,"calibrated":true,'
+            '"speed_mps":0.0,"speed_valid":false}'
+        )
+        pneumatic = {
+            "type": "pneumatic_status", "version": 1, "ts_ms": 4210,
+            "state": "inflating", "fault": "none", "trigger": "impact",
+            "operation": 2, "pump_on": True, "valve_on": True,
+            "pressure_kpa": 15.0, "pressure_valid": True, "pressure_age_ms": 10,
+            "vision_state": "safe", "vision_fresh": True, "mpu_available": True,
+            "mpu_calibrated": True, "impact": True, "rapid_tilt": False,
+            "pump_verified": True, "valve_verified": True,
+            "self_test_failed": False, "automatic_enabled": True,
+        }
+        with tempfile.TemporaryDirectory() as root:
+            window = self.make_window(root)
+            try:
+                window._handle_raw_line(impact)
+                window._handle_raw_line(json.dumps(pneumatic))
+                window._handle_raw_line(json.dumps(pneumatic))
+                pneumatic["pressure_kpa"] = 16.0
+                pneumatic["ts_ms"] = 4220
+                window._handle_raw_line(json.dumps(pneumatic))
+
+                collision_path = window.session_recorder.session_dir / "collision_events.jsonl"
+                updates = [
+                    json.loads(line) for line in collision_path.read_text(encoding="utf-8").splitlines()
+                    if json.loads(line)["event"] == "pneumatic_update"
+                ]
+                self.assertEqual([item["pressure_kpa"] for item in updates], [15.0, 16.0])
             finally:
                 window.close()
 

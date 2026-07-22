@@ -471,6 +471,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.collision_alert_dialog.apply_pneumatic_status(event, readiness)
                 identity = (
                     event.state, event.fault, event.trigger, event.pump_on, event.valve_on,
+                    event.pressure_kpa, event.pressure_valid, event.pressure_age_ms,
+                    event.automatic_enabled, event.pump_verified, event.valve_verified,
+                    event.self_test_failed,
                     readiness.allowed, readiness.reason,
                 )
                 if identity != self._last_collision_pneumatic_identity:
