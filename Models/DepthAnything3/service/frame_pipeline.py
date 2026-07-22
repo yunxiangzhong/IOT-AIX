@@ -160,7 +160,7 @@ class ChainStateRepository:
             },
             "callback": {"state": "waiting", "latency_ms": None, "attempts": 0, "confirmed_count": 0, "failed_count": 0},
             "risk": {"valid": False, "score": 0, "band": "low", "reason": ""},
-            "action": {"confirmed": False, "state": "loading", "rgb_pattern": "blue_blink_1hz", "frame_seq": -1},
+            "action": {"confirmed": False, "state": "loading", "rgb_pattern": "", "frame_seq": -1},
             "road_hazard": {
                 "event_id": "",
                 "roadside_capture": {"state": "waiting"},

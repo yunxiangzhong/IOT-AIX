@@ -1,6 +1,5 @@
 import os
 import unittest
-from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -139,7 +138,12 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertEqual(dashboard.risk_score.text(), "71")
         self.assertIn("高风险", dashboard.risk_band.text())
         self.assertIn("橙灯", dashboard.action_pattern.text())
-        self.assertIn("高风险已触发充气", dashboard.derived_values["mpu6050"].text())
+        self.assertIn("达到气动策略阈值", dashboard.derived_values["mpu6050"].text())
+        self.assertIn(
+            "等待 ESP32 泵阀真实反馈",
+            dashboard.decision_panel.rows["mpu6050"].secondary_label.text(),
+        )
+        self.assertNotIn("已触发充气", dashboard.derived_values["mpu6050"].text())
         self.assertNotIn("MPU", dashboard.derived_values["mpu6050"].text())
 
         dashboard.apply_chain_state({
@@ -154,6 +158,24 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertEqual(dashboard.risk_score.text(), "--")
         self.assertIn("失效", dashboard.risk_band.text())
         self.assertIn("紫灯", dashboard.action_pattern.text())
+
+    def test_unconfirmed_state_does_not_fabricate_cloud_or_rgb_feedback(self):
+        dashboard = ActiveVisionDashboard()
+        dashboard.apply_chain_state({
+            "device_id": "aix-helmet-01",
+            "upload": {"state": "healthy", "last_frame_seq": 18, "fps": 2.48, "frame_age_ms": 120},
+            "model": {"state": "ready", "latency_ms": 200.0, "gpu": "cuda", "error": ""},
+            "callback": {"state": "waiting", "latency_ms": None},
+            "risk": {"valid": True, "score": 71, "band": "high", "reason": "scene_proximity", "frame_seq": 18},
+            "action": {"confirmed": False, "state": "high", "frame_seq": 18, "stale": False},
+            "last_error": "",
+        })
+
+        self.assertNotIn("模拟", dashboard.cloud_value.text())
+        self.assertNotIn("模拟", dashboard.decision_callback.text())
+        self.assertIn("等待", dashboard.action_pattern.text())
+        self.assertNotIn("蓝灯", dashboard.action_pattern.text())
+        self.assertNotIn("20%", dashboard.action_pattern.text())
 
     def test_health_ready_updates_model_stage_before_first_frame(self):
         dashboard = ActiveVisionDashboard()
@@ -283,10 +305,10 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertFalse(window.dashboard.safety_note.isHidden())
         window.close()
 
-    def test_main_window_uses_runtime_link_token_for_cooperative_requests(self):
-        with mock.patch.dict(os.environ, {"AIX_LINK_TOKEN": "runtime-link-token"}):
-            window = MainWindow()
-        self.assertEqual(window.chain_client.token, "runtime-link-token")
+    def test_main_window_has_no_demo_road_hazard_sender(self):
+        window = MainWindow()
+        self.assertFalse(hasattr(window.chain_client, "token"))
+        self.assertFalse(hasattr(window.chain_client, "send_road_hazard"))
         window.close()
 
     def test_chain_timeout_preserves_healthy_model_and_recovers_same_revision(self):

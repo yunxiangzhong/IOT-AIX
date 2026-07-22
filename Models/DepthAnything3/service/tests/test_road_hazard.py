@@ -59,7 +59,7 @@ def event_payload(**overrides):
         "eta_ms": 5000,
         "severity": "high",
         "ttl_ms": 10000,
-        "simulated": True,
+        "simulated": False,
         "message_code": "truck_right_eta_5s",
     }
     payload.update(overrides)
@@ -75,11 +75,16 @@ def frame(device_id="aix-helmet-01", received_ts_ms=10_000, source_ip="192.168.1
 
 
 class RoadHazardSchemaTests(unittest.TestCase):
-    def test_accepts_demonstration_payload(self):
+    def test_accepts_real_payload(self):
         from road_hazard import RoadHazardEvent
         event = RoadHazardEvent.from_payload(event_payload())
         self.assertEqual(event.direction, "right")
         self.assertEqual(event.eta_ms, 5000)
+
+    def test_rejects_simulated_payload(self):
+        from road_hazard import RoadHazardEvent, RoadHazardValidationError
+        with self.assertRaises(RoadHazardValidationError):
+            RoadHazardEvent.from_payload(event_payload(simulated=True))
 
     def test_rejects_boolean_and_invalid_identifier_values(self):
         from road_hazard import RoadHazardValidationError, RoadHazardEvent

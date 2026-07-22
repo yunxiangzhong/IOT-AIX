@@ -1,6 +1,6 @@
 # AIX PC 服务与上位机
 
-本目录包含 PySide6 上位机和其启动脚本。它消费 PC 主动帧服务，不再从 ESP 拉取 capture.jpg，也不会在 UI 内执行同步模型推理。当前界面为“中控总览 / 协同场景”双页：默认用稳定的已分析画面，设备接入放在顶层入口；气动标定页仍只是受限命令转发，且本项目没有真实泵、阀和气囊的验收记录。
+本目录包含 PySide6 上位机和其启动脚本。它消费 PC 主动帧服务，不再从 ESP 拉取 capture.jpg，也不会在 UI 内执行同步模型推理。当前界面只保留真实“中控总览”：默认用稳定的已分析画面，设备接入放在顶层入口；气动标定页仍只是受限命令转发，且本项目没有完整泵、阀和气囊安全验收记录。
 
 ## 已实现的功能
 
@@ -22,7 +22,7 @@
 
 - PC HTTP：/healthz、/v1/frame/processed.jpg、/v1/state/latest、/v1/pneumatic/config、/v1/pneumatic/command；latest.jpg 仅作原图诊断。
 - ESP 串口：pressure、motion、camera_status、action_status、pneumatic_status。
-- ESP 串口还会记录 `voice_status` 和 `road_hazard_status`；远端货车事件的真实固件动作仅为 RGB 仲裁，界面的语音/保护状态不会伪装为 DFPlayer 播放或气囊充气证据。
+- ESP 串口还会记录 `voice_status` 和 `road_hazard_status`；生产 UI 不生成路侧事件，远端真实货车事件的固件动作仅为 RGB 仲裁，且不会被解释为 DFPlayer 播放或气囊充气证据。
 - 默认页用固定已分析画面和中文交通目标框，静态展示默认开启；风险卡只接受同一帧 PC 快照，串口 `action_status` 只写诊断日志，不再覆盖风险、动作反馈或 RGB 卡。气动控制放在诊断/标定区域，不与默认视觉提示混为“已自动保护”。
 - 设备首次上报新的 boot_id 后，上位机才请求该设备的气动配置。
 
@@ -44,7 +44,7 @@ PC 服务的气动代理会把请求转到最近一帧来源地址的 ESP 端口
 - HTTP、串口和气动相关的自动化测试使用测试夹具/模拟传输；通过测试或源码构建不代表 MOSFET、SS54、泵、阀、电池、气囊已工作，更不构成实体气囊验收。
 - camera_preview 和 vision_depth 仍可被解析，用于旧记录或诊断兼容；默认界面的帧源始终是 PC 主动帧服务。
 - 旧 /v1/infer 与 /v1/analyze 仅供兼容测试，不是启动器运行的默认链路。
-- 协同场景中的路侧相机、云端货车检测、ETA、演示响应和骑行者减速均为软件演示。真实 ACK、串口状态和会话记录会如实显示，但不构成真实交通监控、语音或气动验收。
+- 旧协同场景及其固定路侧画面、ETA、演示响应和骑行者减速已删除；PC 服务和固件保留 `simulated` 字段只是为了明确拒绝 `simulated=true`。
 
 ## 尚未实现或尚未验收
 
@@ -73,7 +73,7 @@ session.json
 
 pneumatic.ndjson 记录已发送命令、ESP 返回确认和气动状态；session.json 记录读取到的气动配置。它们用于追溯软件链路，并不能替代万用表、压力表或气路测试。
 
-road_hazard.ndjson 记录路侧事件提交、服务状态推进、真实 ACK 与串口 `road_hazard_status`。模拟页面不能制造 ESP32 成功；设备离线、地址缺失、boot 不匹配、TTL 到期和 ACK 不匹配会在服务状态中保留实际失败原因。
+road_hazard.ndjson 记录服务状态推进、真实 ACK 与串口 `road_hazard_status`。生产 UI 不生成事件或制造 ESP32 成功；设备离线、地址缺失、boot 不匹配、TTL 到期和 ACK 不匹配会在服务状态中保留实际失败原因。
 
 collision_events.jsonl 记录新 MPU 碰撞的本地求助窗口和气动共同门状态；它用于软件追溯，不是实物气囊或外部救援完成记录。
 
@@ -86,9 +86,9 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 .\start_host_app.cmd
 ~~~
 
-启动器会同步运行时配置、检查 2.4 GHz 热点、复用已有的健康模型服务或启动异步模型服务、等待 HTTP 健康状态，再启动 UI。旧 run_host_app.cmd 不是当前链路入口。
+启动器会同步运行时配置、检查 2.4 GHz 热点，只复用已确认 DA3-SMALL、YOLO26m、CUDA 和真实后端全部就绪的模型服务，否则启动异步模型服务并等待同一完整条件，再启动 UI。旧 run_host_app.cmd 不是当前链路入口。
 
-运行时 Wi-Fi、token、串口、存储路径和模拟开关都在本机配置中；凭据与 token 不会提交到 Git。
+运行时 Wi-Fi、token、串口和存储路径都在本机配置中；凭据与 token 不会提交到 Git。
 
 ## 验证与相关文档
 

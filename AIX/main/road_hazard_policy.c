@@ -64,7 +64,7 @@ static road_hazard_result_t validate(
          strcmp(request->direction != NULL ? request->direction : "", "front") != 0 &&
          strcmp(request->direction != NULL ? request->direction : "", "rear") != 0) ||
         request->object_type == NULL || strcmp(request->object_type, "truck") != 0 ||
-        !integer_in_range(request->eta_ms, 1.0, 4294967295.0) || !request->simulated_is_bool ||
+        !integer_in_range(request->eta_ms, 1.0, 4294967295.0) || !request->simulated_is_bool || request->simulated ||
         !parse_severity(request->severity, severity)) {
         return ROAD_HAZARD_REJECT_SCHEMA;
     }

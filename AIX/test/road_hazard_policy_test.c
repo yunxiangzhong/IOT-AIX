@@ -85,6 +85,9 @@ int main(void)
     invalid = valid_request("evt-schema");
     invalid.simulated_is_bool = false; /* JSON number 0/1 must not pass as a boolean. */
     if (expect_rejected(&policy, invalid, 1000U, ROAD_HAZARD_REJECT_SCHEMA)) return 1;
+    invalid = valid_request("evt-simulated");
+    invalid.simulated = true; /* Formal firmware must never accept demo data. */
+    if (expect_rejected(&policy, invalid, 1000U, ROAD_HAZARD_REJECT_SCHEMA)) return 1;
     invalid = valid_request("evt-schema");
     invalid.eta_ms = 0.0;
     if (expect_rejected(&policy, invalid, 1000U, ROAD_HAZARD_REJECT_SCHEMA)) return 1;

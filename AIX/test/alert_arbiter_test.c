@@ -9,7 +9,7 @@ static road_hazard_request_t hazard(const char *event_id, const char *severity, 
         .device_id = "helmet-01", .boot_id = "boot-01", .event_id = event_id,
         .camera_id = "cam", .intersection_id = "crossing", .message_code = "TRUCK_APPROACH",
         .direction = "front", .object_type = "truck", .eta_ms = 900.0,
-        .severity = severity, .ttl_ms = ttl_ms, .simulated = true, .simulated_is_bool = true,
+        .severity = severity, .ttl_ms = ttl_ms, .simulated = false, .simulated_is_bool = true,
     };
     return request;
 }

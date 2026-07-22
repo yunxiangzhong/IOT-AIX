@@ -16,6 +16,25 @@ $serviceRoot = Join-Path $projectRoot "Models\DepthAnything3\service"
 $syncScript = Join-Path $projectRoot "AIX\sync_runtime_config.ps1"
 $hotspotScript = Join-Path $hostRoot "ensure_mobile_hotspot.ps1"
 
+function Test-RealModelHealth {
+    param([Parameter(Mandatory = $true)][object]$Health)
+
+    $gpu = [string]$Health.gpu
+    if ([string]::IsNullOrWhiteSpace($gpu)) {
+        $gpu = [string]$Health.device
+    }
+    $backend = [string]$Health.backend
+    return (
+        $Health.http_ready -eq $true -and
+        $Health.model_ready -eq $true -and
+        [string]$Health.model_state -eq "ready" -and
+        [string]$Health.model -eq "DA3-SMALL" -and
+        [string]$Health.detector -eq "YOLO26m-COCO" -and
+        $gpu.ToLowerInvariant() -eq "cuda" -and
+        $backend -in @("tensorrt-fp16", "pytorch-cuda-fp16")
+    )
+}
+
 foreach ($required in @($hostPython, $modelPython, $syncScript, $hotspotScript)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Missing required runtime file: $required"
@@ -59,15 +78,19 @@ $env:AIX_MODEL_STDERR_PATH = $stderrPath
 $service = $null
 $startedModelService = $false
 $reuseHealthyService = $false
+$existingServiceResponded = $false
 try {
     $existingHealth = Invoke-RestMethod -Uri "http://127.0.0.1:8008/healthz" -TimeoutSec 1
-    $reuseHealthyService = $existingHealth.http_ready -eq $true
+    $existingServiceResponded = $true
+    $reuseHealthyService = Test-RealModelHealth -Health $existingHealth
 } catch {
     $reuseHealthyService = $false
 }
 
 if ($reuseHealthyService) {
-    Write-Output "[3/5] Reusing healthy local model service on 127.0.0.1:8008..."
+    Write-Output "[3/5] Reusing verified DA3-SMALL + YOLO26m CUDA service on 127.0.0.1:8008..."
+} elseif ($existingServiceResponded) {
+    throw "Port 8008 is occupied by a service that is not the ready DA3-SMALL + YOLO26m CUDA runtime. Stop it explicitly and retry."
 } else {
     Write-Output "[3/5] Starting asynchronous model service..."
     $modelArgs = @("-m", "uvicorn", "server:create_runtime_app", "--factory", "--host", "0.0.0.0", "--port", "8008")
@@ -77,8 +100,8 @@ if ($reuseHealthyService) {
 }
 
 try {
-    Write-Output "[4/5] Waiting for HTTP health endpoint..."
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    Write-Output "[4/5] Waiting for real model and CUDA backend readiness..."
+    $deadline = [DateTime]::UtcNow.AddSeconds(180)
     $healthy = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($startedModelService -and $service.HasExited) {
@@ -86,7 +109,7 @@ try {
         }
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:8008/healthz" -TimeoutSec 1
-            if ($health.http_ready -eq $true) {
+            if (Test-RealModelHealth -Health $health) {
                 $healthy = $true
                 break
             }
@@ -95,7 +118,7 @@ try {
         }
     }
     if (-not $healthy) {
-        throw "Model service HTTP endpoint did not become ready within 30 seconds. See $stderrPath"
+        throw "DA3-SMALL + YOLO26m CUDA model service did not become ready within 180 seconds. See $stderrPath"
     }
 
     Write-Output "[5/5] Starting PySide6 industrial dashboard..."
