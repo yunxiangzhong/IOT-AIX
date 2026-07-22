@@ -220,6 +220,8 @@ class MainWindowEventRoutingTests(unittest.TestCase):
             try:
                 window._handle_raw_line(impact)
                 window._handle_raw_line(json.dumps(pneumatic))
+                pneumatic["pressure_age_ms"] = 11
+                pneumatic["ts_ms"] = 4211
                 window._handle_raw_line(json.dumps(pneumatic))
                 pneumatic["pressure_kpa"] = 16.0
                 pneumatic["ts_ms"] = 4220
