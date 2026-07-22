@@ -46,6 +46,10 @@ class MotionEvent:
     rapid_tilt: bool = False
     danger_latched: bool = False
     calibrated: bool = False
+    accel_delta_g: float | None = None
+    sample_interval_ms: int | None = None
+    impact_event: bool = False
+    impact_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,7 @@ class PneumaticStatusEvent:
     pump_verified: bool = False
     valve_verified: bool = False
     self_test_failed: bool = False
+    automatic_enabled: bool = False
 
 
 @dataclass(frozen=True)

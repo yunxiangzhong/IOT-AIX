@@ -38,11 +38,54 @@ class MotionParserTests(unittest.TestCase):
             '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
             '"accel_norm_g":1.0,"tilt_deg":12.3,"impact":false,'
             '"rapid_tilt":true,"danger_latched":true,"calibrated":true,'
+            '"accel_delta_g":1.31,"sample_interval_ms":10,'
+            '"impact_event":true,"impact_count":7,'
             '"speed_mps":0.0,"speed_valid":false}'
         )
         self.assertTrue(event.rapid_tilt)
         self.assertAlmostEqual(event.accel_norm_g, 1.0)
         self.assertFalse(event.speed_valid)
+        self.assertAlmostEqual(event.accel_delta_g, 1.31)
+        self.assertEqual(event.sample_interval_ms, 10)
+        self.assertTrue(event.impact_event)
+        self.assertEqual(event.impact_count, 7)
+
+    def test_motion_v2_defaults_collision_metadata_for_old_firmware(self):
+        event = parse_event_line(
+            '{"type":"motion","version":2,"seq":2,"ts_ms":1000,'
+            '"accel_g":{"x":0.1,"y":0.2,"z":0.97},'
+            '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+            '"accel_norm_g":1.0,"tilt_deg":12.3,"impact":false,'
+            '"rapid_tilt":false,"danger_latched":false,"calibrated":true}'
+        )
+
+        self.assertIsNone(event.accel_delta_g)
+        self.assertIsNone(event.sample_interval_ms)
+        self.assertFalse(event.impact_event)
+        self.assertIsNone(event.impact_count)
+
+    def test_rejects_negative_motion_collision_counters(self):
+        base = (
+            '{"type":"motion","version":2,"seq":2,"ts_ms":1000,'
+            '"accel_g":{"x":0.1,"y":0.2,"z":0.97},'
+            '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+            '"accel_norm_g":1.0,"tilt_deg":12.3,"impact":false,'
+            '"rapid_tilt":false,"danger_latched":false,"calibrated":true,%s}'
+        )
+        for field in ('"sample_interval_ms":-1', '"impact_count":-1'):
+            with self.subTest(field=field), self.assertRaises(ParseError):
+                parse_event_line(base % field)
+
+    def test_rejects_boolean_motion_collision_counter(self):
+        with self.assertRaises(ParseError):
+            parse_event_line(
+                '{"type":"motion","version":2,"seq":2,"ts_ms":1000,'
+                '"accel_g":{"x":0.1,"y":0.2,"z":0.97},'
+                '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+                '"accel_norm_g":1.0,"tilt_deg":12.3,"impact":false,'
+                '"rapid_tilt":false,"danger_latched":false,"calibrated":true,'
+                '"impact_count":true}'
+            )
 
 
 class HardwareHealthParserTests(unittest.TestCase):
@@ -68,6 +111,7 @@ class PneumaticStatusParserTests(unittest.TestCase):
             '"operation":1,"pump_on":false,"valve_on":true,'
             '"pressure_kpa":2.1,"pressure_valid":true,"pressure_age_ms":20,'
             '"pump_verified":true,"valve_verified":true,"self_test_failed":false,'
+            '"automatic_enabled":true,'
             '"vision_state":"high","vision_fresh":true,"mpu_available":true,'
             '"mpu_calibrated":true,"impact":false,"rapid_tilt":false}'
         )
@@ -77,6 +121,20 @@ class PneumaticStatusParserTests(unittest.TestCase):
         self.assertTrue(event.pump_verified)
         self.assertTrue(event.valve_verified)
         self.assertFalse(event.self_test_failed)
+        self.assertTrue(event.automatic_enabled)
+
+    def test_old_pneumatic_status_defaults_automatic_mode_to_disabled(self):
+        event = parse_event_line(
+            '{"type":"pneumatic_status","version":1,"ts_ms":1000,'
+            '"state":"holding","fault":"none","trigger":"vision_high",'
+            '"operation":1,"pump_on":false,"valve_on":true,'
+            '"pressure_kpa":2.1,"pressure_valid":true,"pressure_age_ms":20,'
+            '"pump_verified":true,"valve_verified":true,"self_test_failed":false,'
+            '"vision_state":"high","vision_fresh":true,"mpu_available":true,'
+            '"mpu_calibrated":true,"impact":false,"rapid_tilt":false}'
+        )
+
+        self.assertFalse(event.automatic_enabled)
 
 
 class CameraStatusParserTests(unittest.TestCase):

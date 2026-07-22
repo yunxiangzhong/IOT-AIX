@@ -139,6 +139,21 @@ def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
         if not isinstance(accel, dict) or not isinstance(gyro, dict):
             raise ParseError("motion v2 axes must be objects")
         try:
+            accel_delta_g = payload.get("accel_delta_g")
+            sample_interval_ms = payload.get("sample_interval_ms")
+            impact_event = payload.get("impact_event")
+            impact_count = payload.get("impact_count")
+            parsed_sample_interval_ms = (
+                None if sample_interval_ms is None
+                else _as_int(sample_interval_ms, "sample_interval_ms")
+            )
+            parsed_impact_count = (
+                None if impact_count is None else _as_int(impact_count, "impact_count")
+            )
+            if parsed_sample_interval_ms is not None and parsed_sample_interval_ms < 0:
+                raise ValueError("sample_interval_ms must be non-negative")
+            if parsed_impact_count is not None and parsed_impact_count < 0:
+                raise ValueError("impact_count must be non-negative")
             return MotionEvent(
                 seq=_as_int(payload["seq"], "seq"), ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
                 speed_mps=_as_float(payload.get("speed_mps", 0.0), "speed_mps"),
@@ -152,6 +167,16 @@ def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
                 rapid_tilt=_as_bool(payload["rapid_tilt"], "rapid_tilt"),
                 danger_latched=_as_bool(payload["danger_latched"], "danger_latched"),
                 calibrated=_as_bool(payload["calibrated"], "calibrated"), source="json-v2",
+                accel_delta_g=(
+                    None if accel_delta_g is None
+                    else _as_float(accel_delta_g, "accel_delta_g")
+                ),
+                sample_interval_ms=parsed_sample_interval_ms,
+                impact_event=(
+                    False if impact_event is None
+                    else _as_bool(impact_event, "impact_event")
+                ),
+                impact_count=parsed_impact_count,
             )
         except (TypeError, ValueError) as exc:
             raise ParseError(str(exc)) from exc
@@ -191,6 +216,7 @@ def _parse_pneumatic_status_payload(payload: dict[str, Any]) -> PneumaticStatusE
             pump_verified=_as_bool(payload.get("pump_verified", False), "pump_verified"),
             valve_verified=_as_bool(payload.get("valve_verified", False), "valve_verified"),
             self_test_failed=_as_bool(payload.get("self_test_failed", False), "self_test_failed"),
+            automatic_enabled=_as_bool(payload.get("automatic_enabled", False), "automatic_enabled"),
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc
