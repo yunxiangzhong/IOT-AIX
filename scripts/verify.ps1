@@ -163,40 +163,46 @@ function Remove-CComments {
 }
 
 $mpuSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "mpu6050_sensor.c")
+$mpuCodeText = Remove-CComments $mpuSourceText
 $emitMotionMatch = [regex]::Match(
-    $mpuSourceText,
-    '(?s)static void emit_motion\([^)]*\)\s*(\{.*?\r?\n\})\r?\n\r?\nstatic esp_err_t read_sample')
-$emitMotionBody = Remove-CComments $emitMotionMatch.Groups[1].Value
-$motionTelemetryFields = @(
-    @{ JsonKey = 'accel_delta_g'; Argument = 'status->motion\.accel_delta_g' },
-    @{ JsonKey = 'sample_interval_ms'; Argument = 'status->motion\.sample_interval_ms' },
-    @{ JsonKey = 'impact_event'; Argument = 'status->motion\.impact_event' },
-    @{ JsonKey = 'impact_count'; Argument = 'status->motion\.impact_count' }
-)
-if ([string]::IsNullOrWhiteSpace($emitMotionBody)) {
-    throw "MPU collision telemetry must be serialized by emit_motion"
-}
-foreach ($field in $motionTelemetryFields) {
-    $jsonKeyPattern = '\\?"' + [regex]::Escape($field.JsonKey) + '\\?"\s*:'
-    if ($emitMotionBody -notmatch $jsonKeyPattern -or $emitMotionBody -notmatch $field.Argument) {
-        throw "emit_motion must serialize $($field.JsonKey) from its status->motion field"
-    }
+    $mpuCodeText,
+    '(?s)static void emit_motion\([^)]*\)\s*(\{.*?\})\s*static esp_err_t read_sample')
+$emitMotionBody = $emitMotionMatch.Groups[1].Value
+$motionTelemetryMappingPattern = '(?s)printf\s*\(.*?' +
+    '\\?"accel_delta_g\\?"\s*:\s*%\.3f.*?' +
+    '\\?"sample_interval_ms\\?"\s*:\s*%lu.*?' +
+    '\\?"impact_event\\?"\s*:\s*%s.*?' +
+    '\\?"impact_count\\?"\s*:\s*%lu.*?' +
+    'status->motion\.accel_delta_g\s*,\s*' +
+    '\(unsigned long\)\s*status->motion\.sample_interval_ms\s*,\s*' +
+    'status->motion\.impact_event\s*\?\s*"true"\s*:\s*"false"\s*,\s*' +
+    '\(unsigned long\)\s*status->motion\.impact_count\b'
+if ([string]::IsNullOrWhiteSpace($emitMotionBody) -or
+    $emitMotionBody -notmatch $motionTelemetryMappingPattern) {
+    throw "emit_motion must preserve collision JSON field-to-argument ordering"
 }
 
 $mpuTaskMatch = [regex]::Match(
-    $mpuSourceText,
-    '(?s)static void mpu6050_task\([^)]*\)\s*(\{.*?\r?\n\})\r?\n\r?\nstatic esp_err_t configure_mpu6050')
-$mpuTaskBody = Remove-CComments $mpuTaskMatch.Groups[1].Value
+    $mpuCodeText,
+    '(?s)static void mpu6050_task\([^)]*\)\s*(\{.*?\})\s*static esp_err_t configure_mpu6050')
+$mpuTaskBody = $mpuTaskMatch.Groups[1].Value
+$impactEmitBlockMatch = [regex]::Match(
+    $mpuTaskBody,
+    '(?s)if\s*\(\s*next\.motion\.impact_event\s*\|\|.*?\)\s*(\{.*?\})')
+$impactEmitBlock = $impactEmitBlockMatch.Groups[1].Value
 if ([string]::IsNullOrWhiteSpace($mpuTaskBody) -or
-    $mpuTaskBody -notmatch 'if\s*\(\s*next\.motion\.impact_event\s*\|\|') {
+    [string]::IsNullOrWhiteSpace($impactEmitBlock) -or
+    $impactEmitBlock -notmatch 'emit_motion\s*\(\s*&next\s*\)\s*;' -or
+    $impactEmitBlock -notmatch 'last_log_ms\s*=\s*next\.timestamp_ms\s*;') {
     throw "MPU collision events must be emitted immediately with a persistent counter"
 }
 
 $riskReceiverSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "risk_receiver.c")
+$riskReceiverCodeText = Remove-CComments $riskReceiverSourceText
 $pneumaticConfigMatch = [regex]::Match(
-    $riskReceiverSourceText,
-    '(?s)static esp_err_t pneumatic_config_handler\([^)]*\)\s*(\{.*?\r?\n\})\r?\n\r?\nesp_err_t risk_receiver_start')
-$pneumaticConfigBody = Remove-CComments $pneumaticConfigMatch.Groups[1].Value
+    $riskReceiverCodeText,
+    '(?s)static esp_err_t pneumatic_config_handler\([^)]*\)\s*(\{.*?\})\s*esp_err_t risk_receiver_start')
+$pneumaticConfigBody = $pneumaticConfigMatch.Groups[1].Value
 $collisionConfigJsonPattern = '(?s)\\?"impact_delta_g\\?"\s*:\s*%\.1f.*?' +
     '\\?"impact_max_interval_ms\\?"\s*:\s*%llu.*?' +
     '\\?"impact_refractory_ms\\?"\s*:\s*%llu'
