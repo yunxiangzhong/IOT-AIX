@@ -62,6 +62,26 @@ class SessionRecorderTests(unittest.TestCase):
             self.assertEqual(metadata["pneumatic_config"]["target_kpa"], 2.0)
             self.assertIsNotNone(metadata["ended_at"])
 
+    def test_records_collision_lifecycle_as_append_only_jsonl(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recorder = SessionRecorder(Path(temp_dir))
+            recorder.record_collision({"event": "detected", "collision_id": "collision-1"})
+            session = recorder.start("COM21", 115200, "session-1")
+
+            recorder.record_collision({"event": "detected", "collision_id": "collision-1"})
+            recorder.record_collision({"event": "pneumatic_update", "collision_id": "collision-1"})
+            recorder.record_collision({"event": "acknowledged", "collision_id": "collision-1"})
+            recorder.close()
+            recorder.close()
+
+            lines = (session / "collision_events.jsonl").read_text(encoding="utf-8").splitlines()
+            events = [json.loads(line) for line in lines]
+
+            self.assertEqual(len(events), 3)
+            self.assertEqual([event["event"] for event in events], ["detected", "pneumatic_update", "acknowledged"])
+            self.assertEqual([event["collision_id"] for event in events], ["collision-1"] * 3)
+            self.assertTrue(all(event.get("wall_time") for event in events))
+
 
 if __name__ == "__main__":
     unittest.main()
