@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -68,7 +69,7 @@ class SessionRecorderTests(unittest.TestCase):
             recorder.record_collision({"event": "detected", "collision_id": "collision-1"})
             session = recorder.start("COM21", 115200, "session-1")
 
-            recorder.record_collision({"event": "detected", "collision_id": "collision-1"})
+            recorder.record_collision({"event": "detected", "collision_id": "collision-1", "wall_time": "forged"})
             recorder.record_collision({"event": "pneumatic_update", "collision_id": "collision-1"})
             recorder.record_collision({"event": "acknowledged", "collision_id": "collision-1"})
             recorder.close()
@@ -81,6 +82,8 @@ class SessionRecorderTests(unittest.TestCase):
             self.assertEqual([event["event"] for event in events], ["detected", "pneumatic_update", "acknowledged"])
             self.assertEqual([event["collision_id"] for event in events], ["collision-1"] * 3)
             self.assertTrue(all(event.get("wall_time") for event in events))
+            self.assertNotEqual(events[0]["wall_time"], "forged")
+            self.assertIsNotNone(datetime.fromisoformat(events[0]["wall_time"]).tzinfo)
 
 
 if __name__ == "__main__":

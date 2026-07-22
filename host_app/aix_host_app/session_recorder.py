@@ -126,7 +126,7 @@ class SessionRecorder:
     def record_collision(self, payload: dict[str, Any]) -> None:
         if self._collision is None:
             return
-        self._write_line(self._collision, {"wall_time": datetime.now().astimezone().isoformat(), **payload})
+        self._write_line(self._collision, {**payload, "wall_time": datetime.now().astimezone().isoformat()})
 
     def append_model_log(self, line: str) -> None:
         if self._model_log is None:
