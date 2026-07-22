@@ -4,8 +4,9 @@
 #include <stdint.h>
 
 #define MOTION_DETECTOR_CALIBRATION_SAMPLES 200U
-#define MOTION_DETECTOR_IMPACT_THRESHOLD_G 2.0f
-#define MOTION_DETECTOR_IMPACT_SAMPLES 2U
+#define MOTION_DETECTOR_IMPACT_DELTA_G 1.2f
+#define MOTION_DETECTOR_IMPACT_MAX_INTERVAL_MS 20ULL
+#define MOTION_DETECTOR_IMPACT_REFRACTORY_MS 200ULL
 #define MOTION_DETECTOR_RAPID_TILT_DEG 45.0f
 #define MOTION_DETECTOR_RAPID_TILT_DPS 80.0f
 #define MOTION_DETECTOR_RAPID_TILT_MS 200ULL
@@ -24,8 +25,12 @@ typedef struct {
     bool calibrated;
     uint16_t calibration_samples;
     float accel_norm_g;
+    float accel_delta_g;
     float gyro_norm_dps;
     float tilt_deg;
+    uint32_t sample_interval_ms;
+    bool impact_event;
+    uint32_t impact_count;
     bool impact;
     bool rapid_tilt;
     bool danger_latched;
@@ -41,7 +46,11 @@ typedef struct {
     float gravity_x_g;
     float gravity_y_g;
     float gravity_z_g;
-    uint8_t impact_consecutive_samples;
+    float previous_accel_norm_g;
+    uint64_t previous_sample_ms;
+    uint64_t last_impact_ms;
+    uint32_t impact_count;
+    bool has_previous_sample;
     uint64_t rapid_tilt_started_ms;
     uint64_t stable_started_ms;
     bool impact_latched;

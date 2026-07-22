@@ -35,14 +35,21 @@ static float relative_tilt_deg(
 static motion_output_t build_output(
     const motion_detector_t *detector,
     float accel_norm_g,
+    float accel_delta_g,
     float gyro_norm_dps,
-    float tilt_deg) {
+    float tilt_deg,
+    uint32_t sample_interval_ms,
+    bool impact_event) {
     return (motion_output_t){
         .calibrated = detector->calibrated,
         .calibration_samples = detector->calibration_samples,
         .accel_norm_g = accel_norm_g,
+        .accel_delta_g = accel_delta_g,
         .gyro_norm_dps = gyro_norm_dps,
         .tilt_deg = tilt_deg,
+        .sample_interval_ms = sample_interval_ms,
+        .impact_event = impact_event,
+        .impact_count = detector->impact_count,
         .impact = detector->impact_latched,
         .rapid_tilt = detector->rapid_tilt_latched,
         .danger_latched = detector->impact_latched || detector->rapid_tilt_latched,
@@ -85,6 +92,9 @@ motion_output_t motion_detector_step(
                 detector->gravity_y_g = detector->calibration_accel_y_sum / sample_count;
                 detector->gravity_z_g = detector->calibration_accel_z_sum / sample_count;
                 detector->calibrated = true;
+                detector->previous_accel_norm_g = accel_norm_g;
+                detector->previous_sample_ms = now_ms;
+                detector->has_previous_sample = true;
             } else {
                 detector->calibration_samples = 0;
                 detector->calibration_window_stationary = true;
@@ -93,21 +103,35 @@ motion_output_t motion_detector_step(
                 detector->calibration_accel_z_sum = 0.0f;
             }
         }
-        return build_output(detector, accel_norm_g, gyro_norm_dps, tilt_deg);
+        return build_output(detector, accel_norm_g, 0.0f, gyro_norm_dps, tilt_deg, 0U, false);
     }
 
     tilt_deg = relative_tilt_deg(detector, sample, accel_norm_g);
+    float accel_delta_g = 0.0f;
+    uint32_t sample_interval_ms = 0U;
+    bool impact_event = false;
 
-    if (accel_norm_g >= MOTION_DETECTOR_IMPACT_THRESHOLD_G) {
-        if (detector->impact_consecutive_samples < UINT8_MAX) {
-            detector->impact_consecutive_samples++;
+    if (detector->has_previous_sample && now_ms > detector->previous_sample_ms) {
+        const uint64_t interval_ms = now_ms - detector->previous_sample_ms;
+        sample_interval_ms = interval_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)interval_ms;
+        if (interval_ms <= MOTION_DETECTOR_IMPACT_MAX_INTERVAL_MS) {
+            accel_delta_g = fabsf(accel_norm_g - detector->previous_accel_norm_g);
+            const bool refractory_complete = detector->impact_count == 0U ||
+                                             (now_ms >= detector->last_impact_ms &&
+                                              now_ms - detector->last_impact_ms >=
+                                                  MOTION_DETECTOR_IMPACT_REFRACTORY_MS);
+            if (accel_delta_g >= MOTION_DETECTOR_IMPACT_DELTA_G && refractory_complete) {
+                impact_event = true;
+                detector->impact_latched = true;
+                detector->impact_count++;
+                detector->last_impact_ms = now_ms;
+                detector->stable_started_ms = 0;
+            }
         }
-        if (detector->impact_consecutive_samples >= MOTION_DETECTOR_IMPACT_SAMPLES) {
-            detector->impact_latched = true;
-        }
-    } else {
-        detector->impact_consecutive_samples = 0;
     }
+    detector->previous_accel_norm_g = accel_norm_g;
+    detector->previous_sample_ms = now_ms;
+    detector->has_previous_sample = true;
 
     if (tilt_deg > MOTION_DETECTOR_RAPID_TILT_DEG && gyro_norm_dps >= MOTION_DETECTOR_RAPID_TILT_DPS) {
         if (detector->rapid_tilt_started_ms == 0) {
@@ -120,8 +144,9 @@ motion_output_t motion_detector_step(
     }
 
     if (detector->impact_latched || detector->rapid_tilt_latched) {
-        const bool stable = accel_norm_g >= 0.8f && accel_norm_g <= 1.2f && gyro_norm_dps < 20.0f;
-        if (stable) {
+        const bool stable = tilt_deg < 30.0f && accel_norm_g >= 0.8f && accel_norm_g <= 1.2f &&
+                            gyro_norm_dps < 20.0f;
+        if (stable && !impact_event) {
             if (detector->stable_started_ms == 0) {
                 detector->stable_started_ms = now_ms;
             } else if (now_ms - detector->stable_started_ms >= MOTION_DETECTOR_CLEAR_MS) {
@@ -134,5 +159,12 @@ motion_output_t motion_detector_step(
         }
     }
 
-    return build_output(detector, accel_norm_g, gyro_norm_dps, tilt_deg);
+    return build_output(
+        detector,
+        accel_norm_g,
+        accel_delta_g,
+        gyro_norm_dps,
+        tilt_deg,
+        sample_interval_ms,
+        impact_event);
 }
