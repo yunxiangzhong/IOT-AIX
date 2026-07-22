@@ -89,6 +89,25 @@ class CollisionEventTrackerTests(unittest.TestCase):
 
         self.assertEqual(tracker.observe(motion_event(seq=2, impact_event=True, impact_count=0)), 1)
 
+    def test_new_firmware_resynchronizes_invalid_direct_counter_values(self):
+        for invalid_count in (-1, 0x1_0000_0000, 0x2_0000_0000):
+            with self.subTest(invalid_count=invalid_count):
+                tracker = CollisionEventTracker()
+                tracker.observe(motion_event(seq=1, impact_event=False, impact_count=1))
+
+                self.assertEqual(
+                    tracker.observe(
+                        motion_event(
+                            seq=2, impact_event=True, impact_count=invalid_count
+                        )
+                    ),
+                    1,
+                )
+                self.assertEqual(
+                    tracker.observe(motion_event(seq=3, impact_event=False, impact_count=2)),
+                    0,
+                )
+
 
 class ProtectionReadinessTests(unittest.TestCase):
     def test_mpu_collision_does_not_require_fresh_vision(self):

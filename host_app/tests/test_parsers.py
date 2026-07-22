@@ -77,6 +77,31 @@ class MotionParserTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ParseError):
                 parse_event_line(base % field)
 
+    def test_rejects_impact_count_above_uint32_maximum(self):
+        base = {
+            "type": "motion", "version": 2, "seq": 2, "ts_ms": 1000,
+            "accel_g": {"x": 0.1, "y": 0.2, "z": 0.97},
+            "gyro_dps": {"x": 1.0, "y": 2.0, "z": 3.0},
+            "accel_norm_g": 1.0, "tilt_deg": 12.3, "impact": False,
+            "rapid_tilt": False, "danger_latched": False, "calibrated": True,
+        }
+        for value in (0x1_0000_0000, 0x1_0000_0001):
+            with self.subTest(value=value), self.assertRaises(ParseError):
+                parse_event_line(json.dumps({**base, "impact_count": value}))
+
+    def test_accepts_uint32_impact_count_boundaries(self):
+        base = {
+            "type": "motion", "version": 2, "seq": 2, "ts_ms": 1000,
+            "accel_g": {"x": 0.1, "y": 0.2, "z": 0.97},
+            "gyro_dps": {"x": 1.0, "y": 2.0, "z": 3.0},
+            "accel_norm_g": 1.0, "tilt_deg": 12.3, "impact": False,
+            "rapid_tilt": False, "danger_latched": False, "calibrated": True,
+        }
+        for value in (0, 0xFFFFFFFF):
+            with self.subTest(value=value):
+                event = parse_event_line(json.dumps({**base, "impact_count": value}))
+                self.assertEqual(event.impact_count, value)
+
     def test_rejects_boolean_motion_collision_counter(self):
         with self.assertRaises(ParseError):
             parse_event_line(

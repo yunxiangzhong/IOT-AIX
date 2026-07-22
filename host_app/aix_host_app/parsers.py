@@ -39,6 +39,7 @@ _VOICE_STATUS_REQUIRED = ("state", "command_id", "track", "error")
 _ROAD_HAZARD_STATUS_REQUIRED = ("state", "event_id", "effective_rgb_pattern", "reason")
 _HARDWARE_HEALTH_MODULES = ("ov5640", "mpu6050", "pressure", "dfplayer", "rgb", "pump", "valve")
 _HARDWARE_HEALTH_STATES = {"initializing", "healthy", "degraded", "fault", "stale", "disabled", "pending"}
+_UINT32_MAX = 0xFFFFFFFF
 
 
 def parse_event_line(line: str) -> PressureSample | HardwareHealthEvent | MotionEvent | PneumaticStatusEvent | CameraStatusEvent | CameraPreviewEvent | VisionDepthEvent | RiskAckEvent | ActionStatusEvent | VoiceStatusEvent | RoadHazardStatusEvent:
@@ -143,7 +144,9 @@ def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
             accel_delta_g = _optional_native_nonnegative_float(payload, "accel_delta_g")
             sample_interval_ms = _optional_native_nonnegative_int(payload, "sample_interval_ms")
             impact_event = _optional_native_bool(payload, "impact_event", False)
-            impact_count = _optional_native_nonnegative_int(payload, "impact_count")
+            impact_count = _optional_native_nonnegative_int(
+                payload, "impact_count", maximum=_UINT32_MAX
+            )
             return MotionEvent(
                 seq=_as_int(payload["seq"], "seq"), ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
                 speed_mps=_as_float(payload.get("speed_mps", 0.0), "speed_mps"),
@@ -372,7 +375,7 @@ def _as_int(value: Any, name: str) -> int:
 
 
 def _optional_native_nonnegative_int(
-    payload: dict[str, Any], name: str
+    payload: dict[str, Any], name: str, maximum: int | None = None
 ) -> int | None:
     if name not in payload:
         return None
@@ -381,6 +384,8 @@ def _optional_native_nonnegative_int(
         raise ValueError(f"{name} must be an integer")
     if value < 0:
         raise ValueError(f"{name} must be non-negative")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} is outside the allowed range")
     return value
 
 

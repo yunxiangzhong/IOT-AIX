@@ -30,6 +30,7 @@ def protection_readiness(
 
 
 class CollisionEventTracker:
+    _UINT32_MAX = 0xFFFFFFFF
     _WRAP_PREVIOUS_MIN = 0xFFFF0000
     _WRAP_CURRENT_MAX = 0x0000FFFF
 
@@ -54,6 +55,11 @@ class CollisionEventTracker:
             self.last_count = None
             return new_events
 
+        if not self._is_uint32(event.impact_count):
+            self.last_count = None
+            self.legacy = False
+            return int(bool(event.impact_event))
+
         if self.last_count is None:
             self.last_count = event.impact_count
             self.legacy = False
@@ -71,3 +77,7 @@ class CollisionEventTracker:
         self.last_count = event.impact_count
         self.legacy = False
         return new_events
+
+    @classmethod
+    def _is_uint32(cls, value: object) -> bool:
+        return type(value) is int and 0 <= value <= cls._UINT32_MAX
