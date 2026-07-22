@@ -303,6 +303,7 @@ function Assert-PneumaticControllerInvariants {
         '\bupdate_self_test\s*\(',
         $statusAssignmentPattern,
         '\bconst\s+pneumatic_status_t\s+current\s*=\s*s_status\s*;',
+        '\bset_outputs\s*\(\s*output\.pump_on\s*,\s*output\.valve_on\s*\)\s*;',
         'xSemaphoreGive\s*\(\s*s_lock\s*\)\s*;'
     )
 
@@ -384,11 +385,14 @@ Assert-RejectedPneumaticMutation 'status assignment after unlock' $statusAfterUn
 $currentAfterUnlockMutation = Move-RequiredMutationAfterUnlock $pneumaticCodeText `
     'const\s+pneumatic_status_t\s+current\s*=\s*s_status\s*;' 'current snapshot after unlock'
 Assert-RejectedPneumaticMutation 'current snapshot after unlock' $currentAfterUnlockMutation
+$outputAfterUnlockMutation = Move-RequiredMutationAfterUnlock $pneumaticCodeText `
+    'set_outputs\s*\(\s*output\.pump_on\s*,\s*output\.valve_on\s*\)\s*;' 'output write after unlock'
+Assert-RejectedPneumaticMutation 'output write after unlock' $outputAfterUnlockMutation
 $emitArgumentSwapMutation = Replace-RequiredMutation $pneumaticCodeText `
     '(?<automatic>status->automatic_enabled\s*\?\s*"true"\s*:\s*"false"\s*,\s*)(?<vision>action_state_name\s*\(\s*status->vision_state\s*\))' `
     "`${vision},`n           `${automatic}" 'automatic_enabled printf argument order'
 Assert-RejectedPneumaticMutation 'automatic_enabled printf argument order' $emitArgumentSwapMutation
-Write-Output "Pneumatic verifier mutation checks passed: source accepted, 7 unsafe mutations rejected."
+Write-Output "Pneumatic verifier mutation checks passed: source accepted, 8 unsafe mutations rejected."
 Invoke-HostCTest "hardware_health_test" @(
     (Join-Path $main "hardware_health.c"),
     (Join-Path $aix "test\hardware_health_test.c")

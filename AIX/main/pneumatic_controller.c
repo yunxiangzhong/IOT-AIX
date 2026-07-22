@@ -308,9 +308,9 @@ static void controller_task(void *arg)
             .timestamp_ms = timestamp_ms,
         };
         const pneumatic_status_t current = s_status;
+        set_outputs(output.pump_on, output.valve_on);
         xSemaphoreGive(s_lock);
 
-        set_outputs(output.pump_on, output.valve_on);
         if (status_changed(&previous, &current) || timestamp_ms - last_emit_ms >= PNEUMATIC_STATUS_PERIOD_MS) {
             emit_status(&current);
             last_emit_ms = timestamp_ms;
