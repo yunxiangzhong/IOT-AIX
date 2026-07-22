@@ -34,11 +34,63 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         panel.apply_command_result({"accepted": True, "command_id": "save-8", "error": ""})
         self.assertIn("正在读取 ESP32", panel.status.text())
         panel.apply_config({
-            "target_kpa": 8.0, "max_kpa": 12.0, "max_inflate_ms": 2000,
+            "target_kpa": 8.0, "max_kpa": 12.0, "max_inflate_ms": 5000,
             "calibration_valid": True, "automatic_enabled": True,
         })
         self.assertIn("参数修复成功", panel.status.text())
         self.assertIn("8.0 kPa", panel.status.text())
+
+    def test_pneumatic_panel_defaults_to_five_second_inflation_limit(self):
+        panel = PneumaticCalibrationPanel()
+
+        self.assertEqual(panel.target_kpa.value(), 8.0)
+        self.assertEqual(panel.max_kpa.value(), 12.0)
+        self.assertEqual(panel.max_inflate_ms.value(), 5000)
+
+    def test_pneumatic_status_allows_mpu_protection_when_vision_is_stale(self):
+        dashboard = ActiveVisionDashboard()
+        event = PneumaticStatusEvent(
+            ts_ms=1000, state="idle", fault="none", trigger="none", operation=0,
+            pump_on=False, valve_on=False, pressure_kpa=8.0,
+            pressure_valid=True, pressure_age_ms=200, vision_state="stale",
+            vision_fresh=False, mpu_available=True, mpu_calibrated=True,
+            impact=False, rapid_tilt=False, automatic_enabled=True,
+            pump_verified=True, valve_verified=True, self_test_failed=False,
+        )
+
+        dashboard.apply_pneumatic_status(event)
+
+        self.assertIn("允许：安全条件有效", dashboard.derived_values["pressure"].text())
+
+    def test_pneumatic_status_blocks_protection_when_pump_is_unverified(self):
+        dashboard = ActiveVisionDashboard()
+        event = PneumaticStatusEvent(
+            ts_ms=1000, state="idle", fault="none", trigger="none", operation=0,
+            pump_on=False, valve_on=False, pressure_kpa=8.0,
+            pressure_valid=True, pressure_age_ms=10, vision_state="safe",
+            vision_fresh=True, mpu_available=True, mpu_calibrated=True,
+            impact=False, rapid_tilt=False, automatic_enabled=True,
+            pump_verified=False, valve_verified=True, self_test_failed=False,
+        )
+
+        dashboard.apply_pneumatic_status(event)
+
+        self.assertIn("禁止：泵自检未通过", dashboard.derived_values["pressure"].text())
+
+    def test_pneumatic_status_blocks_protection_when_pressure_is_older_than_200_ms(self):
+        dashboard = ActiveVisionDashboard()
+        event = PneumaticStatusEvent(
+            ts_ms=1000, state="idle", fault="none", trigger="none", operation=0,
+            pump_on=False, valve_on=False, pressure_kpa=8.0,
+            pressure_valid=True, pressure_age_ms=201, vision_state="safe",
+            vision_fresh=True, mpu_available=True, mpu_calibrated=True,
+            impact=False, rapid_tilt=False, automatic_enabled=True,
+            pump_verified=True, valve_verified=True, self_test_failed=False,
+        )
+
+        dashboard.apply_pneumatic_status(event)
+
+        self.assertIn("禁止：压力无效或过期", dashboard.derived_values["pressure"].text())
 
     def test_self_test_waits_for_vented_state_before_dispatch(self):
         panel = PneumaticCalibrationPanel()

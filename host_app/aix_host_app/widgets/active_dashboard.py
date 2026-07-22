@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..collision_state import protection_readiness
 from ..models import ActionStatusEvent, CameraStatusEvent, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, VoiceStatusEvent
 from .pneumatic_calibration_panel import PneumaticCalibrationPanel
 from .status_card import ClickableStatusCard
@@ -648,6 +649,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
 
     def apply_pneumatic_status(self, event: PneumaticStatusEvent) -> None:
         self.pneumatic_panel.apply_status(event)
+        readiness = protection_readiness(event, require_vision=False)
         pneumatic_failed = event.self_test_failed
         self._queue_mapping_value(self.realtime_panel, "pneumatic",
             f"泵{'开' if event.pump_on else '关'} · 阀{'通电' if event.valve_on else '断电'}\n"
@@ -675,11 +677,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
                 source="pneumatic_status", immediate=True, tone="fault",
             )
         self._queue_mapping_value(self.decision_panel, "pressure",
-            f"{'允许' if event.vision_fresh and event.pressure_valid else '禁止'}："
-            f"{'条件有效' if event.vision_fresh and event.pressure_valid else '视觉或压力数据不新鲜'}",
+            f"{'允许' if readiness.allowed else '禁止'}：{readiness.reason}",
             source="pneumatic_status",
-            immediate=not (event.vision_fresh and event.pressure_valid),
-            tone="ok" if event.vision_fresh and event.pressure_valid else "fault",
+            immediate=not readiness.allowed,
+            tone="ok" if readiness.allowed else "fault",
         )
 
     def apply_hardware_health(self, event: HardwareHealthEvent) -> None:

@@ -48,7 +48,7 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         self.max_kpa.setSuffix(" kPa")
         self.max_inflate_ms = QtWidgets.QSpinBox()
         self.max_inflate_ms.setRange(200, 5000)
-        self.max_inflate_ms.setValue(2000)
+        self.max_inflate_ms.setValue(5000)
         self.max_inflate_ms.setSuffix(" ms")
         controls.addWidget(QtWidgets.QLabel("目标压力"), 0, 0)
         controls.addWidget(self.target_kpa, 0, 1)
@@ -167,7 +167,8 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
             f"最大充气 {config.get('max_inflate_ms')} ms，压力新鲜度 {config.get('pressure_stale_ms')} ms\n"
             f"时序：阀预开 {config.get('calibration_pulse_ms')} ms，保压最大 {config.get('hold_max_ms')} ms，"
             f"清除确认 {config.get('clear_confirm_ms')} ms，冷却 {config.get('cooldown_ms')} ms\n"
-            f"MPU6050：{mpu.get('sample_hz')} Hz，冲击 {mpu.get('impact_g')} g × {mpu.get('impact_samples')}，"
+            f"MPU6050：{mpu.get('sample_hz')} Hz，碰撞 Δ|a|≥{mpu.get('impact_delta_g')} g，"
+            f"最大采样间隔 {mpu.get('impact_max_interval_ms')} ms，不应期 {mpu.get('impact_refractory_ms')} ms，"
             f"快速倾斜 {mpu.get('rapid_tilt_deg')}° / {mpu.get('rapid_tilt_dps')}°/s / {mpu.get('rapid_tilt_ms')} ms，"
             f"稳定清除 {mpu.get('clear_ms')} ms\n"
             f"引脚：泵 GPIO{config.get('pump_gpio')}，阀 GPIO{config.get('valve_gpio')}；"
