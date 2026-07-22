@@ -442,10 +442,18 @@ esp_err_t pneumatic_controller_execute(
             case PNEUMATIC_COMMAND_VENT:
                 s_pending.vent = true;
                 break;
-            case PNEUMATIC_COMMAND_EMERGENCY_STOP:
-                s_pending.emergency_stop = true;
-                set_outputs(false, false);
+            case PNEUMATIC_COMMAND_EMERGENCY_STOP: {
+                const uint64_t emergency_timestamp_ms = now_ms();
+                const pneumatic_policy_input_t emergency_input = {
+                    .emergency_stop = true,
+                };
+                const pneumatic_policy_output_t emergency_output = pneumatic_policy_step(
+                    &s_policy, &emergency_input, emergency_timestamp_ms);
+                s_status.output = emergency_output;
+                s_status.timestamp_ms = emergency_timestamp_ms;
+                set_outputs(emergency_output.pump_on, emergency_output.valve_on);
                 break;
+            }
             case PNEUMATIC_COMMAND_RESET_FAULT:
                 s_pending.reset_fault = true;
                 break;

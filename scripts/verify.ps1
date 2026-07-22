@@ -321,6 +321,40 @@ function Assert-PneumaticControllerInvariants {
     if ($emitStatusBody -notmatch $automaticEnabledMappingPattern) {
         throw "pneumatic_status automatic_enabled JSON placeholder must map to its matching printf argument"
     }
+
+    $executeBody = Get-CFunctionRange `
+        -CodeText $codeText `
+        -StartPattern 'esp_err_t pneumatic_controller_execute\s*\([^)]*\)\s*\{' `
+        -FollowingPattern '#endif' `
+        -Description 'pneumatic_controller_execute'
+    $executeLock = [regex]::Match($executeBody, 'xSemaphoreTake\s*\(\s*s_lock\s*,[^;]*;')
+    $emergencyCase = [regex]::Match(
+        $executeBody,
+        '(?s)case\s+PNEUMATIC_COMMAND_EMERGENCY_STOP\s*:(.*?\bbreak\s*;)')
+    if (-not $executeLock.Success -or -not $emergencyCase.Success -or
+        $executeLock.Index -ge $emergencyCase.Index) {
+        throw "emergency-stop command must execute after pneumatic_controller_execute takes s_lock"
+    }
+    $emergencyBody = $emergencyCase.Groups[1].Value
+    if ($emergencyBody -match 'xSemaphoreGive\s*\(' -or
+        $emergencyBody -match '\bs_pending\s*\.\s*emergency_stop\b' -or
+        $emergencyBody -match '\bs_status\s*\.\s*output\s*\.\s*(?:state|fault|pump_on|valve_on)\s*=') {
+        throw "emergency-stop command must use real policy output under the existing lock"
+    }
+    Assert-PatternsInOrder -Text $emergencyBody -Description 'emergency-stop command lock region' -Patterns @(
+        '\bconst\s+uint64_t\s+emergency_timestamp_ms\s*=\s*now_ms\s*\(\s*\)\s*;',
+        '(?s)\bconst\s+pneumatic_policy_input_t\s+emergency_input\s*=\s*\{\s*\.emergency_stop\s*=\s*true\s*,?\s*\}\s*;',
+        '\bconst\s+pneumatic_policy_output_t\s+emergency_output\s*=\s*pneumatic_policy_step\s*\(\s*&s_policy\s*,\s*&emergency_input\s*,\s*emergency_timestamp_ms\s*\)\s*;',
+        '\bs_status\s*\.\s*output\s*=\s*emergency_output\s*;',
+        '\bs_status\s*\.\s*timestamp_ms\s*=\s*emergency_timestamp_ms\s*;',
+        '\bset_outputs\s*\(\s*emergency_output\.pump_on\s*,\s*emergency_output\.valve_on\s*\)\s*;',
+        '\bbreak\s*;'
+    )
+    $afterEmergencyCase = $executeBody.Substring($emergencyCase.Index + $emergencyCase.Length)
+    Assert-PatternsInOrder -Text $afterEmergencyCase -Description 'emergency-stop acknowledged status' -Patterns @(
+        '\bresult->status\s*=\s*s_status\s*;',
+        'xSemaphoreGive\s*\(\s*s_lock\s*\)\s*;'
+    )
 }
 
 function Assert-RejectedPneumaticMutation {
@@ -392,7 +426,14 @@ $emitArgumentSwapMutation = Replace-RequiredMutation $pneumaticCodeText `
     '(?<automatic>status->automatic_enabled\s*\?\s*"true"\s*:\s*"false"\s*,\s*)(?<vision>action_state_name\s*\(\s*status->vision_state\s*\))' `
     "`${vision},`n           `${automatic}" 'automatic_enabled printf argument order'
 Assert-RejectedPneumaticMutation 'automatic_enabled printf argument order' $emitArgumentSwapMutation
-Write-Output "Pneumatic verifier mutation checks passed: source accepted, 8 unsafe mutations rejected."
+$emergencyPolicyMutation = Replace-RequiredMutation $pneumaticCodeText `
+    'const\s+pneumatic_policy_output_t\s+emergency_output\s*=\s*pneumatic_policy_step\s*\(\s*&s_policy\s*,\s*&emergency_input\s*,\s*emergency_timestamp_ms\s*\)\s*;' `
+    '' 'emergency policy step removed'
+Assert-RejectedPneumaticMutation 'emergency policy step removed' $emergencyPolicyMutation
+$emergencyStatusMutation = Replace-RequiredMutation $pneumaticCodeText `
+    's_status\s*\.\s*output\s*=\s*emergency_output\s*;' '' 'emergency status assignment removed'
+Assert-RejectedPneumaticMutation 'emergency status assignment removed' $emergencyStatusMutation
+Write-Output "Pneumatic verifier mutation checks passed: source accepted, 10 unsafe mutations rejected."
 Invoke-HostCTest "hardware_health_test" @(
     (Join-Path $main "hardware_health.c"),
     (Join-Path $aix "test\hardware_health_test.c")
