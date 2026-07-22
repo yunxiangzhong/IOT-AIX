@@ -43,6 +43,7 @@ typedef struct {
     bool pump_verified;
     bool valve_verified;
     bool self_test_failed;
+    bool automatic_enabled;
     uint64_t timestamp_ms;
 } pneumatic_status_t;
 

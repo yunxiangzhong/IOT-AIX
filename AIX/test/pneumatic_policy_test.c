@@ -170,6 +170,47 @@ static void test_attention_does_not_inflate_but_high_starts_full_target(void)
     assert(policy.active_target_kpa == config.target_kpa);
 }
 
+static void test_collision_inflates_without_fresh_vision(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = automatic_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.vision_fresh = false;
+    input.motion_impact = true;
+
+    const pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 1);
+    assert(output.state == PNEUMATIC_STATE_PRIME_VALVE);
+    assert(output.trigger_source == PNEUMATIC_TRIGGER_MPU_IMPACT);
+}
+
+static void test_rapid_tilt_is_diagnostic_only(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = automatic_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.motion_rapid_tilt = true;
+
+    const pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 1);
+    assert(output.state == PNEUMATIC_STATE_VENTED);
+    assert(output.trigger_source == PNEUMATIC_TRIGGER_NONE);
+}
+
+static void test_collision_respects_common_safety_gate(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = automatic_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.motion_impact = true;
+    input.automatic_permitted = false;
+
+    const pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 1);
+    assert(output.state == PNEUMATIC_STATE_VENTED);
+    assert(output.trigger_source == PNEUMATIC_TRIGGER_NONE);
+}
+
 static void test_invalid_or_stale_pressure_forces_exhaust(void)
 {
     pneumatic_policy_t policy;
@@ -262,6 +303,9 @@ int main(void)
     test_active_risk_refills_when_pressure_drops_below_target();
     test_visual_high_risk_does_not_require_mpu_trigger();
     test_attention_does_not_inflate_but_high_starts_full_target();
+    test_collision_inflates_without_fresh_vision();
+    test_rapid_tilt_is_diagnostic_only();
+    test_collision_respects_common_safety_gate();
     test_invalid_or_stale_pressure_forces_exhaust();
     test_stale_pressure_has_startup_grace_then_faults();
     test_manual_pulse_remains_available_without_automatic_mode();

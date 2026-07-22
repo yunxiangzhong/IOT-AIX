@@ -162,7 +162,7 @@ static void emit_status(const pneumatic_status_t *status)
            "\"state\":\"%s\",\"fault\":\"%s\",\"trigger\":\"%s\","
            "\"operation\":%d,\"pump_on\":%s,\"valve_on\":%s,"
            "\"pressure_kpa\":%.2f,\"pressure_raw_valid\":%s,\"pressure_valid\":%s,\"pressure_age_ms\":%lu,"
-           "\"pump_verified\":%s,\"valve_verified\":%s,\"self_test_failed\":%s,"
+           "\"pump_verified\":%s,\"valve_verified\":%s,\"self_test_failed\":%s,\"automatic_enabled\":%s,"
            "\"vision_state\":\"%s\",\"vision_fresh\":%s,\"mpu_available\":%s,"
            "\"mpu_calibrated\":%s,\"impact\":%s,\"rapid_tilt\":%s}\n",
            (unsigned long long)status->timestamp_ms,
@@ -179,6 +179,7 @@ static void emit_status(const pneumatic_status_t *status)
            status->pump_verified ? "true" : "false",
            status->valve_verified ? "true" : "false",
            status->self_test_failed ? "true" : "false",
+           status->automatic_enabled ? "true" : "false",
            action_state_name(status->vision_state),
            status->vision_fresh ? "true" : "false",
            status->mpu_available ? "true" : "false",
@@ -252,9 +253,17 @@ static void controller_task(void *arg)
         const bool pressure_fresh = has_pressure && pressure.valid &&
                                     timestamp_ms >= pressure.timestamp_ms &&
                                     timestamp_ms - pressure.timestamp_ms <= PNEUMATIC_PRESSURE_STALE_MS;
-        const bool common_automatic_ready = pressure_fresh && s_pump_verified &&
-                                            s_valve_verified && !s_self_test_failed;
-        pneumatic_policy_input_t input = {
+
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        const bool pump_verified = s_pump_verified;
+        const bool valve_verified = s_valve_verified;
+        const bool self_test_failed = s_self_test_failed;
+        const pneumatic_self_test_phase_t self_test_phase = s_self_test.phase;
+        const pending_commands_t pending = s_pending;
+        s_pending = (pending_commands_t){0};
+        const bool common_automatic_ready = pressure_fresh && pump_verified &&
+                                            valve_verified && !self_test_failed;
+        const pneumatic_policy_input_t input = {
             .vision_state = decision.state,
             .vision_fresh = decision.valid && !decision.stale,
             .motion_impact = has_mpu && mpu.motion.impact,
@@ -265,17 +274,14 @@ static void controller_task(void *arg)
             .pressure_valid = has_pressure && pressure.valid,
             .pressure_kpa = pressure.filtered_kpa,
             .pressure_timestamp_ms = pressure.timestamp_ms,
-        };
-
-        xSemaphoreTake(s_lock, portMAX_DELAY);
-        input.manual_inflate_pulse = s_pending.inflate_pulse;
-        input.manual_inflate_duration_ms = s_self_test.phase != PNEUMATIC_SELF_TEST_IDLE
+            .manual_inflate_pulse = pending.inflate_pulse,
+            .manual_inflate_duration_ms = self_test_phase != PNEUMATIC_SELF_TEST_IDLE
                                                ? PNEUMATIC_SELF_TEST_PUMP_MS
-                                               : PNEUMATIC_CALIBRATION_PULSE_MS;
-        input.vent_request = s_pending.vent;
-        input.emergency_stop = s_pending.emergency_stop;
-        input.reset_fault = s_pending.reset_fault;
-        s_pending = (pending_commands_t){0};
+                                               : PNEUMATIC_CALIBRATION_PULSE_MS,
+            .vent_request = pending.vent,
+            .emergency_stop = pending.emergency_stop,
+            .reset_fault = pending.reset_fault,
+        };
 
         const pneumatic_status_t previous = s_status;
         const pneumatic_policy_output_t output = pneumatic_policy_step(&s_policy, &input, timestamp_ms);
@@ -298,6 +304,7 @@ static void controller_task(void *arg)
             .pump_verified = s_pump_verified,
             .valve_verified = s_valve_verified,
             .self_test_failed = s_self_test_failed,
+            .automatic_enabled = s_policy.config.automatic_enabled,
             .timestamp_ms = timestamp_ms,
         };
         const pneumatic_status_t current = s_status;
@@ -326,6 +333,7 @@ esp_err_t pneumatic_controller_start(void)
     const pneumatic_policy_config_t config = build_config();
     pneumatic_policy_init(&s_policy, &config, now_ms());
     s_status.config = config;
+    s_status.automatic_enabled = config.automatic_enabled;
     s_status.output = (pneumatic_policy_output_t){
         .state = s_policy.state,
         .fault = s_policy.fault,

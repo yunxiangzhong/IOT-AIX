@@ -222,6 +222,53 @@ $collisionFirmwareText = $mpuSourceText + "`n" + $pneumaticSourceText
 if ($collisionFirmwareText -match 'voice_prompt|dfplayer') {
     throw "MPU collision and pneumatic paths must remain silent"
 }
+$pneumaticCodeText = Remove-CComments $pneumaticSourceText
+$controllerTaskMatch = [regex]::Match(
+    $pneumaticCodeText,
+    '(?s)static void controller_task\([^)]*\)\s*\{.*?(?=\s*esp_err_t pneumatic_controller_start\s*\()')
+$controllerTaskBody = $controllerTaskMatch.Value
+$firstControllerLock = [regex]::Match($controllerTaskBody, 'xSemaphoreTake\s*\(\s*s_lock\s*,')
+if ([string]::IsNullOrWhiteSpace($controllerTaskBody) -or -not $firstControllerLock.Success) {
+    throw "controller_task and its first s_lock acquisition must remain discoverable"
+}
+$beforeFirstControllerLock = $controllerTaskBody.Substring(0, $firstControllerLock.Index)
+$unsafeSharedReadPattern = '\bs_(?:pump_verified|valve_verified|self_test_failed|pending)\b|' +
+                           '\bs_self_test\s*\.\s*phase\b'
+if ($beforeFirstControllerLock -match $unsafeSharedReadPattern) {
+    throw "controller_task must not read shared pneumatic safety state before taking s_lock"
+}
+$firstControllerUnlock = [regex]::Match(
+    $controllerTaskBody.Substring($firstControllerLock.Index),
+    'xSemaphoreGive\s*\(\s*s_lock\s*\)')
+if (-not $firstControllerUnlock.Success) {
+    throw "controller_task must release s_lock after its synchronized policy update"
+}
+$controllerLockedBody = $controllerTaskBody.Substring(
+    $firstControllerLock.Index,
+    $firstControllerUnlock.Index + $firstControllerUnlock.Length)
+$requiredLockedSnapshots = @(
+    '\bpump_verified\s*=\s*s_pump_verified\b',
+    '\bvalve_verified\s*=\s*s_valve_verified\b',
+    '\bself_test_failed\s*=\s*s_self_test_failed\b',
+    '\bself_test_phase\s*=\s*s_self_test\s*\.\s*phase\b',
+    '\bpending\s*=\s*s_pending\b',
+    '\bs_pending\s*=\s*\(\s*pending_commands_t\s*\)\s*\{\s*0\s*\}',
+    '\.automatic_enabled\s*=\s*s_policy\s*\.\s*config\s*\.\s*automatic_enabled\b'
+)
+foreach ($requiredPattern in $requiredLockedSnapshots) {
+    if ($controllerLockedBody -notmatch $requiredPattern) {
+        throw "controller_task must snapshot safety state, clear pending commands, and publish automatic mode under s_lock"
+    }
+}
+$emitStatusMatch = [regex]::Match(
+    $pneumaticCodeText,
+    '(?s)static void emit_status\([^)]*\)\s*\{.*?(?=\s*static void update_self_test\s*\()')
+$emitStatusBody = $emitStatusMatch.Value
+if ([string]::IsNullOrWhiteSpace($emitStatusBody) -or
+    $emitStatusBody -notmatch '\\?"automatic_enabled\\?"\s*:\s*%s' -or
+    $emitStatusBody -notmatch 'status->automatic_enabled\s*\?\s*"true"\s*:\s*"false"') {
+    throw "pneumatic_status must serialize automatic_enabled from its locked status snapshot"
+}
 Invoke-HostCTest "hardware_health_test" @(
     (Join-Path $main "hardware_health.c"),
     (Join-Path $aix "test\hardware_health_test.c")

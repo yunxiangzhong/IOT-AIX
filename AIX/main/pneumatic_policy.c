@@ -22,9 +22,6 @@ static pneumatic_trigger_t current_automatic_trigger(const pneumatic_policy_inpu
     if (input->motion_trigger_permitted && input->motion_impact) {
         return PNEUMATIC_TRIGGER_MPU_IMPACT;
     }
-    if (input->motion_trigger_permitted && input->motion_rapid_tilt) {
-        return PNEUMATIC_TRIGGER_MPU_RAPID_TILT;
-    }
     return PNEUMATIC_TRIGGER_NONE;
 }
 

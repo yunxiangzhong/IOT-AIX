@@ -10,7 +10,7 @@
 #define PNEUMATIC_PRIME_VALVE_MS 20ULL
 #define PNEUMATIC_CALIBRATION_PULSE_MS 200ULL
 #define PNEUMATIC_CALIBRATION_TOTAL_PUMP_MS 2000ULL
-#define PNEUMATIC_CALIBRATION_CEILING_KPA 200.0f
+#define PNEUMATIC_CALIBRATION_CEILING_KPA 20.0f
 #define PNEUMATIC_RELEASE_HYSTERESIS_KPA 1.0f
 #define PNEUMATIC_REFILL_HYSTERESIS_KPA 0.3f
 #define PNEUMATIC_HOLD_MAX_MS 15000ULL
@@ -64,7 +64,7 @@ typedef struct {
     bool automatic_enabled;
     bool calibration_valid;
     float target_kpa;
-    float max_kpa; /* Absolute gauge-pressure hard limit; XGZP6847A model is 200 kPa. */
+    float max_kpa; /* Software control limit, at most 20 kPa; sensor range is defined separately. */
     uint32_t max_inflate_ms;
 } pneumatic_policy_config_t;
 
