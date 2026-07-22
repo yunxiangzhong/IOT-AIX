@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -84,6 +85,67 @@ class SessionRecorderTests(unittest.TestCase):
             self.assertTrue(all(event.get("wall_time") for event in events))
             self.assertNotEqual(events[0]["wall_time"], "forged")
             self.assertIsNotNone(datetime.fromisoformat(events[0]["wall_time"]).tzinfo)
+
+    def test_start_failure_closes_open_streams_and_allows_a_retry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recorder = SessionRecorder(Path(temp_dir))
+            opened = []
+            original_open = Path.open
+
+            def open_or_fail(path, *args, **kwargs):
+                if path.name == "vision.ndjson":
+                    raise OSError("vision stream unavailable")
+                handle = original_open(path, *args, **kwargs)
+                opened.append(handle)
+                return handle
+
+            with self.assertRaisesRegex(OSError, "vision stream unavailable"):
+                with patch.object(Path, "open", autospec=True, side_effect=open_or_fail):
+                    recorder.start("COM21", 115200, "session-1")
+
+            self.assertTrue(opened[0].closed)
+            self.assertIsNone(recorder.session_dir)
+            self.assertIsNone(recorder._telemetry)
+            self.assertIsNone(recorder._collision)
+            self.assertIsNone(recorder._pressure)
+
+            retry_session = recorder.start("COM21", 115200, "session-2")
+            self.assertTrue(retry_session.exists())
+            recorder.close()
+
+    def test_close_continues_cleanup_after_a_handle_close_failure(self):
+        class CloseControlledHandle:
+            def __init__(self, error: Exception | None = None) -> None:
+                self.error = error
+                self.close_called = False
+
+            def close(self) -> None:
+                self.close_called = True
+                if self.error is not None:
+                    raise self.error
+
+        recorder = SessionRecorder(Path("unused"))
+        failing = CloseControlledHandle(RuntimeError("telemetry close failed"))
+        collision = CloseControlledHandle()
+        pressure = CloseControlledHandle()
+        recorder._telemetry = failing
+        recorder._collision = collision
+        recorder._pressure = pressure
+        recorder._pressure_writer = object()
+        recorder.session_dir = Path("unused-session")
+
+        with self.assertRaisesRegex(RuntimeError, "telemetry close failed"):
+            recorder.close()
+
+        self.assertTrue(failing.close_called)
+        self.assertTrue(collision.close_called)
+        self.assertTrue(pressure.close_called)
+        self.assertIsNone(recorder.session_dir)
+        self.assertIsNone(recorder._telemetry)
+        self.assertIsNone(recorder._collision)
+        self.assertIsNone(recorder._pressure)
+        self.assertIsNone(recorder._pressure_writer)
+        recorder.close()
 
 
 if __name__ == "__main__":

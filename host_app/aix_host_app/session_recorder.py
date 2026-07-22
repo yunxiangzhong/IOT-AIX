@@ -46,17 +46,21 @@ class SessionRecorder:
             "status": "recording",
             "pneumatic_config": None,
         }
-        self._write_metadata()
-        self._telemetry = (session_dir / "telemetry.ndjson").open("w", encoding="utf-8")
-        self._vision = (session_dir / "vision.ndjson").open("w", encoding="utf-8")
-        self._action = (session_dir / "action.ndjson").open("w", encoding="utf-8")
-        self._pneumatic = (session_dir / "pneumatic.ndjson").open("w", encoding="utf-8")
-        self._road_hazard = (session_dir / "road_hazard.ndjson").open("w", encoding="utf-8")
-        self._collision = (session_dir / "collision_events.jsonl").open("w", encoding="utf-8")
-        self._model_log = (session_dir / "model.log").open("w", encoding="utf-8")
-        self._pressure = (session_dir / "pressure.csv").open("w", newline="", encoding="utf-8")
-        self._pressure_writer = csv.writer(self._pressure)
-        self._pressure_writer.writerow(["seq", "ts_ms", "raw", "mv", "kpa", "filtered_kpa", "over_pressure", "valid", "source"])
+        try:
+            self._write_metadata()
+            self._telemetry = (session_dir / "telemetry.ndjson").open("w", encoding="utf-8")
+            self._vision = (session_dir / "vision.ndjson").open("w", encoding="utf-8")
+            self._action = (session_dir / "action.ndjson").open("w", encoding="utf-8")
+            self._pneumatic = (session_dir / "pneumatic.ndjson").open("w", encoding="utf-8")
+            self._road_hazard = (session_dir / "road_hazard.ndjson").open("w", encoding="utf-8")
+            self._collision = (session_dir / "collision_events.jsonl").open("w", encoding="utf-8")
+            self._model_log = (session_dir / "model.log").open("w", encoding="utf-8")
+            self._pressure = (session_dir / "pressure.csv").open("w", newline="", encoding="utf-8")
+            self._pressure_writer = csv.writer(self._pressure)
+            self._pressure_writer.writerow(["seq", "ts_ms", "raw", "mv", "kpa", "filtered_kpa", "over_pressure", "valid", "source"])
+        except Exception:
+            self._teardown_session()
+            raise
         return session_dir
 
     def save_frame(self, data: bytes, frame_seq: int, capture_ts_ms: int) -> Path:
@@ -144,9 +148,20 @@ class SessionRecorder:
         self._pressure.flush()
 
     def close(self) -> None:
+        error = self._teardown_session()
+        if error is not None:
+            raise error
+
+    def _teardown_session(self) -> Exception | None:
+        error = None
         for handle in (self._telemetry, self._vision, self._action, self._pneumatic, self._road_hazard, self._collision, self._model_log, self._pressure):
-            if handle is not None:
+            if handle is None:
+                continue
+            try:
                 handle.close()
+            except Exception as exc:
+                if error is None:
+                    error = exc
         self._telemetry = self._vision = self._action = self._pneumatic = self._road_hazard = self._collision = self._model_log = self._pressure = None
         self._pressure_writer = None
         self._saved_frames.clear()
@@ -154,9 +169,14 @@ class SessionRecorder:
         if self._metadata is not None:
             self._metadata["ended_at"] = datetime.now().astimezone().isoformat()
             self._metadata["status"] = "closed"
-            self._write_metadata()
+            try:
+                self._write_metadata()
+            except Exception as exc:
+                if error is None:
+                    error = exc
         self.session_dir = None
         self._metadata = None
+        return error
 
     def _write_metadata(self) -> None:
         if self.session_dir is not None and self._metadata is not None:
