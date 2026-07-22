@@ -769,7 +769,8 @@ static esp_err_t pneumatic_config_handler(httpd_req_t *request)
         "\"hold_max_ms\":%llu,\"clear_confirm_ms\":%llu,\"vent_timeout_ms\":%llu,"
         "\"cooldown_ms\":%llu,\"pump_gpio\":%d,\"valve_gpio\":%d,"
         "\"mpu\":{\"sda_gpio\":%d,\"scl_gpio\":%d,\"int_gpio\":%d,"
-        "\"sample_hz\":100,\"impact_g\":%.1f,\"impact_samples\":%u,"
+        "\"sample_hz\":100,\"impact_delta_g\":%.1f,\"impact_max_interval_ms\":%llu,"
+        "\"impact_refractory_ms\":%llu,"
         "\"rapid_tilt_deg\":%.1f,\"rapid_tilt_dps\":%.1f,\"rapid_tilt_ms\":%llu,\"clear_ms\":%llu}}",
         device_identity_device_id(),
         device_identity_boot_id(),
@@ -790,8 +791,9 @@ static esp_err_t pneumatic_config_handler(httpd_req_t *request)
         MPU6050_I2C_SDA_GPIO,
         MPU6050_I2C_SCL_GPIO,
         MPU6050_INT_GPIO,
-        MOTION_DETECTOR_IMPACT_THRESHOLD_G,
-        MOTION_DETECTOR_IMPACT_SAMPLES,
+        MOTION_DETECTOR_IMPACT_DELTA_G,
+        (unsigned long long)MOTION_DETECTOR_IMPACT_MAX_INTERVAL_MS,
+        (unsigned long long)MOTION_DETECTOR_IMPACT_REFRACTORY_MS,
         MOTION_DETECTOR_RAPID_TILT_DEG,
         MOTION_DETECTOR_RAPID_TILT_DPS,
         (unsigned long long)MOTION_DETECTOR_RAPID_TILT_MS,

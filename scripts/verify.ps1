@@ -154,6 +154,21 @@ Invoke-HostCTest "motion_detector_test" @(
 Invoke-HostCTest "mpu6050_config_test" @(
     (Join-Path $aix "test\mpu6050_config_test.c")
 )
+$mpuSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "mpu6050_sensor.c")
+if ($mpuSourceText -notmatch 'impact_event' -or
+    $mpuSourceText -notmatch 'impact_count' -or
+    $mpuSourceText -notmatch 'next\.motion\.impact_event\s*\|\|') {
+    throw "MPU collision events must be emitted immediately with a persistent counter"
+}
+$riskReceiverSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "risk_receiver.c")
+if ($riskReceiverSourceText -match 'impact_samples|MOTION_DETECTOR_IMPACT_THRESHOLD_G') {
+    throw "pneumatic config endpoint must expose acceleration-delta collision semantics"
+}
+$pneumaticSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "pneumatic_controller.c")
+$collisionFirmwareText = $mpuSourceText + "`n" + $pneumaticSourceText
+if ($collisionFirmwareText -match 'voice_prompt|dfplayer') {
+    throw "MPU collision and pneumatic paths must remain silent"
+}
 Invoke-HostCTest "hardware_health_test" @(
     (Join-Path $main "hardware_health.c"),
     (Join-Path $aix "test\hardware_health_test.c")

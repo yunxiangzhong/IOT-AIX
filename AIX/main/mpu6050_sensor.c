@@ -76,7 +76,8 @@ static void emit_motion(const mpu6050_status_t *status)
     printf("{\"type\":\"motion\",\"version\":2,\"seq\":%lu,\"ts_ms\":%llu,"
            "\"accel_g\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
            "\"gyro_dps\":{\"x\":%.2f,\"y\":%.2f,\"z\":%.2f},"
-           "\"accel_norm_g\":%.3f,\"tilt_deg\":%.2f,\"impact\":%s,"
+           "\"accel_norm_g\":%.3f,\"accel_delta_g\":%.3f,\"sample_interval_ms\":%lu,"
+           "\"impact_event\":%s,\"impact_count\":%lu,\"tilt_deg\":%.2f,\"impact\":%s,"
            "\"rapid_tilt\":%s,\"danger_latched\":%s,\"calibrated\":%s,"
            "\"speed_mps\":0.0,\"speed_valid\":false}\n",
            (unsigned long)status->sequence,
@@ -88,6 +89,10 @@ static void emit_motion(const mpu6050_status_t *status)
            status->sample.gyro_y_dps,
            status->sample.gyro_z_dps,
            status->motion.accel_norm_g,
+           status->motion.accel_delta_g,
+           (unsigned long)status->motion.sample_interval_ms,
+           status->motion.impact_event ? "true" : "false",
+           (unsigned long)status->motion.impact_count,
            status->motion.tilt_deg,
            status->motion.impact ? "true" : "false",
            status->motion.rapid_tilt ? "true" : "false",
@@ -140,7 +145,7 @@ static void mpu6050_task(void *arg)
         s_has_latest = true;
         taskEXIT_CRITICAL(&s_latest_lock);
 
-        if (next.timestamp_ms - last_log_ms >= MPU6050_LOG_PERIOD_MS) {
+        if (next.motion.impact_event || next.timestamp_ms - last_log_ms >= MPU6050_LOG_PERIOD_MS) {
             emit_motion(&next);
             last_log_ms = next.timestamp_ms;
         }
