@@ -424,7 +424,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.host_service_card = _HostStatusCard("服务", "● 启动中", "等待健康检查")
         self.device_card = _HostStatusCard("设备链路", "等待连接", "等待视觉帧")
         self.model_card = _HostStatusCard("CUDA 与模型", "加载中", "DA3 / YOLO")
-        self.cloud_card = _HostStatusCard("协同链路", "本地协同模拟", "真实云端尚未接入")
+        self.cloud_card = _HostStatusCard("协同链路", "本地服务链路", "等待真实设备回传")
         for card in (self.host_service_card, self.device_card, self.model_card, self.cloud_card):
             cards.addWidget(card, 1)
         layout.addLayout(cards)
@@ -763,7 +763,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         )
         self.decision_callback.setText(
             f"本地服务回传 · {_state_label(callback.get('state'))} · {float(callback_latency):.0f} ms"
-            if isinstance(callback_latency, (int, float)) else "本地协同模拟 · 等待回传"
+            if isinstance(callback_latency, (int, float)) else "本地服务回传 · 等待真实反馈"
         )
         self.decision_freshness.setText(
             f"帧时效 {int(age)} ms · {float(upload.get('fps', 0)):.2f} 帧/秒" if isinstance(age, (int, float)) else "等待健康检查"
@@ -800,20 +800,22 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             tone="fault" if is_stale else str(band) if band in {"low", "attention", "high", "critical"} else "info",
         )
         if score is not None and score >= 80:
-            self._queue_mapping_value(self.decision_panel, "mpu6050", "严重风险已触发充气\n等待 ESP32 泵阀串口反馈", source="chain_state", immediate=True, tone="critical")
+            self._queue_mapping_value(self.decision_panel, "mpu6050", "严重风险达到气动策略阈值\n等待 ESP32 泵阀真实反馈", source="chain_state", immediate=True, tone="critical")
         elif score is not None and score >= 60:
-            self._queue_mapping_value(self.decision_panel, "mpu6050", "高风险已触发充气\n等待 ESP32 泵阀串口反馈", source="chain_state", immediate=True, tone="high")
+            self._queue_mapping_value(self.decision_panel, "mpu6050", "高风险达到气动策略阈值\n等待 ESP32 泵阀真实反馈", source="chain_state", immediate=True, tone="high")
         else:
-            self._queue_mapping_value(self.decision_panel, "mpu6050", "不触发充气\n视觉风险未达高风险阈值", source="chain_state", tone="ok")
+            self._queue_mapping_value(self.decision_panel, "mpu6050", "未达到气动策略阈值\n以 ESP32 泵阀真实反馈为准", source="chain_state", tone="ok")
+        rgb_pattern = str(action.get("rgb_pattern") or "")
+        rgb_confirmed = bool(action.get("confirmed")) and bool(rgb_pattern)
         self._queue_mapping_value(
-            self.realtime_panel, "rgb", f"{_rgb_pattern_label(str(action.get('rgb_pattern', 'blue_blink_1hz')))}\n亮度 20%",
-            source="chain_state", tone="info",
+            self.realtime_panel, "rgb",
+            f"{_rgb_pattern_label(rgb_pattern)}\nESP32 动作已确认" if rgb_confirmed else "等待 ESP32 动作反馈\n灯光模式未确认",
+            source="chain_state", immediate=rgb_confirmed, tone="info",
         )
         self._queue_mapping_value(
             self.decision_panel, "rgb",
-            f"{_rgb_pattern_label(str(action.get('rgb_pattern', 'blue_blink_1hz')))}\n"
-            f"{'第 ' + str(action.get('frame_seq')) + ' 帧真实反馈' if action.get('confirmed') else '等待 ESP32 反馈'}",
-            source="chain_state", immediate=bool(action.get("confirmed")), tone="info",
+            f"{_rgb_pattern_label(rgb_pattern)}\n第 {action.get('frame_seq')} 帧真实反馈" if rgb_confirmed else "等待 ESP32 反馈\n灯光模式未确认",
+            source="chain_state", immediate=rgb_confirmed, tone="info",
         )
         self.action_name.setText(action_labels.get(str(action.get("state", "loading")), "状态未知"))
         if action.get("confirmed"):

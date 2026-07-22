@@ -50,6 +50,19 @@ class LauncherScriptTests(unittest.TestCase):
         self.assertIn('ValidateSet("Preserve", "Manual", "Automatic")', content)
         self.assertIn("CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC", content)
 
+    def test_launcher_reuses_only_the_expected_ready_cuda_model_service(self):
+        launcher = (HOST_APP / "start_stack.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("function Test-RealModelHealth", launcher)
+        for marker in (
+            "model_ready", "model_state", "DA3-SMALL", "YOLO26m-COCO", "cuda",
+            "tensorrt-fp16", "pytorch-cuda-fp16",
+        ):
+            self.assertIn(marker, launcher)
+        self.assertGreaterEqual(launcher.count("Test-RealModelHealth"), 3)
+        self.assertNotIn("$reuseHealthyService = $existingHealth.http_ready -eq $true", launcher)
+        self.assertNotIn("if ($health.http_ready -eq $true)", launcher)
+
 
 if __name__ == "__main__":
     unittest.main()

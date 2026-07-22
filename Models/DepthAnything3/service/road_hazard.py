@@ -80,6 +80,8 @@ class RoadHazardEvent:
             raise RoadHazardValidationError("severity is invalid")
         if type(payload["simulated"]) is not bool:
             raise RoadHazardValidationError("simulated must be boolean")
+        if payload["simulated"]:
+            raise RoadHazardValidationError("simulated road hazards are disabled")
         return cls(
             **values, direction=direction, severity=severity, simulated=payload["simulated"],
             eta_ms=_positive_int(payload, "eta_ms"), ttl_ms=_positive_int(payload, "ttl_ms"),

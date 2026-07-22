@@ -87,6 +87,7 @@ class FrameApiTests(unittest.TestCase):
         self.assertEqual(state["type"], "chain_state")
         self.assertEqual(state["upload"]["last_frame_seq"], 12)
         self.assertEqual(state["model"]["state"], "loading")
+        self.assertEqual(state["action"]["rgb_pattern"], "")
 
 
 class RiskCallbackTests(unittest.TestCase):

@@ -36,15 +36,12 @@ class PcChainClient(QtCore.QObject):
     pneumatic_config_received = QtCore.Signal(dict)
     pneumatic_command_finished = QtCore.Signal(dict)
     pneumatic_error = QtCore.Signal(str)
-    road_hazard_finished = QtCore.Signal(dict)
-    road_hazard_error = QtCore.Signal(str)
     error_changed = QtCore.Signal(str)
 
-    def __init__(self, service_url: str, device_id: str, *, token: str = "", parent=None) -> None:
+    def __init__(self, service_url: str, device_id: str, *, parent=None) -> None:
         super().__init__(parent)
         self.service_url = normalize_service_url(service_url)
         self.device_id = device_id
-        self.token = token
         self._network = QtNetwork.QNetworkAccessManager(self)
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(SNAPSHOT_POLL_INTERVAL_MS)
@@ -65,19 +62,6 @@ class PcChainClient(QtCore.QObject):
         self._requested_identity = None
         self._requested_state = None
         self._queued_snapshot = None
-
-    def send_road_hazard(self, payload: dict) -> None:
-        if not self.service_url:
-            self.road_hazard_error.emit("未配置 PC 服务地址")
-            return
-        if not self.token:
-            self.road_hazard_error.emit("未配置路侧协同 Token；演示未下发")
-            return
-        request = build_get_request(f"{self.service_url}/v1/road-hazards", timeout_ms=1800)
-        request.setHeader(QtNetwork.QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
-        request.setRawHeader(b"X-AIX-Token", self.token.encode("utf-8"))
-        reply = self._network.post(request, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-        reply.finished.connect(lambda current=reply: self._handle_road_hazard(current))
 
     def start(self) -> None:
         if not self._timer.isActive():
@@ -206,21 +190,6 @@ class PcChainClient(QtCore.QObject):
             self.pneumatic_command_finished.emit(payload)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             self.pneumatic_error.emit(f"气动命令响应无效：{exc}")
-        finally:
-            reply.deleteLater()
-
-    def _handle_road_hazard(self, reply: QtNetwork.QNetworkReply) -> None:
-        try:
-            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError:
-                self.road_hazard_error.emit(f"协同事件提交失败：{reply.errorString()}")
-                return
-            payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
-            if not isinstance(payload, dict) or payload.get("accepted") is not True or not payload.get("event_id"):
-                self.road_hazard_error.emit("协同事件响应协议不匹配")
-                return
-            self.road_hazard_finished.emit(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            self.road_hazard_error.emit(f"协同事件响应无效：{exc}")
         finally:
             reply.deleteLater()
 
