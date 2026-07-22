@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from .models import MotionEvent, PneumaticStatusEvent
 
 
+# Serial loss can span a long interval, but more than 1024 collision events in one
+# counter delta indicates corrupted or reordered telemetry rather than real impacts.
+MAX_COLLISION_COUNT_DELTA = 1024
+
+
 @dataclass(frozen=True)
 class ProtectionReadiness:
     allowed: bool
@@ -14,18 +19,21 @@ class ProtectionReadiness:
 def protection_readiness(
     event: PneumaticStatusEvent, require_vision: bool
 ) -> ProtectionReadiness:
+    reasons: list[str] = []
     if not event.automatic_enabled:
-        return ProtectionReadiness(False, "自动模式关闭")
+        reasons.append("自动模式关闭")
     if not event.pressure_valid or event.pressure_age_ms > 200:
-        return ProtectionReadiness(False, "压力无效或过期")
+        reasons.append("压力无效或过期")
     if not event.pump_verified:
-        return ProtectionReadiness(False, "泵自检未通过")
+        reasons.append("泵自检未通过")
     if not event.valve_verified:
-        return ProtectionReadiness(False, "阀自检未通过")
+        reasons.append("阀自检未通过")
     if event.self_test_failed:
-        return ProtectionReadiness(False, "气动自检失败")
+        reasons.append("气动自检失败")
     if require_vision and not event.vision_fresh:
-        return ProtectionReadiness(False, "视觉结果过期")
+        reasons.append("视觉结果过期")
+    if reasons:
+        return ProtectionReadiness(False, "；".join(reasons))
     return ProtectionReadiness(True, "安全条件有效")
 
 
@@ -76,6 +84,8 @@ class CollisionEventTracker:
             new_events = int(event.impact_event)
         self.last_count = event.impact_count
         self.legacy = False
+        if new_events > MAX_COLLISION_COUNT_DELTA:
+            return int(bool(event.impact_event))
         return new_events
 
     @classmethod

@@ -89,6 +89,34 @@ class CollisionEventTrackerTests(unittest.TestCase):
 
         self.assertEqual(tracker.observe(motion_event(seq=2, impact_event=True, impact_count=0)), 1)
 
+    def test_new_firmware_resynchronizes_large_normal_counter_delta(self):
+        tracker = CollisionEventTracker()
+        tracker.observe(motion_event(seq=1, impact_event=False, impact_count=0))
+
+        self.assertEqual(
+            tracker.observe(motion_event(seq=2, impact_event=True, impact_count=1025)),
+            1,
+        )
+        self.assertEqual(
+            tracker.observe(motion_event(seq=3, impact_event=False, impact_count=1025)),
+            0,
+        )
+
+    def test_new_firmware_resynchronizes_large_wrapped_counter_delta(self):
+        tracker = CollisionEventTracker()
+        tracker.observe(
+            motion_event(seq=1, impact_event=False, impact_count=0xFFFF0000)
+        )
+
+        self.assertEqual(
+            tracker.observe(motion_event(seq=2, impact_event=True, impact_count=0xFFFF)),
+            1,
+        )
+        self.assertEqual(
+            tracker.observe(motion_event(seq=3, impact_event=False, impact_count=0xFFFF)),
+            0,
+        )
+
     def test_new_firmware_resynchronizes_invalid_direct_counter_values(self):
         for invalid_count in (-1, 0x1_0000_0000, 0x2_0000_0000):
             with self.subTest(invalid_count=invalid_count):
@@ -155,6 +183,25 @@ class ProtectionReadinessTests(unittest.TestCase):
 
         self.assertFalse(readiness.allowed)
         self.assertEqual(readiness.reason, "视觉结果过期")
+
+    def test_reports_all_readiness_failures_in_safety_order(self):
+        readiness = protection_readiness(
+            pneumatic_event(
+                automatic_enabled=False,
+                pressure_valid=False,
+                pump_verified=False,
+                valve_verified=False,
+                self_test_failed=True,
+                vision_fresh=False,
+            ),
+            require_vision=True,
+        )
+
+        self.assertFalse(readiness.allowed)
+        self.assertEqual(
+            readiness.reason,
+            "自动模式关闭；压力无效或过期；泵自检未通过；阀自检未通过；气动自检失败；视觉结果过期",
+        )
 
 
 if __name__ == "__main__":
