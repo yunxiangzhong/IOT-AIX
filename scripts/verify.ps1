@@ -161,7 +161,7 @@ if ($mpuSourceText -notmatch 'impact_event' -or
     throw "MPU collision events must be emitted immediately with a persistent counter"
 }
 $riskReceiverSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "risk_receiver.c")
-if ($riskReceiverSourceText -match 'impact_samples|MOTION_DETECTOR_IMPACT_THRESHOLD_G') {
+if ($riskReceiverSourceText -match '\\?"impact_g\\?"\s*:|\\?"impact_samples\\?"\s*:|\bMOTION_DETECTOR_IMPACT_THRESHOLD_G\b') {
     throw "pneumatic config endpoint must expose acceleration-delta collision semantics"
 }
 $pneumaticSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "pneumatic_controller.c")
