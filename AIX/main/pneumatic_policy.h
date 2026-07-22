@@ -34,13 +34,15 @@ typedef enum {
 
 typedef enum {
     PNEUMATIC_FAULT_NONE = 0,
-    PNEUMATIC_FAULT_EMERGENCY_STOP,
-    PNEUMATIC_FAULT_PRESSURE_INVALID,
-    PNEUMATIC_FAULT_PRESSURE_STALE,
-    PNEUMATIC_FAULT_PRESSURE_OVER_MAX,
-    PNEUMATIC_FAULT_INFLATE_TIMEOUT,
-    PNEUMATIC_FAULT_HOLD_TIMEOUT,
-    PNEUMATIC_FAULT_CONFIGURATION,
+    PNEUMATIC_FAULT_EMERGENCY_STOP = 1,
+    PNEUMATIC_FAULT_PRESSURE_INVALID = 2,
+    PNEUMATIC_FAULT_PRESSURE_STALE = 3,
+    PNEUMATIC_FAULT_PRESSURE_OVER_MAX = 4,
+    // 5 was PNEUMATIC_FAULT_INFLATE_TIMEOUT — removed; automatic inflate no
+    // longer has a hard timeout.  All serialization uses string names, so the
+    // gap is benign.
+    PNEUMATIC_FAULT_HOLD_TIMEOUT = 6,
+    PNEUMATIC_FAULT_CONFIGURATION = 7,
 } pneumatic_fault_t;
 
 typedef enum {
@@ -65,7 +67,7 @@ typedef struct {
     bool calibration_valid;
     float target_kpa;
     float max_kpa; /* Software control limit, at most 20 kPa; sensor range is defined separately. */
-    uint32_t max_inflate_ms;
+    uint32_t max_inflate_ms; /* Legacy saved-protocol field; not an active timeout. */
 } pneumatic_policy_config_t;
 
 typedef struct {

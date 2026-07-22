@@ -198,11 +198,8 @@ pneumatic_policy_output_t pneumatic_policy_step(
 
         case PNEUMATIC_STATE_INFLATING: {
             if (policy->operation == PNEUMATIC_OPERATION_AUTOMATIC) {
-                const uint64_t elapsed_ms = now_ms - policy->inflate_started_ms;
                 if (input->pressure_kpa >= policy->active_target_kpa) {
                     enter_state(policy, PNEUMATIC_STATE_HOLDING, now_ms);
-                } else if (elapsed_ms >= policy->config.max_inflate_ms) {
-                    enter_fault(policy, PNEUMATIC_FAULT_INFLATE_TIMEOUT, now_ms);
                 }
             } else if (policy->operation == PNEUMATIC_OPERATION_CALIBRATION &&
                        input->pressure_kpa >= PNEUMATIC_CALIBRATION_CEILING_KPA) {
@@ -309,7 +306,6 @@ const char *pneumatic_fault_name(pneumatic_fault_t fault) {
         case PNEUMATIC_FAULT_PRESSURE_INVALID: return "pressure_invalid";
         case PNEUMATIC_FAULT_PRESSURE_STALE: return "pressure_stale";
         case PNEUMATIC_FAULT_PRESSURE_OVER_MAX: return "pressure_over_max";
-        case PNEUMATIC_FAULT_INFLATE_TIMEOUT: return "inflate_timeout";
         case PNEUMATIC_FAULT_HOLD_TIMEOUT: return "hold_timeout";
         case PNEUMATIC_FAULT_CONFIGURATION: return "configuration";
         default: return "unknown";

@@ -19,33 +19,19 @@ hardware_health_snapshot_t hardware_health_evaluate(const hardware_health_input_
         .pressure = input->pressure_healthy ? HARDWARE_HEALTH_HEALTHY : HARDWARE_HEALTH_FAULT,
         .dfplayer = input->dfplayer_healthy ? HARDWARE_HEALTH_HEALTHY : HARDWARE_HEALTH_DEGRADED,
         .rgb = input->rgb_healthy ? HARDWARE_HEALTH_HEALTHY : HARDWARE_HEALTH_DEGRADED,
-        .pump = !input->pneumatic_started ? HARDWARE_HEALTH_DISABLED
-                                          : input->self_test_failed ? HARDWARE_HEALTH_FAULT
-                                          : input->pump_verified ? HARDWARE_HEALTH_HEALTHY
-                                                                 : HARDWARE_HEALTH_PENDING,
-        .valve = !input->pneumatic_started ? HARDWARE_HEALTH_DISABLED
-                                           : input->self_test_failed ? HARDWARE_HEALTH_FAULT
-                                           : input->valve_verified ? HARDWARE_HEALTH_HEALTHY
-                                                                  : HARDWARE_HEALTH_PENDING,
+        .pump = input->pneumatic_started ? HARDWARE_HEALTH_HEALTHY : HARDWARE_HEALTH_DISABLED,
+        .valve = input->pneumatic_started ? HARDWARE_HEALTH_HEALTHY : HARDWARE_HEALTH_DISABLED,
         .overall = pneumatic_state,
         .reason = "ready",
     };
     snapshot.automatic_ready = input->camera_healthy && input->network_healthy &&
-                               input->pressure_healthy && input->pneumatic_started &&
-                               input->pump_verified && input->valve_verified &&
-                               !input->self_test_failed;
+                               input->pressure_healthy && input->pneumatic_started;
     if (!input->pressure_healthy) {
         snapshot.overall = HARDWARE_HEALTH_FAULT;
         snapshot.reason = "pressure_unhealthy";
     } else if (!input->pneumatic_started) {
         snapshot.overall = HARDWARE_HEALTH_DISABLED;
         snapshot.reason = "pneumatic_controller_disabled";
-    } else if (input->self_test_failed) {
-        snapshot.overall = HARDWARE_HEALTH_FAULT;
-        snapshot.reason = "pneumatic_self_test_failed";
-    } else if (!input->pump_verified || !input->valve_verified) {
-        snapshot.overall = HARDWARE_HEALTH_DEGRADED;
-        snapshot.reason = "pneumatic_self_test_pending_but_pressure_release_ready";
     } else if (!input->camera_healthy || !input->network_healthy || !input->mpu_healthy ||
                !input->dfplayer_healthy || !input->rgb_healthy) {
         snapshot.overall = HARDWARE_HEALTH_DEGRADED;

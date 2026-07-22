@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,12 +15,17 @@ class CooperativeWarningUiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-    def test_global_navigation_has_only_real_dashboard_and_separate_utilities(self):
+    def test_global_navigation_has_real_dashboard_and_local_simulation_page(self):
         window = MainWindow()
-        self.assertEqual(window.primary_pages.count(), 1)
+        self.assertEqual(window.primary_pages.count(), 2)
         self.assertEqual(window.overview_button.text(), "中控总览")
-        self.assertFalse(hasattr(window, "scenario_button"))
-        self.assertFalse(hasattr(window, "scenario_panel"))
+        self.assertEqual(window.scenario_button.text(), "协同场景")
+        self.assertTrue(hasattr(window, "scenario_panel"))
+        self.assertTrue(window.scenario_panel.has_simulated_input())
+        self.assertEqual(window.scenario_panel.start_button.text(), "开始 5 秒协同演示")
+        window.scenario_panel.begin_demo()
+        window.scenario_panel._update_from_elapsed(1000)
+        self.assertIn("演示", window.scenario_panel.stages[3].meta.text())
         self.assertFalse(hasattr(window, "settings_dialog"))
         self.assertTrue(window.device_window.isHidden())
         self.assertFalse(hasattr(window.connection_panel, "storage_root_edit"))
@@ -121,6 +127,34 @@ class CooperativeWarningUiTests(unittest.TestCase):
         self.assertIn("播放中", overview.voice_status_value.text())
         overview.apply_voice_status(VoiceStatusEvent("error", "road-risk-7", 2, "tf_card_not_ready"))
         self.assertIn("错误", overview.voice_status_value.text())
+        window.close()
+
+    def test_serial_open_waits_for_real_telemetry_before_claiming_device_connection(self):
+        window = MainWindow()
+        window.connection_panel.set_ports([])
+        window._handle_reader_state("connected")
+
+        self.assertIn("等待真实 AIX 遥测", window.connection_panel.state_label.text())
+        self.assertIn("串口已打开", window.device_button.text())
+
+        window._handle_raw_line(
+            '{"type":"pressure","version":1,"seq":1,"ts_ms":1000,"raw":100,'
+            '"mv":90,"kpa":2.1,"filtered_kpa":2.1,"over_pressure":false,"valid":true}'
+        )
+        self.assertIn("已确认", window.connection_panel.state_label.text())
+        self.assertIn("已连接", window.device_button.text())
+        window.close()
+
+    def test_serial_disconnect_releases_reader_for_reconnect(self):
+        window = MainWindow()
+        stale_reader = Mock()
+        stale_reader.isRunning.return_value = False
+        window.reader = stale_reader
+        window._serial_port = "COM21"
+        window._handle_reader_state("disconnected")
+
+        self.assertIsNone(window.reader)
+        self.assertEqual(window._serial_port, "")
         window.close()
 
 

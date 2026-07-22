@@ -99,6 +99,9 @@ def app_stylesheet() -> str:
     QPushButton#primaryAction { background: #007AFF; color: #FFFFFF; border-color: #007AFF; font-weight: 650; }
     QPushButton#primaryAction:hover { background: #0066D6; }
     QPushButton#primaryAction:disabled { background: #C7C7CC; border-color: #C7C7CC; }
+    QPushButton#dangerButton { background: #D70015; color: #FFFFFF; border-color: #D70015; font-weight: 700; }
+    QPushButton#dangerButton:hover { background: #B80012; }
+    QPushButton#dangerButton:disabled { background: #C7C7CC; border-color: #C7C7CC; }
     QPushButton#deviceStatusButton { min-width: 128px; font-weight: 650; }
     QPushButton#deviceStatusButton[connectionState="connected"] { color: #248A3D; background: #ECF8EF; border-color: #B9DFC2; }
 

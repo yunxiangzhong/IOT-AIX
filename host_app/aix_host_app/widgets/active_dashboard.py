@@ -186,7 +186,7 @@ class _HostStatusCard(QtWidgets.QFrame):
         super().__init__(parent)
         self.setObjectName("hostStatusCard")
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(11, 9, 11, 9)
+        layout.setContentsMargins(11, 7, 11, 7)
         layout.setSpacing(3)
         caption = QtWidgets.QLabel(title)
         caption.setObjectName("metricTitle")
@@ -240,6 +240,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self._sensor_received_at_ms: dict[str, int] = {}
         self._sensor_source_ts_ms: dict[str, int] = {}
         self._last_pressure_sample: PressureSample | None = None
+        self._pneumatic_fault = "none"
         self.trend_store = TrendStore()
         self.trend_dialog = TrendDialog(self)
         self._pending_display_updates: dict[tuple[str, str], tuple[str, str | None]] = {}
@@ -360,9 +361,9 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(camera)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 11)
+        splitter.setStretchFactor(0, 13)
         splitter.setStretchFactor(1, 9)
-        splitter.setSizes([720, 570])
+        splitter.setSizes([820, 520])
         self.workspace_pane_splitter = splitter
         layout.addWidget(splitter, 1)
         return workspace
@@ -421,7 +422,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         heading.addWidget(self.safety_note)
         layout.addLayout(heading)
         cards = QtWidgets.QHBoxLayout()
-        cards.setSpacing(7)
+        cards.setSpacing(5)
         self.host_service_card = _HostStatusCard("服务", "● 启动中", "等待健康检查")
         self.device_card = _HostStatusCard("设备链路", "等待连接", "等待视觉帧")
         self.model_card = _HostStatusCard("CUDA 与模型", "加载中", "DA3 / YOLO")
@@ -553,6 +554,10 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
     def set_compact_mode(self, compact: bool) -> None:
         self._compact = compact
         self.safety_note.setVisible(not compact)
+        for panel in (self.peripheral_panel, self.realtime_panel, self.decision_panel):
+            for row_frame in panel.rows.values():
+                if hasattr(row_frame, "secondary_label"):
+                    row_frame.secondary_label.setVisible(not compact)
         self.risk_trend.hide()
 
     def workspace_column_widths(self) -> tuple[int, int, int, int]:
@@ -649,6 +654,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
 
     def apply_pneumatic_status(self, event: PneumaticStatusEvent) -> None:
         self.pneumatic_panel.apply_status(event)
+        self._pneumatic_fault = event.fault
         readiness = protection_readiness(event, require_vision=False)
         pneumatic_failed = event.self_test_failed
         self._queue_mapping_value(self.realtime_panel, "pneumatic",
@@ -658,6 +664,12 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             immediate=pneumatic_failed or not event.pressure_valid,
             tone="fault" if pneumatic_failed or not event.pressure_valid else "ok",
         )
+        if event.fault != "none":
+            self._queue_mapping_value(
+                self.peripheral_panel, "pneumatic",
+                f"气动故障：{event.fault}",
+                source="pneumatic_status", immediate=True, tone="fault",
+            )
         feedback = (
             "气动自检失败：泵已输出但压力未上升\n自动充气已锁止，请检查供电、触发电平和阀气路"
             if pneumatic_failed
@@ -691,11 +703,17 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         for key in ("ov5640", "mpu6050", "pressure", "dfplayer", "rgb"):
             state = event.modules[key]
             self._queue_mapping_value(self.peripheral_panel, key, labels[state], source="hardware_health", immediate=state in {"fault", "stale"}, tone="fault" if state in {"fault", "stale"} else "ok")
-        self._queue_mapping_value(self.peripheral_panel, "pneumatic",
-            f"泵 {labels[event.modules['pump']]} · 阀 {labels[event.modules['valve']]}",
-            source="hardware_health",
-            immediate=not event.automatic_ready,
-            tone="ok" if event.automatic_ready else "fault",
+        if self._pneumatic_fault != "none":
+            pneumatic_text = f"气动故障：{self._pneumatic_fault}"
+            pneumatic_tone = "fault"
+            pneumatic_immediate = True
+        else:
+            pneumatic_text = f"泵 {labels[event.modules['pump']]} · 阀 {labels[event.modules['valve']]}"
+            pneumatic_tone = "ok" if event.automatic_ready else "fault"
+            pneumatic_immediate = not event.automatic_ready
+        self._queue_mapping_value(
+            self.peripheral_panel, "pneumatic", pneumatic_text,
+            source="hardware_health", immediate=pneumatic_immediate, tone=pneumatic_tone,
         )
         self.protocol_log.appendPlainText(
             f"硬件健康：{labels[event.overall]} · 自动{'允许' if event.automatic_ready else '禁止'} · {event.reason}"

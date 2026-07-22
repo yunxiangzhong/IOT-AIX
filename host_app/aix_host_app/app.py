@@ -12,12 +12,13 @@ from .collision_state import CollisionEventTracker, ProtectionReadiness, protect
 from .fonts import ensure_cjk_font
 from .models import ActionStatusEvent, CameraStatusEvent, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RoadHazardStatusEvent, VoiceStatusEvent
 from .parsers import ParseError, parse_event_line
-from .serial_source import SerialLineReader, list_serial_ports, preferred_serial_port
+from .serial_source import SerialLineReader, list_serial_ports, preferred_serial_port, has_matching_port
 from .session_recorder import SessionRecorder
 from .styles import app_stylesheet
 from .widgets.active_dashboard import ActiveVisionDashboard
 from .widgets.connection_panel import ConnectionPanel
 from .widgets.collision_alert_dialog import CollisionAlertDialog
+from .widgets.cooperative_scenario import CooperativeScenarioPanel
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -46,6 +47,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.service_url = str(os.environ.get("AIX_SERVICE_URL") or settings.value("service_url", "http://127.0.0.1:8008"))
         self.session_recorder = SessionRecorder(Path(settings.value("storage_root", r"F:\OV5640")))
         self.reader: SerialLineReader | None = None
+        self._serial_port_open = False
+        self._serial_telemetry_confirmed = False
+        self._serial_port = ""
         self._closing = False
         self._serial_identity = str(settings.value("serial_identity", ""))
         self._auto_connect_serial = (
@@ -71,6 +75,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.primary_pages = QtWidgets.QStackedWidget()
         self.primary_pages.setObjectName("primaryPages")
         self.primary_pages.addWidget(self.dashboard)
+        self.scenario_panel = CooperativeScenarioPanel()
+        self.primary_pages.addWidget(self.scenario_panel)
         # 默认轻量模式：中控保持一张已分析 PNG，避免串流画面拖慢上位机。
         self._reduce_motion = True
         self._page_opacity = QtWidgets.QGraphicsOpacityEffect(self.primary_pages)
@@ -94,9 +100,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.overview_button.setCheckable(True)
         self.overview_button.setChecked(True)
         self.overview_button.clicked.connect(self._show_overview)
+        self.scenario_button = QtWidgets.QPushButton("协同场景")
+        self.scenario_button.setCheckable(True)
+        self.scenario_button.clicked.connect(self._show_scenario)
         nav_layout.addWidget(nav_title)
         nav_layout.addSpacing(18)
         nav_layout.addWidget(self.overview_button)
+        nav_layout.addWidget(self.scenario_button)
         nav_layout.addStretch(1)
 
         self.diagnostics_button = QtWidgets.QPushButton("诊断")
@@ -234,6 +244,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _show_overview(self) -> None:
         self._set_primary_page(0)
         self.overview_button.setChecked(True)
+        self.scenario_button.setChecked(False)
+
+    def _show_scenario(self) -> None:
+        self._set_primary_page(1)
+        self.scenario_button.setChecked(True)
+        self.overview_button.setChecked(False)
 
     def _set_primary_page(self, index: int) -> None:
         self._page_fade.stop()
@@ -285,14 +301,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def refresh_ports(self) -> None:
         options = list_serial_ports()
-        self.connection_panel.set_ports(options)
+        preferred = preferred_serial_port(options, self._serial_identity)
+        self.connection_panel.set_ports(options, preferred.device if preferred else "")
         if self.reader is not None or self._closing or not self._auto_connect_serial:
             return
-        preferred = preferred_serial_port(options, self._serial_identity)
         if preferred is None:
+            # 更新设备按钮提示，明确告知用户目标设备状态
+            if self._serial_identity:
+                if not has_matching_port(options, self._serial_identity):
+                    self.device_button.setText("● 目标设备未就绪")
+                    self.device_button.setToolTip(f"已保存身份：{self._serial_identity}")
+            elif not options:
+                self.device_button.setText("● 无可用串口")
+                self.device_button.setToolTip("")
             return
-        self._serial_identity = preferred.identity
-        QtCore.QSettings("AIX", "HostApp").setValue("serial_identity", preferred.identity)
+        self.device_button.setToolTip("")
         QtCore.QTimer.singleShot(0, lambda: self._start_serial(preferred.device, 115200))
 
     def _ensure_session(self, serial_port: str = "PC-SERVICE", baudrate: int = 0) -> None:
@@ -311,6 +334,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_serial(self, port: str, baudrate: int) -> None:
         self._stop_serial(close_session=False)
+        self._serial_port = port
+        self._serial_port_open = False
+        self._serial_telemetry_confirmed = False
         self.reader = SerialLineReader(port, baudrate, self)
         self.reader.line_received.connect(self._handle_raw_line)
         self.reader.error_changed.connect(self._handle_error)
@@ -324,6 +350,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.reader.stop()
             self.reader.wait(1500)
             self.reader = None
+        self._serial_port_open = False
+        self._serial_telemetry_confirmed = False
+        self._serial_port = ""
         self.connection_panel.set_connected(False)
         self.device_button.setText("● 设备未连接")
         if close_session:
@@ -331,22 +360,57 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _handle_reader_state(self, state: str) -> None:
         connected = state == "connected"
-        self.connection_panel.set_connected(connected, "串口双向已连接" if connected else "串口未连接")
-        self.device_button.setText(
-            f"● {self.connection_panel.current_port()} 已连接" if connected else "● 设备未连接"
-        )
-        self.device_button.setProperty("connectionState", "connected" if connected else "disconnected")
+        self._serial_port_open = connected
+        if connected:
+            self.connection_panel.set_connected(True, "串口已打开，等待真实 AIX 遥测")
+            self.device_button.setText(f"● {self._serial_port or self.connection_panel.current_port()} 串口已打开")
+        else:
+            self.connection_panel.set_connected(False, "串口未连接")
+            self.device_button.setText("● 设备未连接")
+        self.device_button.setProperty("connectionState", "connected" if connected and self._serial_telemetry_confirmed else "disconnected")
         self.device_button.style().unpolish(self.device_button)
         self.device_button.style().polish(self.device_button)
         if connected:
             QtCore.QTimer.singleShot(260, lambda: self.device_button.setChecked(False))
-        self.statusBar().showMessage("头盔设备串口已连接" if connected else "头盔设备串口已断开")
+        self.statusBar().showMessage("串口已打开，等待真实 AIX 遥测" if connected else "头盔设备串口已断开")
         if not connected and not self._closing:
+            self._release_finished_reader()
             QtCore.QTimer.singleShot(500, self.refresh_ports)
+
+    def _release_finished_reader(self) -> None:
+        """Drop an ended reader so the periodic reconnect path can create a new one."""
+        reader = self.reader
+        if reader is None:
+            return
+        if reader.isRunning():
+            QtCore.QTimer.singleShot(50, self._release_finished_reader)
+            return
+        self.reader = None
+        self._serial_port_open = False
+        self._serial_telemetry_confirmed = False
+        self._serial_port = ""
 
     def _handle_error(self, message: str) -> None:
         self.connection_panel.set_status_text(message, warning=True)
         self.dashboard.protocol_log.appendPlainText(f"串口错误：{message}")
+
+    def _confirm_serial_telemetry(self) -> None:
+        """A serial handle is not an AIX device until a supported telemetry event arrives."""
+        if self._serial_telemetry_confirmed:
+            return
+        self._serial_telemetry_confirmed = True
+        port = self._serial_port or self.connection_panel.current_port()
+        for option in list_serial_ports():
+            if option.device == port and option.identity:
+                self._serial_identity = option.identity
+                QtCore.QSettings("AIX", "HostApp").setValue("serial_identity", option.identity)
+                break
+        self.connection_panel.set_connected(True, "已确认真实 AIX 遥测")
+        self.device_button.setText(f"● {port} 已连接")
+        self.device_button.setProperty("connectionState", "connected")
+        self.device_button.style().unpolish(self.device_button)
+        self.device_button.style().polish(self.device_button)
+        self.statusBar().showMessage(f"已从 {port} 接收真实 AIX 遥测")
 
     def _handle_raw_line(self, line: str) -> None:
         self._ensure_session()
@@ -357,6 +421,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if line.startswith("{"):
                 self.dashboard.protocol_log.appendPlainText(f"已忽略无法识别的协议消息：{line}")
             return
+        self._confirm_serial_telemetry()
         if isinstance(event, PressureSample):
             self.dashboard.apply_pressure(event)
             self.session_recorder.record_pressure(event)
@@ -485,6 +550,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chain_clock.restart()
         self._watchdog_fault_shown = False
         self.dashboard.apply_chain_state(state, force=recovering_from_watchdog)
+        self.scenario_panel.apply_chain_state(state)
         hazard = state.get("road_hazard", {})
         if isinstance(hazard, dict) and hazard.get("event_id"):
             ack = hazard.get("ack", {}) if isinstance(hazard.get("ack"), dict) else {}

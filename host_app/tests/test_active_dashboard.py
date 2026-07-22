@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from aix_host_app.app import MainWindow
-from aix_host_app.models import ActionStatusEvent, PneumaticStatusEvent
+from aix_host_app.models import ActionStatusEvent, HardwareHealthEvent, PneumaticStatusEvent
 from aix_host_app.widgets.active_dashboard import ActiveVisionDashboard
 from aix_host_app.widgets.pneumatic_calibration_panel import PneumaticCalibrationPanel
 
@@ -53,12 +53,13 @@ class ActiveVisionDashboardTests(unittest.TestCase):
 
                 self.assertNotIn("成功", panel.status.text())
 
-    def test_pneumatic_panel_defaults_to_five_second_inflation_limit(self):
+    def test_pneumatic_panel_does_not_expose_removed_automatic_inflation_timeout(self):
         panel = PneumaticCalibrationPanel()
 
         self.assertEqual(panel.target_kpa.value(), 8.0)
         self.assertEqual(panel.max_kpa.value(), 12.0)
-        self.assertEqual(panel.max_inflate_ms.value(), 5000)
+        self.assertFalse(hasattr(panel, "max_inflate_ms"))
+        self.assertNotIn("最大充气时长", [label.text() for label in panel.findChildren(QtWidgets.QLabel)])
 
     def test_pneumatic_status_allows_mpu_protection_when_vision_is_stale(self):
         dashboard = ActiveVisionDashboard()
@@ -75,7 +76,7 @@ class ActiveVisionDashboardTests(unittest.TestCase):
 
         self.assertIn("允许：安全条件有效", dashboard.derived_values["pressure"].text())
 
-    def test_pneumatic_status_blocks_protection_when_pump_is_unverified(self):
+    def test_pneumatic_status_allows_pressure_feedback_when_pump_is_unverified(self):
         dashboard = ActiveVisionDashboard()
         event = PneumaticStatusEvent(
             ts_ms=1000, state="idle", fault="none", trigger="none", operation=0,
@@ -88,7 +89,7 @@ class ActiveVisionDashboardTests(unittest.TestCase):
 
         dashboard.apply_pneumatic_status(event)
 
-        self.assertIn("禁止：泵自检未通过", dashboard.derived_values["pressure"].text())
+        self.assertIn("允许：安全条件有效", dashboard.derived_values["pressure"].text())
 
     def test_pneumatic_status_blocks_protection_when_pressure_is_older_than_200_ms(self):
         dashboard = ActiveVisionDashboard()
@@ -105,24 +106,26 @@ class ActiveVisionDashboardTests(unittest.TestCase):
 
         self.assertIn("禁止：压力无效或过期", dashboard.derived_values["pressure"].text())
 
-    def test_self_test_waits_for_vented_state_before_dispatch(self):
-        panel = PneumaticCalibrationPanel()
-        commands = []
-        panel.command_requested.connect(commands.append)
-        base = dict(
-            ts_ms=1000, fault="none", trigger="none", operation=0,
-            pump_on=False, valve_on=False, pressure_kpa=5.5,
+    def test_pneumatic_fault_overrides_a_healthy_module_card(self):
+        dashboard = ActiveVisionDashboard()
+        dashboard.apply_pneumatic_status(PneumaticStatusEvent(
+            ts_ms=1000, state="fault_vent", fault="hold_timeout", trigger="risk", operation=7,
+            pump_on=False, valve_on=True, pressure_kpa=5.4,
             pressure_valid=True, pressure_age_ms=10, vision_state="safe",
             vision_fresh=True, mpu_available=True, mpu_calibrated=True,
-            impact=False, rapid_tilt=False,
-        )
-        panel.apply_status(PneumaticStatusEvent(state="cooldown", **base))
-        panel._request_self_test()
-        self.assertEqual(commands[-1]["command"], "vent")
+            impact=False, rapid_tilt=False, automatic_enabled=True,
+            pump_verified=True, valve_verified=True, self_test_failed=False,
+        ))
+        dashboard.apply_hardware_health(HardwareHealthEvent(
+            ts_ms=1010, overall="healthy", automatic_ready=True,
+            modules={
+                "ov5640": "healthy", "mpu6050": "healthy", "pressure": "healthy",
+                "dfplayer": "healthy", "rgb": "healthy", "pump": "healthy", "valve": "healthy",
+            },
+            reason="外设已启动",
+        ))
 
-        panel.apply_status(PneumaticStatusEvent(state="vented", **base))
-        QtWidgets.QApplication.processEvents()
-        self.assertEqual(commands[-1]["command"], "self_test")
+        self.assertIn("气动故障：hold_timeout", dashboard.peripheral_values["pneumatic"].text())
 
     def test_renders_risk_action_and_stale_states(self):
         dashboard = ActiveVisionDashboard()

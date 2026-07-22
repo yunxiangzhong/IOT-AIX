@@ -255,14 +255,16 @@ static void controller_task(void *arg)
                                     timestamp_ms - pressure.timestamp_ms <= PNEUMATIC_PRESSURE_STALE_MS;
 
         xSemaphoreTake(s_lock, portMAX_DELAY);
-        const bool pump_verified = s_pump_verified;
-        const bool valve_verified = s_valve_verified;
-        const bool self_test_failed = s_self_test_failed;
         const pneumatic_self_test_phase_t self_test_phase = s_self_test.phase;
         const pending_commands_t pending = s_pending;
         s_pending = (pending_commands_t){0};
-        const bool common_automatic_ready = pressure_fresh && pump_verified &&
-                                            valve_verified && !self_test_failed;
+        /*
+         * The production interlock is pressure-feedback based.  Pump/valve
+         * exercise is optional maintenance work, so a missing (or failed)
+         * maintenance self-test must not suppress a real pressure-controlled
+         * protection action.
+         */
+        const bool common_automatic_ready = pressure_fresh;
         const pneumatic_policy_input_t input = {
             .vision_state = decision.state,
             .vision_fresh = decision.valid && !decision.stale,
@@ -459,25 +461,9 @@ esp_err_t pneumatic_controller_execute(
                 s_pending.reset_fault = true;
                 break;
             case PNEUMATIC_COMMAND_SELF_TEST:
-                if (s_policy.state != PNEUMATIC_STATE_VENTED ||
-                    s_status.pressure_age_ms > PNEUMATIC_PRESSURE_STALE_MS ||
-                    !s_status.pressure_valid ||
-                    s_self_test.phase != PNEUMATIC_SELF_TEST_IDLE) {
-                    xSemaphoreGive(s_lock);
-                    set_result_error(result, "self_test_requires_vented_fresh_low_pressure");
-                    return ESP_ERR_INVALID_STATE;
-                }
-                s_pump_verified = false;
-                s_valve_verified = false;
-                s_self_test_failed = false;
-                s_self_test = (pneumatic_self_test_t){
-                    .phase = PNEUMATIC_SELF_TEST_REQUESTED,
-                    .started_ms = now_ms(),
-                    .baseline_kpa = s_status.pressure_kpa,
-                    .peak_kpa = s_status.pressure_kpa,
-                };
-                s_pending.inflate_pulse = true;
-                break;
+                xSemaphoreGive(s_lock);
+                set_result_error(result, "self_test_disabled_pressure_feedback_mode");
+                return ESP_ERR_NOT_SUPPORTED;
             default:
                 xSemaphoreGive(s_lock);
                 set_result_error(result, "unsupported_command");

@@ -63,7 +63,7 @@ static void test_high_risk_starts_pump_holds_then_vents_after_clear(void)
     assert(output.trigger_source == PNEUMATIC_TRIGGER_NONE);
 }
 
-static void test_automatic_inflate_timeout_forces_fault_vent(void)
+static void test_high_risk_keeps_pumping_past_the_former_60_second_limit(void)
 {
     pneumatic_policy_t policy;
     pneumatic_policy_config_t config = automatic_config();
@@ -74,10 +74,29 @@ static void test_automatic_inflate_timeout_forces_fault_vent(void)
     pneumatic_policy_step(&policy, &input, 1);
     pneumatic_policy_step(&policy, &input, 21);
     input.pressure_timestamp_ms = 1021;
-    const pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 1021);
+    pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 1021);
+    assert(output.state == PNEUMATIC_STATE_INFLATING);
+    assert(output.pump_on && output.valve_on);
+    assert(output.fault == PNEUMATIC_FAULT_NONE);
+
+    /* 60 seconds later, still inflating — no hard timeout */
+    input.pressure_timestamp_ms = 60021;
+    output = pneumatic_policy_step(&policy, &input, 60021);
+    assert(output.state == PNEUMATIC_STATE_INFLATING);
+    assert(output.pump_on && output.valve_on);
+    assert(output.fault == PNEUMATIC_FAULT_NONE);
+
+    /* Pressure invalid still forces exhaust */
+    input.pressure_timestamp_ms = 60022;
+    input.pressure_valid = false;
+    /* one step inside grace window */
+    output = pneumatic_policy_step(&policy, &input, 60022);
+    assert(output.state == PNEUMATIC_STATE_INFLATING);
+    /* step past grace window */
+    output = pneumatic_policy_step(&policy, &input, 60122);
     assert(output.state == PNEUMATIC_STATE_FAULT_VENT);
     assert(!output.pump_on && !output.valve_on);
-    assert(output.fault == PNEUMATIC_FAULT_INFLATE_TIMEOUT);
+    assert(output.fault == PNEUMATIC_FAULT_PRESSURE_INVALID);
 }
 
 static void test_high_risk_trigger_latches_until_target_after_signal_clears(void)
@@ -298,7 +317,7 @@ static void test_self_test_can_request_a_longer_calibration_pulse(void)
 int main(void)
 {
     test_high_risk_starts_pump_holds_then_vents_after_clear();
-    test_automatic_inflate_timeout_forces_fault_vent();
+    test_high_risk_keeps_pumping_past_the_former_60_second_limit();
     test_high_risk_trigger_latches_until_target_after_signal_clears();
     test_active_risk_refills_when_pressure_drops_below_target();
     test_visual_high_risk_does_not_require_mpu_trigger();

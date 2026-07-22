@@ -94,20 +94,26 @@ class ConnectionPanel(QtWidgets.QFrame):
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
         self.connect_button.clicked.connect(self._toggle_connection)
 
-    def set_ports(self, ports: list[SerialPortOption]) -> None:
+    def set_ports(self, ports: list[SerialPortOption], preferred_device: str = "") -> None:
         current_device = self.current_port()
         self.port_combo.clear()
+        self.port_combo.setPlaceholderText("未识别目标串口，请手动选择")
         if not ports:
             self.port_combo.addItem("未检测到串口", "")
             self.detail_label.setText("未发现串口，请检查 USB 连接后刷新")
             return
-        selected_index = 0
+        selected_index = -1
         for index, option in enumerate(ports):
             self.port_combo.addItem(option.label, option.device)
-            if option.device == current_device:
+            if option.device == preferred_device or (not preferred_device and option.device == current_device):
                 selected_index = index
+        if selected_index < 0 and len(ports) == 1:
+            selected_index = 0
         self.port_combo.setCurrentIndex(selected_index)
-        self.detail_label.setText(f"已发现 {len(ports)} 个串口")
+        if preferred_device:
+            self.detail_label.setText(f"已自动识别 {preferred_device}；也可在下拉框手动切换")
+        else:
+            self.detail_label.setText(f"已发现 {len(ports)} 个串口，请手动选择目标设备")
 
     def current_port(self) -> str:
         return str(self.port_combo.currentData() or "")

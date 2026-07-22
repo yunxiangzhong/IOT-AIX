@@ -24,12 +24,6 @@ def protection_readiness(
         reasons.append("自动模式关闭")
     if not event.pressure_valid or event.pressure_age_ms > 200:
         reasons.append("压力无效或过期")
-    if not event.pump_verified:
-        reasons.append("泵自检未通过")
-    if not event.valve_verified:
-        reasons.append("阀自检未通过")
-    if event.self_test_failed:
-        reasons.append("气动自检失败")
     if event.fault != "none":
         reasons.append(f"气动故障：{event.fault}")
     if require_vision and not event.vision_fresh:

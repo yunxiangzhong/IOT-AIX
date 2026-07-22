@@ -281,8 +281,7 @@ function Assert-PneumaticControllerInvariants {
     }
     $lockedBody = $afterFirstLock.Substring(0, $firstUnlock.Index + $firstUnlock.Length)
 
-    $commonReadyPattern = '\bconst\s+bool\s+common_automatic_ready\s*=\s*pressure_fresh\s*&&\s*' +
-                          'pump_verified\s*&&\s*valve_verified\s*&&\s*!\s*self_test_failed\s*;'
+    $commonReadyPattern = '\bconst\s+bool\s+common_automatic_ready\s*=\s*pressure_fresh\s*;'
     $statusAssignmentPattern = '(?s)\bs_status\s*=\s*\(\s*pneumatic_status_t\s*\)\s*\{' +
         '.*?\.config\s*=.*?\.output\s*=.*?\.pressure_kpa\s*=.*?\.pressure_raw_valid\s*=' +
         '.*?\.pressure_valid\s*=.*?\.pressure_age_ms\s*=.*?\.vision_state\s*=' +
@@ -292,9 +291,6 @@ function Assert-PneumaticControllerInvariants {
         '.*?\.timestamp_ms\s*=.*?\}\s*;'
     Assert-PatternsInOrder -Text $lockedBody -Description 'controller_task first s_lock region' -Patterns @(
         'xSemaphoreTake\s*\(\s*s_lock\s*,[^;]*;',
-        '\bconst\s+bool\s+pump_verified\s*=\s*s_pump_verified\s*;',
-        '\bconst\s+bool\s+valve_verified\s*=\s*s_valve_verified\s*;',
-        '\bconst\s+bool\s+self_test_failed\s*=\s*s_self_test_failed\s*;',
         '\bconst\s+pneumatic_self_test_phase_t\s+self_test_phase\s*=\s*s_self_test\s*\.\s*phase\s*;',
         '\bconst\s+pending_commands_t\s+pending\s*=\s*s_pending\s*;',
         '\bs_pending\s*=\s*\(\s*pending_commands_t\s*\)\s*\{\s*0\s*\}\s*;',
@@ -403,13 +399,13 @@ function Move-RequiredMutationAfterUnlock {
 
 Assert-PneumaticControllerInvariants $pneumaticCodeText
 $snapshotOrderMutation = Replace-RequiredMutation $pneumaticCodeText `
-    '(?<pump>const\s+bool\s+pump_verified\s*=\s*s_pump_verified\s*;\s*)(?<valve>const\s+bool\s+valve_verified\s*=\s*s_valve_verified\s*;)' `
-    "`${valve}`n        `${pump}" 'snapshot order'
+    '(?<selftest>const\s+pneumatic_self_test_phase_t\s+self_test_phase\s*=\s*s_self_test\s*\.\s*phase\s*;\s*)(?<pending>const\s+pending_commands_t\s+pending\s*=\s*s_pending\s*;)' `
+    "`${pending}`n        `${selftest}" 'snapshot order'
 Assert-RejectedPneumaticMutation 'snapshot order' $snapshotOrderMutation
 $commonGateMutation = Replace-RequiredMutation $pneumaticCodeText `
-    'pressure_fresh\s*&&\s*pump_verified\s*&&\s*valve_verified\s*&&\s*!\s*self_test_failed' `
-    'pressure_fresh && s_pump_verified && s_valve_verified && !s_self_test_failed' 'shared common gate'
-Assert-RejectedPneumaticMutation 'shared common gate' $commonGateMutation
+    'const\s+bool\s+common_automatic_ready\s*=\s*pressure_fresh\s*;' `
+    'const bool common_automatic_ready = pressure_fresh && s_pump_verified;' 'pressure-only automatic gate'
+Assert-RejectedPneumaticMutation 'pressure-only automatic gate' $commonGateMutation
 $policyAfterUnlockMutation = Move-RequiredMutationAfterUnlock $pneumaticCodeText `
     'const\s+pneumatic_policy_output_t\s+output\s*=\s*pneumatic_policy_step\s*\([^;]+;' 'policy step after unlock'
 Assert-RejectedPneumaticMutation 'policy step after unlock' $policyAfterUnlockMutation

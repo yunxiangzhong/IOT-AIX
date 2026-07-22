@@ -146,13 +146,13 @@ class ProtectionReadinessTests(unittest.TestCase):
         self.assertTrue(readiness.allowed)
         self.assertEqual(readiness.reason, "安全条件有效")
 
-    def test_rejects_unverified_pump(self):
+    def test_unverified_pump_does_not_block_pressure_feedback_mode(self):
         readiness = protection_readiness(
             pneumatic_event(pump_verified=False), require_vision=False
         )
 
-        self.assertFalse(readiness.allowed)
-        self.assertIn("泵自检", readiness.reason)
+        self.assertTrue(readiness.allowed)
+        self.assertEqual(readiness.reason, "安全条件有效")
 
     def test_rejects_latched_pneumatic_fault(self):
         readiness = protection_readiness(
@@ -174,9 +174,7 @@ class ProtectionReadinessTests(unittest.TestCase):
         cases = (
             ({"automatic_enabled": False, "pressure_valid": False}, "自动模式关闭"),
             ({"pressure_valid": False, "pump_verified": False}, "压力"),
-            ({"pump_verified": False, "valve_verified": False}, "泵自检"),
-            ({"valve_verified": False, "self_test_failed": True}, "阀自检"),
-            ({"self_test_failed": True, "vision_fresh": False}, "气动自检失败"),
+            ({"vision_fresh": False}, "视觉结果过期"),
         )
         for overrides, reason in cases:
             with self.subTest(reason=reason):
@@ -197,9 +195,6 @@ class ProtectionReadinessTests(unittest.TestCase):
             pneumatic_event(
                 automatic_enabled=False,
                 pressure_valid=False,
-                pump_verified=False,
-                valve_verified=False,
-                self_test_failed=True,
                 vision_fresh=False,
             ),
             require_vision=True,
@@ -208,7 +203,7 @@ class ProtectionReadinessTests(unittest.TestCase):
         self.assertFalse(readiness.allowed)
         self.assertEqual(
             readiness.reason,
-            "自动模式关闭；压力无效或过期；泵自检未通过；阀自检未通过；气动自检失败；视觉结果过期",
+            "自动模式关闭；压力无效或过期；视觉结果过期",
         )
 
 

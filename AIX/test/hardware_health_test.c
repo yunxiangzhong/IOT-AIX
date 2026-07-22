@@ -18,7 +18,7 @@ static hardware_health_input_t ready_input(void)
     };
 }
 
-static void test_all_verified_modules_allow_automatic_mode(void)
+static void test_pressure_feedback_allows_automatic_mode_without_self_test(void)
 {
     const hardware_health_input_t input = ready_input();
     const hardware_health_snapshot_t health = hardware_health_evaluate(&input);
@@ -28,35 +28,36 @@ static void test_all_verified_modules_allow_automatic_mode(void)
     assert(health.valve == HARDWARE_HEALTH_HEALTHY);
 }
 
-static void test_unverified_pump_and_valve_do_not_block_pressure_release_mode(void)
+static void test_unverified_pump_and_valve_remain_non_blocking(void)
 {
     hardware_health_input_t input = ready_input();
     input.pump_verified = false;
     input.valve_verified = false;
     const hardware_health_snapshot_t health = hardware_health_evaluate(&input);
-    assert(health.overall == HARDWARE_HEALTH_DEGRADED);
-    assert(!health.automatic_ready);
-    assert(health.pump == HARDWARE_HEALTH_PENDING);
-    assert(health.valve == HARDWARE_HEALTH_PENDING);
+    assert(health.overall == HARDWARE_HEALTH_HEALTHY);
+    assert(health.automatic_ready);
+    assert(health.pump == HARDWARE_HEALTH_HEALTHY);
+    assert(health.valve == HARDWARE_HEALTH_HEALTHY);
 }
 
-static void test_failed_self_test_is_reported_as_a_real_pneumatic_fault(void)
+static void test_self_test_result_does_not_change_pressure_feedback_mode(void)
 {
     hardware_health_input_t input = ready_input();
     input.pump_verified = false;
     input.valve_verified = false;
     input.self_test_failed = true;
     const hardware_health_snapshot_t health = hardware_health_evaluate(&input);
-    assert(health.overall == HARDWARE_HEALTH_FAULT);
-    assert(health.pump == HARDWARE_HEALTH_FAULT);
-    assert(health.valve == HARDWARE_HEALTH_FAULT);
+    assert(health.overall == HARDWARE_HEALTH_HEALTHY);
+    assert(health.automatic_ready);
+    assert(health.pump == HARDWARE_HEALTH_HEALTHY);
+    assert(health.valve == HARDWARE_HEALTH_HEALTHY);
 }
 
 int main(void)
 {
-    test_all_verified_modules_allow_automatic_mode();
-    test_unverified_pump_and_valve_do_not_block_pressure_release_mode();
-    test_failed_self_test_is_reported_as_a_real_pneumatic_fault();
+    test_pressure_feedback_allows_automatic_mode_without_self_test();
+    test_unverified_pump_and_valve_remain_non_blocking();
+    test_self_test_result_does_not_change_pressure_feedback_mode();
     puts("hardware_health_test: PASS");
     return 0;
 }
