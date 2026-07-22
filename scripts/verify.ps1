@@ -223,52 +223,172 @@ if ($collisionFirmwareText -match 'voice_prompt|dfplayer') {
     throw "MPU collision and pneumatic paths must remain silent"
 }
 $pneumaticCodeText = Remove-CComments $pneumaticSourceText
-$controllerTaskMatch = [regex]::Match(
-    $pneumaticCodeText,
-    '(?s)static void controller_task\([^)]*\)\s*\{.*?(?=\s*esp_err_t pneumatic_controller_start\s*\()')
-$controllerTaskBody = $controllerTaskMatch.Value
-$firstControllerLock = [regex]::Match($controllerTaskBody, 'xSemaphoreTake\s*\(\s*s_lock\s*,')
-if ([string]::IsNullOrWhiteSpace($controllerTaskBody) -or -not $firstControllerLock.Success) {
-    throw "controller_task and its first s_lock acquisition must remain discoverable"
+function Get-CFunctionRange {
+    param(
+        [string]$CodeText,
+        [string]$StartPattern,
+        [string]$FollowingPattern,
+        [string]$Description
+    )
+
+    $match = [regex]::Match($CodeText, "(?s)$StartPattern.*?(?=\s*$FollowingPattern)")
+    if (-not $match.Success -or [string]::IsNullOrWhiteSpace($match.Value)) {
+        throw "Unable to extract $Description from comment-free C source"
+    }
+    return $match.Value
 }
-$beforeFirstControllerLock = $controllerTaskBody.Substring(0, $firstControllerLock.Index)
-$unsafeSharedReadPattern = '\bs_(?:pump_verified|valve_verified|self_test_failed|pending)\b|' +
-                           '\bs_self_test\s*\.\s*phase\b'
-if ($beforeFirstControllerLock -match $unsafeSharedReadPattern) {
-    throw "controller_task must not read shared pneumatic safety state before taking s_lock"
-}
-$firstControllerUnlock = [regex]::Match(
-    $controllerTaskBody.Substring($firstControllerLock.Index),
-    'xSemaphoreGive\s*\(\s*s_lock\s*\)')
-if (-not $firstControllerUnlock.Success) {
-    throw "controller_task must release s_lock after its synchronized policy update"
-}
-$controllerLockedBody = $controllerTaskBody.Substring(
-    $firstControllerLock.Index,
-    $firstControllerUnlock.Index + $firstControllerUnlock.Length)
-$requiredLockedSnapshots = @(
-    '\bpump_verified\s*=\s*s_pump_verified\b',
-    '\bvalve_verified\s*=\s*s_valve_verified\b',
-    '\bself_test_failed\s*=\s*s_self_test_failed\b',
-    '\bself_test_phase\s*=\s*s_self_test\s*\.\s*phase\b',
-    '\bpending\s*=\s*s_pending\b',
-    '\bs_pending\s*=\s*\(\s*pending_commands_t\s*\)\s*\{\s*0\s*\}',
-    '\.automatic_enabled\s*=\s*s_policy\s*\.\s*config\s*\.\s*automatic_enabled\b'
-)
-foreach ($requiredPattern in $requiredLockedSnapshots) {
-    if ($controllerLockedBody -notmatch $requiredPattern) {
-        throw "controller_task must snapshot safety state, clear pending commands, and publish automatic mode under s_lock"
+
+function Assert-PatternsInOrder {
+    param(
+        [string]$Text,
+        [string[]]$Patterns,
+        [string]$Description
+    )
+
+    $cursor = 0
+    foreach ($pattern in $Patterns) {
+        $match = [regex]::Match($Text.Substring($cursor), $pattern)
+        if (-not $match.Success) {
+            throw "$Description is missing or out of order: $pattern"
+        }
+        $cursor += $match.Index + $match.Length
     }
 }
-$emitStatusMatch = [regex]::Match(
-    $pneumaticCodeText,
-    '(?s)static void emit_status\([^)]*\)\s*\{.*?(?=\s*static void update_self_test\s*\()')
-$emitStatusBody = $emitStatusMatch.Value
-if ([string]::IsNullOrWhiteSpace($emitStatusBody) -or
-    $emitStatusBody -notmatch '\\?"automatic_enabled\\?"\s*:\s*%s' -or
-    $emitStatusBody -notmatch 'status->automatic_enabled\s*\?\s*"true"\s*:\s*"false"') {
-    throw "pneumatic_status must serialize automatic_enabled from its locked status snapshot"
+
+function Assert-PneumaticControllerInvariants {
+    param([string]$SourceText)
+
+    $codeText = Remove-CComments $SourceText
+    $controllerTaskBody = Get-CFunctionRange `
+        -CodeText $codeText `
+        -StartPattern 'static void controller_task\([^)]*\)\s*\{' `
+        -FollowingPattern 'esp_err_t pneumatic_controller_start\s*\(' `
+        -Description 'controller_task'
+    $firstLock = [regex]::Match($controllerTaskBody, 'xSemaphoreTake\s*\(\s*s_lock\s*,[^;]*;')
+    if (-not $firstLock.Success) {
+        throw "controller_task must take s_lock"
+    }
+    $beforeFirstLock = $controllerTaskBody.Substring(0, $firstLock.Index)
+    $unsafeSharedReadPattern = '\bs_(?:pump_verified|valve_verified|self_test_failed|pending)\b|' +
+                               '\bs_self_test\s*\.\s*phase\b'
+    if ($beforeFirstLock -match $unsafeSharedReadPattern) {
+        throw "controller_task must not read shared pneumatic safety state before taking s_lock"
+    }
+    $afterFirstLock = $controllerTaskBody.Substring($firstLock.Index)
+    $firstUnlock = [regex]::Match($afterFirstLock, 'xSemaphoreGive\s*\(\s*s_lock\s*\)\s*;')
+    if (-not $firstUnlock.Success) {
+        throw "controller_task must release its first s_lock region"
+    }
+    $lockedBody = $afterFirstLock.Substring(0, $firstUnlock.Index + $firstUnlock.Length)
+
+    $commonReadyPattern = '\bconst\s+bool\s+common_automatic_ready\s*=\s*pressure_fresh\s*&&\s*' +
+                          'pump_verified\s*&&\s*valve_verified\s*&&\s*!\s*self_test_failed\s*;'
+    $statusAssignmentPattern = '(?s)\bs_status\s*=\s*\(\s*pneumatic_status_t\s*\)\s*\{' +
+        '.*?\.config\s*=.*?\.output\s*=.*?\.pressure_kpa\s*=.*?\.pressure_raw_valid\s*=' +
+        '.*?\.pressure_valid\s*=.*?\.pressure_age_ms\s*=.*?\.vision_state\s*=' +
+        '.*?\.vision_fresh\s*=.*?\.mpu_available\s*=.*?\.mpu_calibrated\s*=' +
+        '.*?\.mpu_impact\s*=.*?\.mpu_rapid_tilt\s*=.*?\.pump_verified\s*=' +
+        '.*?\.valve_verified\s*=.*?\.self_test_failed\s*=.*?\.automatic_enabled\s*=' +
+        '.*?\.timestamp_ms\s*=.*?\}\s*;'
+    Assert-PatternsInOrder -Text $lockedBody -Description 'controller_task first s_lock region' -Patterns @(
+        'xSemaphoreTake\s*\(\s*s_lock\s*,[^;]*;',
+        '\bconst\s+bool\s+pump_verified\s*=\s*s_pump_verified\s*;',
+        '\bconst\s+bool\s+valve_verified\s*=\s*s_valve_verified\s*;',
+        '\bconst\s+bool\s+self_test_failed\s*=\s*s_self_test_failed\s*;',
+        '\bconst\s+pneumatic_self_test_phase_t\s+self_test_phase\s*=\s*s_self_test\s*\.\s*phase\s*;',
+        '\bconst\s+pending_commands_t\s+pending\s*=\s*s_pending\s*;',
+        '\bs_pending\s*=\s*\(\s*pending_commands_t\s*\)\s*\{\s*0\s*\}\s*;',
+        $commonReadyPattern,
+        '\bpneumatic_policy_step\s*\(',
+        '\bupdate_self_test\s*\(',
+        $statusAssignmentPattern,
+        '\bconst\s+pneumatic_status_t\s+current\s*=\s*s_status\s*;',
+        'xSemaphoreGive\s*\(\s*s_lock\s*\)\s*;'
+    )
+
+    $emitStatusBody = Get-CFunctionRange `
+        -CodeText $codeText `
+        -StartPattern 'static void emit_status\([^)]*\)\s*\{' `
+        -FollowingPattern 'static void update_self_test\s*\(' `
+        -Description 'emit_status'
+    $automaticEnabledMappingPattern = '(?s)\\?"self_test_failed\\?"\s*:\s*%s\s*,\s*' +
+        '\\?"automatic_enabled\\?"\s*:\s*%s\s*,.*?' +
+        '\\?"vision_state\\?"\s*:\s*\\?"%s\\?".*?' +
+        'status->self_test_failed\s*\?\s*"true"\s*:\s*"false"\s*,\s*' +
+        'status->automatic_enabled\s*\?\s*"true"\s*:\s*"false"\s*,\s*' +
+        'action_state_name\s*\(\s*status->vision_state\s*\)'
+    if ($emitStatusBody -notmatch $automaticEnabledMappingPattern) {
+        throw "pneumatic_status automatic_enabled JSON placeholder must map to its matching printf argument"
+    }
 }
+
+function Assert-RejectedPneumaticMutation {
+    param([string]$Name, [string]$MutatedSource)
+
+    $rejected = $false
+    try {
+        Assert-PneumaticControllerInvariants $MutatedSource
+    } catch {
+        $rejected = $true
+    }
+    if (-not $rejected) {
+        throw "Pneumatic verifier accepted mutation: $Name"
+    }
+}
+
+function Replace-RequiredMutation {
+    param([string]$SourceText, [string]$Pattern, [string]$Replacement, [string]$Name)
+
+    $regex = [regex]::new($Pattern)
+    $mutated = $regex.Replace($SourceText, $Replacement, 1)
+    if ($mutated -eq $SourceText) {
+        throw "Unable to construct pneumatic verifier mutation: $Name"
+    }
+    return $mutated
+}
+
+function Move-RequiredMutationAfterUnlock {
+    param([string]$SourceText, [string]$StatementPattern, [string]$Name)
+
+    $statementRegex = [regex]::new($StatementPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    $statement = $statementRegex.Match($SourceText)
+    if (-not $statement.Success) {
+        throw "Unable to locate pneumatic statement mutation: $Name"
+    }
+    $withoutStatement = $SourceText.Remove($statement.Index, $statement.Length)
+    $unlock = [regex]::Match($withoutStatement, 'xSemaphoreGive\s*\(\s*s_lock\s*\)\s*;')
+    if (-not $unlock.Success) {
+        throw "Unable to locate pneumatic unlock mutation: $Name"
+    }
+    return $withoutStatement.Insert($unlock.Index + $unlock.Length, "`n" + $statement.Value)
+}
+
+Assert-PneumaticControllerInvariants $pneumaticCodeText
+$snapshotOrderMutation = Replace-RequiredMutation $pneumaticCodeText `
+    '(?<pump>const\s+bool\s+pump_verified\s*=\s*s_pump_verified\s*;\s*)(?<valve>const\s+bool\s+valve_verified\s*=\s*s_valve_verified\s*;)' `
+    "`${valve}`n        `${pump}" 'snapshot order'
+Assert-RejectedPneumaticMutation 'snapshot order' $snapshotOrderMutation
+$commonGateMutation = Replace-RequiredMutation $pneumaticCodeText `
+    'pressure_fresh\s*&&\s*pump_verified\s*&&\s*valve_verified\s*&&\s*!\s*self_test_failed' `
+    'pressure_fresh && s_pump_verified && s_valve_verified && !s_self_test_failed' 'shared common gate'
+Assert-RejectedPneumaticMutation 'shared common gate' $commonGateMutation
+$policyAfterUnlockMutation = Move-RequiredMutationAfterUnlock $pneumaticCodeText `
+    'const\s+pneumatic_policy_output_t\s+output\s*=\s*pneumatic_policy_step\s*\([^;]+;' 'policy step after unlock'
+Assert-RejectedPneumaticMutation 'policy step after unlock' $policyAfterUnlockMutation
+$selfTestAfterUnlockMutation = Move-RequiredMutationAfterUnlock $pneumaticCodeText `
+    'update_self_test\s*\([^;]+;' 'self-test update after unlock'
+Assert-RejectedPneumaticMutation 'self-test update after unlock' $selfTestAfterUnlockMutation
+$statusAfterUnlockMutation = Move-RequiredMutationAfterUnlock $pneumaticCodeText `
+    's_status\s*=\s*\(\s*pneumatic_status_t\s*\)\s*\{.*?\}\s*;' 'status assignment after unlock'
+Assert-RejectedPneumaticMutation 'status assignment after unlock' $statusAfterUnlockMutation
+$currentAfterUnlockMutation = Move-RequiredMutationAfterUnlock $pneumaticCodeText `
+    'const\s+pneumatic_status_t\s+current\s*=\s*s_status\s*;' 'current snapshot after unlock'
+Assert-RejectedPneumaticMutation 'current snapshot after unlock' $currentAfterUnlockMutation
+$emitArgumentSwapMutation = Replace-RequiredMutation $pneumaticCodeText `
+    '(?<automatic>status->automatic_enabled\s*\?\s*"true"\s*:\s*"false"\s*,\s*)(?<vision>action_state_name\s*\(\s*status->vision_state\s*\))' `
+    "`${vision},`n           `${automatic}" 'automatic_enabled printf argument order'
+Assert-RejectedPneumaticMutation 'automatic_enabled printf argument order' $emitArgumentSwapMutation
+Write-Output "Pneumatic verifier mutation checks passed: source accepted, 7 unsafe mutations rejected."
 Invoke-HostCTest "hardware_health_test" @(
     (Join-Path $main "hardware_health.c"),
     (Join-Path $aix "test\hardware_health_test.c")
