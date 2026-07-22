@@ -154,14 +154,61 @@ Invoke-HostCTest "motion_detector_test" @(
 Invoke-HostCTest "mpu6050_config_test" @(
     (Join-Path $aix "test\mpu6050_config_test.c")
 )
+
+function Remove-CComments {
+    param([string]$Text)
+
+    $withoutBlockComments = [regex]::Replace($Text, '(?s)/\*.*?\*/', '')
+    return [regex]::Replace($withoutBlockComments, '(?m)//.*$', '')
+}
+
 $mpuSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "mpu6050_sensor.c")
-if ($mpuSourceText -notmatch 'impact_event' -or
-    $mpuSourceText -notmatch 'impact_count' -or
-    $mpuSourceText -notmatch 'next\.motion\.impact_event\s*\|\|') {
+$emitMotionMatch = [regex]::Match(
+    $mpuSourceText,
+    '(?s)static void emit_motion\([^)]*\)\s*(\{.*?\r?\n\})\r?\n\r?\nstatic esp_err_t read_sample')
+$emitMotionBody = Remove-CComments $emitMotionMatch.Groups[1].Value
+$motionTelemetryFields = @(
+    @{ JsonKey = 'accel_delta_g'; Argument = 'status->motion\.accel_delta_g' },
+    @{ JsonKey = 'sample_interval_ms'; Argument = 'status->motion\.sample_interval_ms' },
+    @{ JsonKey = 'impact_event'; Argument = 'status->motion\.impact_event' },
+    @{ JsonKey = 'impact_count'; Argument = 'status->motion\.impact_count' }
+)
+if ([string]::IsNullOrWhiteSpace($emitMotionBody)) {
+    throw "MPU collision telemetry must be serialized by emit_motion"
+}
+foreach ($field in $motionTelemetryFields) {
+    $jsonKeyPattern = '\\?"' + [regex]::Escape($field.JsonKey) + '\\?"\s*:'
+    if ($emitMotionBody -notmatch $jsonKeyPattern -or $emitMotionBody -notmatch $field.Argument) {
+        throw "emit_motion must serialize $($field.JsonKey) from its status->motion field"
+    }
+}
+
+$mpuTaskMatch = [regex]::Match(
+    $mpuSourceText,
+    '(?s)static void mpu6050_task\([^)]*\)\s*(\{.*?\r?\n\})\r?\n\r?\nstatic esp_err_t configure_mpu6050')
+$mpuTaskBody = Remove-CComments $mpuTaskMatch.Groups[1].Value
+if ([string]::IsNullOrWhiteSpace($mpuTaskBody) -or
+    $mpuTaskBody -notmatch 'if\s*\(\s*next\.motion\.impact_event\s*\|\|') {
     throw "MPU collision events must be emitted immediately with a persistent counter"
 }
+
 $riskReceiverSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "risk_receiver.c")
-if ($riskReceiverSourceText -match '\\?"impact_g\\?"\s*:|\\?"impact_samples\\?"\s*:|\bMOTION_DETECTOR_IMPACT_THRESHOLD_G\b') {
+$pneumaticConfigMatch = [regex]::Match(
+    $riskReceiverSourceText,
+    '(?s)static esp_err_t pneumatic_config_handler\([^)]*\)\s*(\{.*?\r?\n\})\r?\n\r?\nesp_err_t risk_receiver_start')
+$pneumaticConfigBody = Remove-CComments $pneumaticConfigMatch.Groups[1].Value
+$collisionConfigJsonPattern = '(?s)\\?"impact_delta_g\\?"\s*:\s*%\.1f.*?' +
+    '\\?"impact_max_interval_ms\\?"\s*:\s*%llu.*?' +
+    '\\?"impact_refractory_ms\\?"\s*:\s*%llu'
+$collisionConfigConstantsPattern = '(?s)\bMOTION_DETECTOR_IMPACT_DELTA_G\b\s*,\s*' +
+    '\(unsigned long long\)\s*MOTION_DETECTOR_IMPACT_MAX_INTERVAL_MS\b\s*,\s*' +
+    '\(unsigned long long\)\s*MOTION_DETECTOR_IMPACT_REFRACTORY_MS\b'
+$legacyCollisionConfigPattern = '\\?"impact_g\\?"\s*:|\\?"impact_samples\\?"\s*:|' +
+    '\bMOTION_DETECTOR_IMPACT_THRESHOLD_G\b'
+if ([string]::IsNullOrWhiteSpace($pneumaticConfigBody) -or
+    $pneumaticConfigBody -notmatch $collisionConfigJsonPattern -or
+    $pneumaticConfigBody -notmatch $collisionConfigConstantsPattern -or
+    $pneumaticConfigBody -match $legacyCollisionConfigPattern) {
     throw "pneumatic config endpoint must expose acceleration-delta collision semantics"
 }
 $pneumaticSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "pneumatic_controller.c")
