@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -139,21 +140,10 @@ def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
         if not isinstance(accel, dict) or not isinstance(gyro, dict):
             raise ParseError("motion v2 axes must be objects")
         try:
-            accel_delta_g = payload.get("accel_delta_g")
-            sample_interval_ms = payload.get("sample_interval_ms")
-            impact_event = payload.get("impact_event")
-            impact_count = payload.get("impact_count")
-            parsed_sample_interval_ms = (
-                None if sample_interval_ms is None
-                else _as_int(sample_interval_ms, "sample_interval_ms")
-            )
-            parsed_impact_count = (
-                None if impact_count is None else _as_int(impact_count, "impact_count")
-            )
-            if parsed_sample_interval_ms is not None and parsed_sample_interval_ms < 0:
-                raise ValueError("sample_interval_ms must be non-negative")
-            if parsed_impact_count is not None and parsed_impact_count < 0:
-                raise ValueError("impact_count must be non-negative")
+            accel_delta_g = _optional_native_nonnegative_float(payload, "accel_delta_g")
+            sample_interval_ms = _optional_native_nonnegative_int(payload, "sample_interval_ms")
+            impact_event = _optional_native_bool(payload, "impact_event", False)
+            impact_count = _optional_native_nonnegative_int(payload, "impact_count")
             return MotionEvent(
                 seq=_as_int(payload["seq"], "seq"), ts_ms=_as_int(payload["ts_ms"], "ts_ms"),
                 speed_mps=_as_float(payload.get("speed_mps", 0.0), "speed_mps"),
@@ -167,16 +157,10 @@ def _parse_motion_payload(payload: dict[str, Any]) -> MotionEvent:
                 rapid_tilt=_as_bool(payload["rapid_tilt"], "rapid_tilt"),
                 danger_latched=_as_bool(payload["danger_latched"], "danger_latched"),
                 calibrated=_as_bool(payload["calibrated"], "calibrated"), source="json-v2",
-                accel_delta_g=(
-                    None if accel_delta_g is None
-                    else _as_float(accel_delta_g, "accel_delta_g")
-                ),
-                sample_interval_ms=parsed_sample_interval_ms,
-                impact_event=(
-                    False if impact_event is None
-                    else _as_bool(impact_event, "impact_event")
-                ),
-                impact_count=parsed_impact_count,
+                accel_delta_g=accel_delta_g,
+                sample_interval_ms=sample_interval_ms,
+                impact_event=impact_event,
+                impact_count=impact_count,
             )
         except (TypeError, ValueError) as exc:
             raise ParseError(str(exc)) from exc
@@ -216,7 +200,7 @@ def _parse_pneumatic_status_payload(payload: dict[str, Any]) -> PneumaticStatusE
             pump_verified=_as_bool(payload.get("pump_verified", False), "pump_verified"),
             valve_verified=_as_bool(payload.get("valve_verified", False), "valve_verified"),
             self_test_failed=_as_bool(payload.get("self_test_failed", False), "self_test_failed"),
-            automatic_enabled=_as_bool(payload.get("automatic_enabled", False), "automatic_enabled"),
+            automatic_enabled=_optional_native_bool(payload, "automatic_enabled", False),
         )
     except (TypeError, ValueError) as exc:
         raise ParseError(str(exc)) from exc
@@ -385,6 +369,44 @@ def _as_int(value: Any, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
     return int(value)
+
+
+def _optional_native_nonnegative_int(
+    payload: dict[str, Any], name: str
+) -> int | None:
+    if name not in payload:
+        return None
+    value = payload[name]
+    if type(value) is not int:
+        raise ValueError(f"{name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
+def _optional_native_nonnegative_float(
+    payload: dict[str, Any], name: str
+) -> float | None:
+    if name not in payload:
+        return None
+    value = payload[name]
+    if type(value) not in (int, float):
+        raise ValueError(f"{name} must be a number")
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError(f"{name} must be finite and non-negative")
+    return parsed
+
+
+def _optional_native_bool(
+    payload: dict[str, Any], name: str, default: bool
+) -> bool:
+    if name not in payload:
+        return default
+    value = payload[name]
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a boolean")
+    return value
 
 
 def _as_float(value: Any, name: str) -> float:

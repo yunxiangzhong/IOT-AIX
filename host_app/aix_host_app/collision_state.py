@@ -30,13 +30,19 @@ def protection_readiness(
 
 
 class CollisionEventTracker:
+    _WRAP_PREVIOUS_MIN = 0xFFFF0000
+    _WRAP_CURRENT_MAX = 0x0000FFFF
+
     def __init__(self) -> None:
         self.last_seq: int | None = None
         self.last_count: int | None = None
         self.legacy = False
 
     def observe(self, event: MotionEvent) -> int:
-        restarted = self.last_seq is not None and event.seq <= self.last_seq
+        if self.last_seq is not None and event.seq == self.last_seq:
+            return 0
+
+        restarted = self.last_seq is not None and event.seq < self.last_seq
         if restarted:
             self.last_count = None
             self.legacy = False
@@ -53,7 +59,15 @@ class CollisionEventTracker:
             self.legacy = False
             return int(event.impact_event)
 
-        new_events = (event.impact_count - self.last_count) & 0xFFFFFFFF
+        if event.impact_count >= self.last_count:
+            new_events = event.impact_count - self.last_count
+        elif (
+            self.last_count >= self._WRAP_PREVIOUS_MIN
+            and event.impact_count <= self._WRAP_CURRENT_MAX
+        ):
+            new_events = event.impact_count + (1 << 32) - self.last_count
+        else:
+            new_events = int(event.impact_event)
         self.last_count = event.impact_count
         self.legacy = False
         return new_events

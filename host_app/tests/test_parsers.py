@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from aix_host_app.models import ActionStatusEvent, CameraPreviewEvent, CameraStatusEvent, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RiskAckEvent, RoadHazardStatusEvent, VisionDepthEvent, VoiceStatusEvent
@@ -87,6 +88,43 @@ class MotionParserTests(unittest.TestCase):
                 '"impact_count":true}'
             )
 
+    def test_rejects_non_native_integer_collision_fields(self):
+        base = {
+            "type": "motion", "version": 2, "seq": 2, "ts_ms": 1000,
+            "accel_g": {"x": 0.1, "y": 0.2, "z": 0.97},
+            "gyro_dps": {"x": 1.0, "y": 2.0, "z": 3.0},
+            "accel_norm_g": 1.0, "tilt_deg": 12.3, "impact": False,
+            "rapid_tilt": False, "danger_latched": False, "calibrated": True,
+        }
+        for field in ("sample_interval_ms", "impact_count"):
+            for value in (1.5, "10", True):
+                with self.subTest(field=field, value=value), self.assertRaises(ParseError):
+                    parse_event_line(json.dumps({**base, field: value}))
+
+    def test_rejects_non_boolean_impact_event(self):
+        base = {
+            "type": "motion", "version": 2, "seq": 2, "ts_ms": 1000,
+            "accel_g": {"x": 0.1, "y": 0.2, "z": 0.97},
+            "gyro_dps": {"x": 1.0, "y": 2.0, "z": 3.0},
+            "accel_norm_g": 1.0, "tilt_deg": 12.3, "impact": False,
+            "rapid_tilt": False, "danger_latched": False, "calibrated": True,
+        }
+        for value in (1, "true"):
+            with self.subTest(value=value), self.assertRaises(ParseError):
+                parse_event_line(json.dumps({**base, "impact_event": value}))
+
+    def test_rejects_invalid_acceleration_delta(self):
+        base = {
+            "type": "motion", "version": 2, "seq": 2, "ts_ms": 1000,
+            "accel_g": {"x": 0.1, "y": 0.2, "z": 0.97},
+            "gyro_dps": {"x": 1.0, "y": 2.0, "z": 3.0},
+            "accel_norm_g": 1.0, "tilt_deg": 12.3, "impact": False,
+            "rapid_tilt": False, "danger_latched": False, "calibrated": True,
+        }
+        for value in (True, "1.31", -0.1, float("inf")):
+            with self.subTest(value=value), self.assertRaises(ParseError):
+                parse_event_line(json.dumps({**base, "accel_delta_g": value}))
+
 
 class HardwareHealthParserTests(unittest.TestCase):
     def test_parses_real_module_health_heartbeat(self):
@@ -135,6 +173,20 @@ class PneumaticStatusParserTests(unittest.TestCase):
         )
 
         self.assertFalse(event.automatic_enabled)
+
+    def test_rejects_non_boolean_automatic_enabled(self):
+        base = {
+            "type": "pneumatic_status", "version": 1, "ts_ms": 1000,
+            "state": "holding", "fault": "none", "trigger": "vision_high",
+            "operation": 1, "pump_on": False, "valve_on": True,
+            "pressure_kpa": 2.1, "pressure_valid": True, "pressure_age_ms": 20,
+            "vision_state": "high", "vision_fresh": True,
+            "mpu_available": True, "mpu_calibrated": True,
+            "impact": False, "rapid_tilt": False,
+        }
+        for value in (1, "true"):
+            with self.subTest(value=value), self.assertRaises(ParseError):
+                parse_event_line(json.dumps({**base, "automatic_enabled": value}))
 
 
 class CameraStatusParserTests(unittest.TestCase):

@@ -56,6 +56,12 @@ class CollisionEventTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.observe(motion_event(seq=2, impact_event=False, impact_count=1)), 0)
         self.assertEqual(tracker.observe(motion_event(seq=3, impact_event=True, impact_count=3)), 2)
 
+    def test_new_firmware_ignores_exact_same_sequence_retransmission(self):
+        tracker = CollisionEventTracker()
+
+        self.assertEqual(tracker.observe(motion_event(seq=1, impact_event=True, impact_count=1)), 1)
+        self.assertEqual(tracker.observe(motion_event(seq=1, impact_event=True, impact_count=1)), 0)
+
     def test_old_firmware_uses_impact_rising_edge(self):
         tracker = CollisionEventTracker()
 
@@ -70,11 +76,18 @@ class CollisionEventTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.observe(motion_event(seq=9, impact_event=False, impact_count=2)), 0)
         self.assertEqual(tracker.observe(motion_event(seq=10, impact_event=True, impact_count=3)), 1)
 
-    def test_new_firmware_counter_supports_uint32_wrap(self):
+    def test_new_firmware_resynchronizes_on_ordinary_counter_decrease(self):
+        tracker = CollisionEventTracker()
+        tracker.observe(motion_event(seq=1, impact_event=False, impact_count=8))
+
+        self.assertEqual(tracker.observe(motion_event(seq=2, impact_event=False, impact_count=2)), 0)
+        self.assertEqual(tracker.observe(motion_event(seq=3, impact_event=True, impact_count=1)), 1)
+
+    def test_new_firmware_counter_supports_guarded_uint32_wrap(self):
         tracker = CollisionEventTracker()
         tracker.observe(motion_event(seq=1, impact_event=False, impact_count=0xFFFFFFFF))
 
-        self.assertEqual(tracker.observe(motion_event(seq=2, impact_event=True, impact_count=1)), 2)
+        self.assertEqual(tracker.observe(motion_event(seq=2, impact_event=True, impact_count=0)), 1)
 
 
 class ProtectionReadinessTests(unittest.TestCase):
