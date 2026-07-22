@@ -443,6 +443,7 @@ esp_err_t pneumatic_controller_execute(
                 s_pending.vent = true;
                 break;
             case PNEUMATIC_COMMAND_EMERGENCY_STOP: {
+                s_pending = (pending_commands_t){0};
                 const uint64_t emergency_timestamp_ms = now_ms();
                 const pneumatic_policy_input_t emergency_input = {
                     .emergency_stop = true,

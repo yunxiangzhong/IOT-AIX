@@ -336,12 +336,15 @@ function Assert-PneumaticControllerInvariants {
         throw "emergency-stop command must execute after pneumatic_controller_execute takes s_lock"
     }
     $emergencyBody = $emergencyCase.Groups[1].Value
-    if ($emergencyBody -match 'xSemaphoreGive\s*\(' -or
+    $emergencyBarrierFirstPattern = '^\s*\{\s*s_pending\s*=\s*\(\s*pending_commands_t\s*\)\s*\{\s*0\s*\}\s*;'
+    if ($emergencyBody -notmatch $emergencyBarrierFirstPattern -or
+        $emergencyBody -match 'xSemaphoreGive\s*\(' -or
         $emergencyBody -match '\bs_pending\s*\.\s*emergency_stop\b' -or
         $emergencyBody -match '\bs_status\s*\.\s*output\s*\.\s*(?:state|fault|pump_on|valve_on)\s*=') {
         throw "emergency-stop command must use real policy output under the existing lock"
     }
     Assert-PatternsInOrder -Text $emergencyBody -Description 'emergency-stop command lock region' -Patterns @(
+        '\bs_pending\s*=\s*\(\s*pending_commands_t\s*\)\s*\{\s*0\s*\}\s*;',
         '\bconst\s+uint64_t\s+emergency_timestamp_ms\s*=\s*now_ms\s*\(\s*\)\s*;',
         '(?s)\bconst\s+pneumatic_policy_input_t\s+emergency_input\s*=\s*\{\s*\.emergency_stop\s*=\s*true\s*,?\s*\}\s*;',
         '\bconst\s+pneumatic_policy_output_t\s+emergency_output\s*=\s*pneumatic_policy_step\s*\(\s*&s_policy\s*,\s*&emergency_input\s*,\s*emergency_timestamp_ms\s*\)\s*;',
@@ -433,7 +436,16 @@ Assert-RejectedPneumaticMutation 'emergency policy step removed' $emergencyPolic
 $emergencyStatusMutation = Replace-RequiredMutation $pneumaticCodeText `
     's_status\s*\.\s*output\s*=\s*emergency_output\s*;' '' 'emergency status assignment removed'
 Assert-RejectedPneumaticMutation 'emergency status assignment removed' $emergencyStatusMutation
-Write-Output "Pneumatic verifier mutation checks passed: source accepted, 10 unsafe mutations rejected."
+$emergencyBarrierRemovedMutation = Replace-RequiredMutation $pneumaticCodeText `
+    's_pending\s*=\s*\(\s*pending_commands_t\s*\)\s*\{\s*0\s*\}\s*;\s*(?=const\s+uint64_t\s+emergency_timestamp_ms)' `
+    '' 'emergency pending barrier removed'
+Assert-RejectedPneumaticMutation 'emergency pending barrier removed' $emergencyBarrierRemovedMutation
+$emergencyBarrierLateMutation = Replace-RequiredMutation $pneumaticCodeText `
+    ('(?s)(?<barrier>s_pending\s*=\s*\(\s*pending_commands_t\s*\)\s*\{\s*0\s*\}\s*;\s*)' +
+     '(?<policy>const\s+uint64_t\s+emergency_timestamp_ms.*?const\s+pneumatic_policy_output_t\s+emergency_output\s*=\s*pneumatic_policy_step\s*\([^;]+;)') `
+    "`${policy}`n                `${barrier}" 'emergency pending barrier after policy'
+Assert-RejectedPneumaticMutation 'emergency pending barrier after policy' $emergencyBarrierLateMutation
+Write-Output "Pneumatic verifier mutation checks passed: source accepted, 12 unsafe mutations rejected."
 Invoke-HostCTest "hardware_health_test" @(
     (Join-Path $main "hardware_health.c"),
     (Join-Path $aix "test\hardware_health_test.c")
