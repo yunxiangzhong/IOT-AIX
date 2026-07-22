@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import Mock
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -8,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from aix_host_app.app import MainWindow
+from aix_host_app.models import PneumaticStatusEvent
 
 
 class MainWindowEventRoutingTests(unittest.TestCase):
@@ -95,6 +97,100 @@ class MainWindowEventRoutingTests(unittest.TestCase):
                 self.assertEqual(snapshot_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
                 self.assertIn("第 00000019 帧", window.dashboard.frame_telemetry.text())
                 self.assertIn("PC PNG 静态快照", window.dashboard.frame_telemetry.text())
+            finally:
+                window.close()
+
+    def test_new_impact_opens_one_alert_and_updates_existing_alert_for_count_two(self):
+        impact = (
+            '{"type":"motion","version":2,"seq":201,"ts_ms":4200,'
+            '"accel_g":{"x":0.0,"y":0.0,"z":2.31},'
+            '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+            '"accel_norm_g":2.31,"accel_delta_g":1.31,"sample_interval_ms":10,'
+            '"impact_event":true,"impact_count":1,"tilt_deg":3.0,"impact":true,'
+            '"rapid_tilt":false,"danger_latched":true,"calibrated":true,'
+            '"speed_mps":0.0,"speed_valid":false}'
+        )
+        with tempfile.TemporaryDirectory() as root:
+            window = self.make_window(root)
+            try:
+                window._handle_raw_line(impact)
+                window._handle_raw_line(impact)
+                self.assertTrue(window.collision_alert_dialog.isVisible())
+                self.assertEqual(window.collision_total, 1)
+
+                window._handle_raw_line(impact.replace('"seq":201', '"seq":202').replace('"impact_count":1', '"impact_count":2'))
+                self.assertEqual(window.collision_total, 2)
+                self.assertIn("2", window.collision_alert_dialog.count_label.text())
+            finally:
+                window.close()
+
+    def test_collision_ack_only_clears_host_alert_without_pneumatic_or_voice_command(self):
+        impact = (
+            '{"type":"motion","version":2,"seq":201,"ts_ms":4200,'
+            '"accel_g":{"x":0.0,"y":0.0,"z":2.31},'
+            '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+            '"accel_norm_g":2.31,"accel_delta_g":1.31,"sample_interval_ms":10,'
+            '"impact_event":true,"impact_count":1,"tilt_deg":3.0,"impact":true,'
+            '"rapid_tilt":false,"danger_latched":true,"calibrated":true,'
+            '"speed_mps":0.0,"speed_valid":false}'
+        )
+        with tempfile.TemporaryDirectory() as root:
+            window = self.make_window(root)
+            try:
+                window.chain_client.send_pneumatic_command = Mock()
+                window._handle_raw_line(impact)
+                window.collision_alert_dialog.ack_button.click()
+                self.app.processEvents()
+
+                self.assertFalse(window.collision_alert_dialog.isVisible())
+                window.chain_client.send_pneumatic_command.assert_not_called()
+            finally:
+                window.close()
+
+    def test_latched_legacy_impact_or_rapid_tilt_does_not_open_collision_alert(self):
+        legacy_latched_impact = (
+            '{"type":"motion","version":2,"seq":201,"ts_ms":4200,'
+            '"accel_g":{"x":0.0,"y":0.0,"z":2.31},'
+            '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+            '"accel_norm_g":2.31,"accel_delta_g":1.31,"sample_interval_ms":10,'
+            '"tilt_deg":3.0,"impact":true,"rapid_tilt":true,'
+            '"danger_latched":true,"calibrated":true,'
+            '"speed_mps":0.0,"speed_valid":false}'
+        )
+        with tempfile.TemporaryDirectory() as root:
+            window = self.make_window(root)
+            try:
+                window._handle_raw_line(legacy_latched_impact)
+                self.assertFalse(window.collision_alert_dialog.isVisible())
+                self.assertIsNone(window.active_collision_id)
+            finally:
+                window.close()
+
+    def test_alert_immediately_shows_last_live_pneumatic_feedback(self):
+        impact = (
+            '{"type":"motion","version":2,"seq":201,"ts_ms":4200,'
+            '"accel_g":{"x":0.0,"y":0.0,"z":2.31},'
+            '"gyro_dps":{"x":1.0,"y":2.0,"z":3.0},'
+            '"accel_norm_g":2.31,"accel_delta_g":1.31,"sample_interval_ms":10,'
+            '"impact_event":true,"impact_count":1,"tilt_deg":3.0,"impact":true,'
+            '"rapid_tilt":false,"danger_latched":true,"calibrated":true,'
+            '"speed_mps":0.0,"speed_valid":false}'
+        )
+        with tempfile.TemporaryDirectory() as root:
+            window = self.make_window(root)
+            try:
+                window.latest_pneumatic_status = PneumaticStatusEvent(
+                    ts_ms=4100, state="inflating", fault="none", trigger="impact",
+                    operation=2, pump_on=True, valve_on=True, pressure_kpa=15.0,
+                    pressure_valid=True, pressure_age_ms=10, vision_state="safe",
+                    vision_fresh=True, mpu_available=True, mpu_calibrated=True,
+                    impact=True, rapid_tilt=False, pump_verified=True,
+                    valve_verified=True, automatic_enabled=True,
+                )
+                window._handle_raw_line(impact)
+
+                self.assertIn("inflating", window.collision_alert_dialog.pneumatic_label.text())
+                self.assertIn("安全条件有效", window.collision_alert_dialog.readiness_label.text())
             finally:
                 window.close()
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 from datetime import datetime
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .chain_client import PcChainClient
+from .collision_state import CollisionEventTracker, ProtectionReadiness, protection_readiness
 from .fonts import ensure_cjk_font
 from .models import ActionStatusEvent, CameraStatusEvent, HardwareHealthEvent, MotionEvent, PneumaticStatusEvent, PressureSample, RoadHazardStatusEvent, VoiceStatusEvent
 from .parsers import ParseError, parse_event_line
@@ -16,6 +18,7 @@ from .styles import app_stylesheet
 from .widgets.active_dashboard import ActiveVisionDashboard
 from .widgets.cooperative_scenario import CooperativeScenarioPanel
 from .widgets.connection_panel import ConnectionPanel
+from .widgets.collision_alert_dialog import CollisionAlertDialog
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -59,6 +62,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._watchdog_fault_shown = False
         self._last_pneumatic_boot = ""
         self._last_road_hazard_identity: tuple[str, str, str] | None = None
+        self.collision_tracker = CollisionEventTracker()
+        self.active_collision_id: str | None = None
+        self.collision_total = 0
+        self.latest_pneumatic_status: PneumaticStatusEvent | None = None
+        self._last_collision_pneumatic_identity: tuple[object, ...] | None = None
 
         self.dashboard = ActiveVisionDashboard()
         self.scenario_panel = CooperativeScenarioPanel()
@@ -132,6 +140,9 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(content, 1)
         self.setCentralWidget(wrapper)
         QtCore.QTimer.singleShot(0, self._place_in_available_geometry)
+
+        self.collision_alert_dialog = CollisionAlertDialog(self)
+        self.collision_alert_dialog.acknowledged.connect(self._acknowledge_collision_alert)
 
         self.connection_panel = ConnectionPanel()
         self.connection_panel.close_requested.connect(lambda: self.device_button.setChecked(False))
@@ -210,6 +221,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dashboard.pneumatic_panel.config_requested.connect(self.chain_client.request_pneumatic_config)
 
     def closeEvent(self, event) -> None:
+        self.collision_alert_dialog.shutdown()
         self._closing = True
         self._serial_reconnect_timer.stop()
         self.chain_client.stop()
@@ -398,6 +410,40 @@ class MainWindow(QtWidgets.QMainWindow):
             })
         elif isinstance(event, MotionEvent):
             self.dashboard.apply_motion(event)
+            # A latched legacy ``impact`` bit and rapid tilt are diagnostic
+            # telemetry, not a new collision notification.  Only the v2 edge
+            # signal/counter may create the persistent host alert.
+            new_events = (
+                self.collision_tracker.observe(event)
+                if event.impact_event or event.impact_count is not None
+                else 0
+            )
+            if new_events > 0:
+                self.collision_total += new_events
+                if self.active_collision_id is None:
+                    self.active_collision_id = f"collision-{uuid4().hex}"
+                    self._last_collision_pneumatic_identity = None
+                readiness = self._collision_readiness()
+                self.collision_alert_dialog.show_collision(event, self.collision_total, readiness)
+                if self.latest_pneumatic_status is not None:
+                    self.collision_alert_dialog.apply_pneumatic_status(
+                        self.latest_pneumatic_status, readiness
+                    )
+                self.session_recorder.record_collision({
+                    "event": "detected",
+                    "collision_id": self.active_collision_id,
+                    "device_ts_ms": event.ts_ms,
+                    "seq": event.seq,
+                    "count": event.impact_count,
+                    "new_events": new_events,
+                    "accel_norm_g": event.accel_norm_g,
+                    "accel_delta_g": event.accel_delta_g,
+                    "sample_interval_ms": event.sample_interval_ms,
+                    "tilt_deg": event.tilt_deg,
+                    "impact": event.impact,
+                    "impact_event": event.impact_event,
+                    "alert_count": self.collision_total,
+                })
             if event.accel_norm_g is not None:
                 self.dashboard.device_log.appendPlainText(
                     f"MPU6050：加速度 {event.accel_norm_g:.2f} g，倾角 {event.tilt_deg:.1f}°，"
@@ -406,6 +452,7 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 self.dashboard.device_log.appendPlainText("收到旧版运动诊断数据；不显示速度")
         elif isinstance(event, PneumaticStatusEvent):
+            self.latest_pneumatic_status = event
             self.dashboard.apply_pneumatic_status(event)
             self.scenario_panel.apply_pneumatic_status(event)
             self.session_recorder.record_pneumatic({
@@ -419,6 +466,34 @@ class MainWindow(QtWidgets.QMainWindow):
                 "vision_fresh": event.vision_fresh, "mpu_available": event.mpu_available,
                 "mpu_calibrated": event.mpu_calibrated, "impact": event.impact, "rapid_tilt": event.rapid_tilt,
             })
+            if self.collision_alert_dialog.isVisible() and self.active_collision_id is not None:
+                readiness = protection_readiness(event, require_vision=False)
+                self.collision_alert_dialog.apply_pneumatic_status(event, readiness)
+                identity = (
+                    event.state, event.fault, event.trigger, event.pump_on, event.valve_on,
+                    readiness.allowed, readiness.reason,
+                )
+                if identity != self._last_collision_pneumatic_identity:
+                    self._last_collision_pneumatic_identity = identity
+                    self.session_recorder.record_collision({
+                        "event": "pneumatic_update",
+                        "collision_id": self.active_collision_id,
+                        "device_ts_ms": event.ts_ms,
+                        "automatic": event.automatic_enabled,
+                        "pressure_kpa": event.pressure_kpa,
+                        "pressure_valid": event.pressure_valid,
+                        "pressure_age_ms": event.pressure_age_ms,
+                        "pump_on": event.pump_on,
+                        "valve_on": event.valve_on,
+                        "pump_verified": event.pump_verified,
+                        "valve_verified": event.valve_verified,
+                        "self_test_failed": event.self_test_failed,
+                        "state": event.state,
+                        "trigger": event.trigger,
+                        "fault": event.fault,
+                        "readiness_allowed": readiness.allowed,
+                        "readiness_reason": readiness.reason,
+                    })
         elif isinstance(event, VoiceStatusEvent):
             self.dashboard.apply_voice_status(event)
             self.scenario_panel.apply_voice_status(event)
@@ -517,6 +592,22 @@ class MainWindow(QtWidgets.QMainWindow):
     def _record_road_hazard_reset(self) -> None:
         self._ensure_session()
         self.session_recorder.record_road_hazard({"type": "road_hazard_reset"})
+
+    def _collision_readiness(self) -> ProtectionReadiness | None:
+        if self.latest_pneumatic_status is None:
+            return None
+        return protection_readiness(self.latest_pneumatic_status, require_vision=False)
+
+    def _acknowledge_collision_alert(self) -> None:
+        if self.active_collision_id is not None:
+            self.session_recorder.record_collision({
+                "event": "acknowledged",
+                "collision_id": self.active_collision_id,
+                "alert_count": self.collision_total,
+            })
+        self.active_collision_id = None
+        self.collision_total = 0
+        self._last_collision_pneumatic_identity = None
 
     def _accept_pc_snapshot(self, data: bytes, frame_seq: int, capture_ts_ms: int, state: dict) -> None:
         self._ensure_session()
