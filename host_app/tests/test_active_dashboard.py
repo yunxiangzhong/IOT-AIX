@@ -37,8 +37,22 @@ class ActiveVisionDashboardTests(unittest.TestCase):
             "target_kpa": 8.0, "max_kpa": 12.0, "max_inflate_ms": 5000,
             "calibration_valid": True, "automatic_enabled": True,
         })
-        self.assertIn("参数修复成功", panel.status.text())
+        self.assertIn("参数保存并回读确认成功", panel.status.text())
         self.assertIn("8.0 kPa", panel.status.text())
+
+    def test_threshold_save_does_not_succeed_when_any_roundtrip_value_differs(self):
+        expected = {"target_kpa": 8.0, "max_kpa": 12.0, "max_inflate_ms": 5000}
+        for key, actual in (("target_kpa", 8.1), ("max_kpa", 13.0), ("max_inflate_ms", 4900)):
+            with self.subTest(key=key):
+                panel = PneumaticCalibrationPanel()
+                panel._save_calibration()
+                returned = dict(expected)
+                returned[key] = actual
+                returned.update(calibration_valid=True, automatic_enabled=True)
+
+                panel.apply_config(returned)
+
+                self.assertNotIn("成功", panel.status.text())
 
     def test_pneumatic_panel_defaults_to_five_second_inflation_limit(self):
         panel = PneumaticCalibrationPanel()

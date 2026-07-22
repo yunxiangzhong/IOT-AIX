@@ -30,6 +30,8 @@ def protection_readiness(
         reasons.append("阀自检未通过")
     if event.self_test_failed:
         reasons.append("气动自检失败")
+    if event.fault != "none":
+        reasons.append(f"气动故障：{event.fault}")
     if require_vision and not event.vision_fresh:
         reasons.append("视觉结果过期")
     if reasons:

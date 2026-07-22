@@ -154,6 +154,14 @@ class ProtectionReadinessTests(unittest.TestCase):
         self.assertFalse(readiness.allowed)
         self.assertIn("泵自检", readiness.reason)
 
+    def test_rejects_latched_pneumatic_fault(self):
+        readiness = protection_readiness(
+            pneumatic_event(fault="pressure_timeout"), require_vision=False
+        )
+
+        self.assertFalse(readiness.allowed)
+        self.assertIn("气动故障：pressure_timeout", readiness.reason)
+
     def test_pressure_age_boundary_is_200_ms(self):
         self.assertTrue(
             protection_readiness(pneumatic_event(pressure_age_ms=200), False).allowed

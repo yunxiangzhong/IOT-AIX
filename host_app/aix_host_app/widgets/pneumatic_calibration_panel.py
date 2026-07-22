@@ -29,7 +29,7 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         self.status = QtWidgets.QLabel("气动状态：未从设备读取")
         self.status.setObjectName("sectionTitle")
         layout.addWidget(self.status)
-        self._pending_saved_target_kpa: float | None = None
+        self._pending_saved_calibration: tuple[float, float, int] | None = None
         self._last_command = ""
         self._last_state = ""
         self._last_fault = "none"
@@ -106,7 +106,11 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
 
     def _save_calibration(self) -> None:
         self._last_command = "save_calibration"
-        self._pending_saved_target_kpa = float(self.target_kpa.value())
+        self._pending_saved_calibration = (
+            float(self.target_kpa.value()),
+            float(self.max_kpa.value()),
+            int(self.max_inflate_ms.value()),
+        )
         self.command_requested.emit({
             "command_id": self._command_id(),
             "command": "save_calibration",
@@ -147,17 +151,29 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         except (KeyError, TypeError, ValueError):
             self.threshold_snapshot.setPlainText("设备配置响应不完整，未更新当前限制。")
             return
-        if self._pending_saved_target_kpa is not None:
-            actual = float(config["target_kpa"])
-            if abs(actual - self._pending_saved_target_kpa) < 0.05 and config.get("calibration_valid"):
+        if self._pending_saved_calibration is not None:
+            expected_target, expected_max, expected_inflate_ms = self._pending_saved_calibration
+            actual_target = float(config["target_kpa"])
+            actual_max = float(config["max_kpa"])
+            actual_inflate_ms = int(config["max_inflate_ms"])
+            if (
+                abs(actual_target - expected_target) < 0.05
+                and abs(actual_max - expected_max) < 0.05
+                and actual_inflate_ms == expected_inflate_ms
+                and config.get("calibration_valid")
+            ):
                 self.status.setText(
-                    f"参数修复成功：ESP32 已保存目标压力 {actual:.1f} kPa，自动气泵策略已应用。"
+                    "参数保存并回读确认成功："
+                    f"ESP32 已保存目标 {actual_target:.1f} kPa、上限 {actual_max:.1f} kPa、"
+                    f"最大充气 {actual_inflate_ms} ms。"
                 )
             else:
                 self.status.setText(
-                    f"阈值保存未生效：ESP32 实际为 {actual:.1f} kPa，请重试。"
+                    "参数保存回读不一致："
+                    f"ESP32 实际为目标 {actual_target:.1f} kPa、上限 {actual_max:.1f} kPa、"
+                    f"最大充气 {actual_inflate_ms} ms，请重试。"
                 )
-            self._pending_saved_target_kpa = None
+            self._pending_saved_calibration = None
         mpu = config.get("mpu", {}) if isinstance(config.get("mpu"), dict) else {}
         self.threshold_snapshot.setPlainText(
             "以下为从设备读取的实际阈值（不是界面预设）：\n"
