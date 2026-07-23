@@ -4,11 +4,12 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from aix_host_app.app import MainWindow
 from aix_host_app.models import VoiceStatusEvent
-from aix_host_app.widgets.cooperative_scenario import scene_geometry
+from aix_host_app.styles import app_stylesheet
+from aix_host_app.widgets.cooperative_scenario import CooperativeScenarioPanel, scene_geometry
 
 
 class CooperativeWarningUiTests(unittest.TestCase):
@@ -220,6 +221,249 @@ class CooperativeWarningUiTests(unittest.TestCase):
         self.assertEqual(panel.mode_button.text(), "进入模拟模式")
         self.assertFalse(panel._demo_mode)
         window.close()
+
+    def test_flow_animation_mirrors_existing_stage_states_without_changing_copy(self):
+        window = MainWindow()
+        panel = window.scenario_panel
+        original_copy = [
+            panel.detection_value[1].text(),
+            panel.cloud_status[1].text(),
+            panel.helmet_status[1].text(),
+            panel.rider_status[1].text(),
+            panel.protection_status[1].text(),
+        ]
+
+        self.assertEqual(panel.side_flow_overlay.states(), ["waiting"] * 5)
+        self.assertEqual(panel.stage_flow_overlay.states(), ["waiting"] * 5)
+
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._update_from_elapsed(300)
+
+        self.assertEqual(panel.stage_flow_overlay.states()[:2], ["completed", "active"])
+        self.assertEqual(panel.side_flow_overlay.states()[:2], ["completed", "active"])
+        self.assertEqual(
+            [
+                panel.detection_value[1].text(),
+                panel.cloud_status[1].text(),
+                panel.helmet_status[1].text(),
+                panel.rider_status[1].text(),
+                panel.protection_status[1].text(),
+            ],
+            [
+                "货车 · 置信度 0.94",
+                "正在上传目标和场景数据",
+                original_copy[2],
+                original_copy[3],
+                original_copy[4],
+            ],
+        )
+        window.close()
+
+    def test_flow_animation_stops_at_failed_stage(self):
+        panel = CooperativeScenarioPanel()
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._update_from_elapsed(900)
+
+        self.assertEqual(panel.stage_flow_overlay.active_segments(), [2])
+        self.assertEqual(panel.side_flow_overlay.active_segments(), [1])
+
+        panel.apply_submission_error("ESP32:8080 不可达")
+
+        self.assertEqual(panel.stage_flow_overlay.states()[3:], ["failed", "failed"])
+        self.assertEqual(panel.side_flow_overlay.states()[2:], ["failed", "failed", "failed"])
+        self.assertEqual(panel.stage_flow_overlay.active_segments(), [])
+        self.assertEqual(panel.side_flow_overlay.active_segments(), [])
+        panel.close()
+
+    def test_timeout_refreshes_right_chain_and_stops_all_packets(self):
+        panel = CooperativeScenarioPanel()
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._update_from_elapsed(panel.EVENT_DURATION_MS)
+
+        self.assertEqual(panel.stage_flow_overlay.states()[4], "failed")
+        self.assertEqual(panel.side_flow_overlay.states()[3:], ["failed", "failed"])
+        self.assertFalse(panel.stage_flow_overlay.moving_packet_visible())
+        self.assertFalse(panel.side_flow_overlay.moving_packet_visible())
+        panel.close()
+
+    def test_async_chain_failure_refreshes_animation_without_business_timer_tick(self):
+        panel = CooperativeScenarioPanel()
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._timer.stop()
+        panel.apply_chain_state({
+            "road_hazard": {
+                "event_id": panel.current_event_id,
+                "attempts": 1,
+                "delivery": {"state": "failed"},
+                "ack": {"state": "failed"},
+                "error": "ESP32 offline",
+            },
+        })
+
+        self.assertEqual(panel.stage_flow_overlay.states()[3:], ["failed", "failed"])
+        self.assertEqual(panel.side_flow_overlay.states()[2:], ["failed", "failed", "failed"])
+        self.assertFalse(panel.side_flow_overlay.moving_packet_visible())
+        panel.close()
+
+    def test_reduced_motion_disables_packets_without_changing_timeline(self):
+        panel = CooperativeScenarioPanel()
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._update_from_elapsed(300)
+
+        self.assertTrue(panel.side_flow_overlay.moving_packet_visible())
+        self.assertTrue(panel.stage_flow_overlay.moving_packet_visible())
+
+        panel.set_reduced_motion(True)
+        panel._update_from_elapsed(700)
+
+        self.assertFalse(panel.side_flow_overlay.moving_packet_visible())
+        self.assertFalse(panel.stage_flow_overlay.moving_packet_visible())
+        self.assertEqual(panel.eta_value.text(), "4.3 秒")
+        self.assertEqual(panel.stage_flow_overlay.states()[:3], ["completed", "completed", "active"])
+        panel.close()
+
+    def test_animation_does_not_change_dispatch_payload_and_waits_for_real_feedback(self):
+        panel = CooperativeScenarioPanel()
+        dispatched = []
+        panel.scene_dispatch_requested.connect(dispatched.append)
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._update_from_elapsed(900)
+
+        self.assertEqual(dispatched, [4])
+
+        panel.apply_dispatch_result({
+            "ack": {
+                "effective_rgb_pattern": "red_double_pulse",
+                "voice_ack": {"status": "queued"},
+            },
+        })
+
+        self.assertEqual(dispatched, [4])
+        self.assertEqual(panel.side_flow_overlay.states()[4], "active")
+        self.assertNotEqual(panel.side_flow_overlay.states()[4], "completed")
+
+        panel.apply_voice_status(VoiceStatusEvent("playing", panel.current_event_id, 4, ""))
+
+        self.assertEqual(dispatched, [4])
+        self.assertEqual(panel.side_flow_overlay.states()[4], "completed")
+        self.assertTrue(panel.side_flow_overlay.pulse_active(4))
+        panel.close()
+
+    def test_flow_overlays_follow_layout_and_render_moving_packets(self):
+        panel = CooperativeScenarioPanel()
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._update_from_elapsed(300)
+        panel._timer.stop()
+
+        for width, height in ((1280, 720), (1440, 900)):
+            panel.resize(width, height)
+            panel.show()
+            self.app.processEvents()
+            for overlay in (panel.side_flow_overlay, panel.stage_flow_overlay):
+                self.assertEqual(overlay.geometry(), overlay.parentWidget().rect())
+                anchors = overlay.anchor_points()
+                self.assertEqual(len(anchors), 5)
+                self.assertTrue(all(overlay.rect().contains(point.toPoint()) for point in anchors))
+                if overlay is panel.side_flow_overlay:
+                    self.assertTrue(all(
+                        point.x() < card.mapTo(overlay.parentWidget(), QtCore.QPoint()).x()
+                        for point, card in zip(anchors, panel._flow_cards)
+                    ))
+                else:
+                    self.assertTrue(all(
+                        point.y() < stage.mapTo(overlay.parentWidget(), QtCore.QPoint()).y()
+                        for point, stage in zip(anchors, panel.stages)
+                    ))
+                overlay.set_phase(0.5)
+                self.assertEqual(len(overlay.packet_positions()), 1)
+                pixmap = QtGui.QPixmap(overlay.size())
+                pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+                overlay.render(pixmap)
+                image = pixmap.toImage()
+                self.assertTrue(any(
+                    QtGui.qAlpha(image.pixel(x, y)) > 0
+                    for y in range(0, image.height(), max(1, image.height() // 30))
+                    for x in range(0, image.width(), max(1, image.width() // 30))
+                ))
+        panel.close()
+
+    def test_flow_card_styles_color_active_completed_and_failed_data(self):
+        stylesheet = app_stylesheet()
+        self.assertIn('QFrame#scenarioInfoCard[flowState="active"]', stylesheet)
+        self.assertIn('QFrame#scenarioInfoCard[flowState="completed"]', stylesheet)
+        self.assertIn('QFrame#scenarioInfoCard[flowState="failed"]', stylesheet)
+        self.assertIn(
+            'QFrame#scenarioInfoCard[flowState="active"] QLabel#mappingValue',
+            stylesheet,
+        )
+
+    def test_flow_card_value_color_tracks_visual_state(self):
+        window = MainWindow()
+        panel = window.scenario_panel
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._timer.stop()
+        window.show()
+        self.app.processEvents()
+
+        self.assertEqual(
+            panel.detection_value[1].palette().color(QtGui.QPalette.ColorRole.WindowText).name(),
+            "#007aff",
+        )
+
+        panel._update_from_elapsed(300)
+        self.app.processEvents()
+        self.assertEqual(
+            panel.detection_value[1].palette().color(QtGui.QPalette.ColorRole.WindowText).name(),
+            "#248a3d",
+        )
+        self.assertEqual(
+            panel.cloud_status[1].palette().color(QtGui.QPalette.ColorRole.WindowText).name(),
+            "#007aff",
+        )
+        window.close()
+
+    def test_pneumatic_feedback_pulses_only_after_current_scenario_ack_and_reset_clears_it(self):
+        panel = CooperativeScenarioPanel()
+        pneumatic = type("Pneumatic", (), {
+            "self_test_failed": False,
+            "pump_on": True,
+            "valve_on": False,
+            "state": "inflating",
+        })()
+
+        panel.apply_pneumatic_status(pneumatic)
+        self.assertEqual(panel.side_flow_overlay.states()[4], "waiting")
+
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._update_from_elapsed(900)
+        panel.apply_dispatch_result({"ack": {}})
+        panel.apply_pneumatic_status(pneumatic)
+
+        self.assertEqual(panel.side_flow_overlay.states()[4], "completed")
+        self.assertTrue(panel.side_flow_overlay.pulse_active(4))
+
+        panel.reset_demo()
+        self.assertEqual(panel.side_flow_overlay.states(), ["waiting"] * 5)
+        self.assertFalse(panel.side_flow_overlay.pulse_active(4))
+        panel.close()
 
     def test_scenario_errors_are_differentiated(self):
         """apply_submission_error 应显示具体错误而非统一"服务拒绝"。"""

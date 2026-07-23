@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import uuid
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -535,6 +536,199 @@ class _ScenarioStage(QtWidgets.QFrame):
         self.style().polish(self)
 
 
+class _DataFlowOverlay(QtWidgets.QWidget):
+    """Read-only presentation layer that observes state properties on tracked widgets."""
+
+    def __init__(
+        self,
+        tracked_widgets: list[QtWidgets.QWidget],
+        orientation: QtCore.Qt.Orientation,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._tracked_widgets = list(tracked_widgets)
+        self._orientation = orientation
+        self._reduced_motion = False
+        self._phase = 0.0
+        self._pulse_clocks: dict[int, QtCore.QElapsedTimer] = {}
+        self._pulse_timer = QtCore.QTimer(self)
+        self._pulse_timer.setInterval(33)
+        self._pulse_timer.timeout.connect(self._refresh_pulses)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
+        if parent is not None:
+            parent.installEventFilter(self)
+            self.setGeometry(parent.rect())
+        self.show()
+        self.raise_()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self.parentWidget() and event.type() in {
+            QtCore.QEvent.Type.Resize,
+            QtCore.QEvent.Type.Show,
+            QtCore.QEvent.Type.LayoutRequest,
+        }:
+            self.setGeometry(watched.rect())
+            self.raise_()
+            self.update()
+        return super().eventFilter(watched, event)
+
+    def states(self) -> list[str]:
+        states: list[str] = []
+        for widget in self._tracked_widgets:
+            state = widget.property("flowState") or widget.property("stageState") or "waiting"
+            states.append(str(state))
+        return states
+
+    def active_segments(self) -> list[int]:
+        states = self.states()
+        if "failed" in states:
+            return []
+        return [
+            index
+            for index in range(len(states) - 1)
+            if states[index] == "completed" and states[index + 1] == "active"
+        ]
+
+    def set_reduced_motion(self, enabled: bool) -> None:
+        self._reduced_motion = bool(enabled)
+        self.update()
+
+    def set_phase(self, phase: float) -> None:
+        self._phase = max(0.0, min(1.0, float(phase)))
+        self.update()
+
+    def moving_packet_visible(self) -> bool:
+        return not self._reduced_motion and bool(self.active_segments())
+
+    def anchor_points(self) -> list[QtCore.QPointF]:
+        parent = self.parentWidget()
+        if parent is None:
+            return []
+        points: list[QtCore.QPointF] = []
+        for widget in self._tracked_widgets:
+            anchor = widget
+            if self._orientation == QtCore.Qt.Orientation.Horizontal:
+                local_point = QtCore.QPoint(anchor.width() // 2, -5)
+            else:
+                local_point = QtCore.QPoint(-7, anchor.height() // 2)
+            point = anchor.mapTo(parent, local_point)
+            points.append(QtCore.QPointF(
+                max(0, min(self.width() - 1, point.x())),
+                max(0, min(self.height() - 1, point.y())),
+            ))
+        return points
+
+    def packet_positions(self) -> list[QtCore.QPointF]:
+        anchors = self.anchor_points()
+        positions: list[QtCore.QPointF] = []
+        for index in self.active_segments():
+            if index + 1 >= len(anchors):
+                continue
+            start, end = anchors[index], anchors[index + 1]
+            positions.append(start + (end - start) * self._phase)
+        return positions
+
+    def pulse(self, index: int) -> None:
+        if not 0 <= index < len(self._tracked_widgets):
+            return
+        clock = QtCore.QElapsedTimer()
+        clock.start()
+        self._pulse_clocks[index] = clock
+        if not self._reduced_motion:
+            self._pulse_timer.start()
+        self.update()
+
+    def pulse_active(self, index: int) -> bool:
+        clock = self._pulse_clocks.get(index)
+        return bool(clock and clock.isValid() and clock.elapsed() < 700)
+
+    def clear_pulses(self) -> None:
+        self._pulse_clocks.clear()
+        self._pulse_timer.stop()
+        self.update()
+
+    def _refresh_pulses(self) -> None:
+        expired = [index for index, clock in self._pulse_clocks.items() if clock.elapsed() >= 700]
+        for index in expired:
+            self._pulse_clocks.pop(index, None)
+        if not self._pulse_clocks:
+            self._pulse_timer.stop()
+        self.update()
+
+    def _widget_rect(self, widget: QtWidgets.QWidget) -> QtCore.QRectF:
+        parent = self.parentWidget()
+        if parent is None:
+            return QtCore.QRectF()
+        top_left = widget.mapTo(parent, QtCore.QPoint(0, 0))
+        return QtCore.QRectF(top_left, QtCore.QSizeF(widget.size()))
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        del event
+        anchors = self.anchor_points()
+        if not anchors:
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        states = self.states()
+        pulse_wave = 0.5 if self._reduced_motion else 0.5 + 0.5 * math.sin(self._phase * math.tau)
+
+        for widget, state in zip(self._tracked_widgets, states):
+            if state != "active":
+                continue
+            color = QtGui.QColor("#007AFF")
+            color.setAlpha(10 + int(13 * pulse_wave))
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(self._widget_rect(widget).adjusted(1, 1, -1, -1), 10, 10)
+
+        for index, (start, end) in enumerate(zip(anchors, anchors[1:])):
+            source_state = states[index]
+            target_state = states[index + 1]
+            color = QtGui.QColor(_COLORS["waiting"])
+            width = 1.4
+            style = QtCore.Qt.PenStyle.DotLine
+            if "failed" in {source_state, target_state}:
+                color = QtGui.QColor(_COLORS["failed"])
+                width = 2.0
+                style = QtCore.Qt.PenStyle.SolidLine
+            elif source_state == "completed" and target_state == "active":
+                color = QtGui.QColor(_COLORS["active"])
+                width = 2.4
+                style = QtCore.Qt.PenStyle.SolidLine
+            elif source_state == "completed" and target_state == "completed":
+                color = QtGui.QColor(_COLORS["completed"])
+                width = 2.0
+                style = QtCore.Qt.PenStyle.SolidLine
+            color.setAlpha(205 if style == QtCore.Qt.PenStyle.SolidLine else 105)
+            painter.setPen(QtGui.QPen(color, width, style, QtCore.Qt.PenCapStyle.RoundCap))
+            painter.drawLine(start, end)
+
+        if not self._reduced_motion:
+            for position in self.packet_positions():
+                glow = QtGui.QColor("#007AFF")
+                glow.setAlpha(58)
+                painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                painter.setBrush(glow)
+                painter.drawEllipse(position, 9, 9)
+                painter.setBrush(QtGui.QColor("#007AFF"))
+                painter.drawEllipse(position, 4, 4)
+                painter.setBrush(QtGui.QColor("#FFFFFF"))
+                painter.drawEllipse(position, 1.5, 1.5)
+
+            for index, clock in self._pulse_clocks.items():
+                if index >= len(anchors) or clock.elapsed() >= 700:
+                    continue
+                progress = clock.elapsed() / 700.0
+                ring = QtGui.QColor("#248A3D")
+                ring.setAlpha(max(0, int(180 * (1.0 - progress))))
+                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                painter.setPen(QtGui.QPen(ring, 2.0))
+                radius = 7.0 + progress * 13.0
+                painter.drawEllipse(anchors[index], radius, radius)
+
+
 class CooperativeScenarioPanel(QtWidgets.QWidget):
     start_requested = QtCore.Signal(dict)
     reset_requested = QtCore.Signal()
@@ -558,6 +752,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self._ack_remaining_ms: int | None = None
         self._ack_elapsed_ms: int | None = None
         self._ack_is_simulated = False
+        self._protection_feedback_received = False
         self._active_scene_id = 0
         self.current_event_id = ""
         self._link_ready = False
@@ -660,6 +855,13 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.helmet_status = self._info_card("头盔 ESP32", "等待下发")
         self.rider_status = self._info_card("骑行者响应", "正常骑行 · 18 km/h")
         self.protection_status = self._info_card("提示与保护动作", "等待 ESP32 确认")
+        self._flow_cards = [
+            self.detection_value[0],
+            self.cloud_status[0],
+            self.helmet_status[0],
+            self.rider_status[0],
+            self.protection_status[0],
+        ]
         side_layout.addWidget(self.detection_value[0])
         side_layout.addWidget(self.cloud_status[0])
         side_layout.addWidget(self.helmet_status[0])
@@ -687,6 +889,12 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         for stage in self.stages:
             stages.addWidget(stage, 1)
         root.addLayout(stages)
+        self.side_flow_overlay = _DataFlowOverlay(
+            self._flow_cards, QtCore.Qt.Orientation.Vertical, side,
+        )
+        self.stage_flow_overlay = _DataFlowOverlay(
+            self.stages, QtCore.Qt.Orientation.Horizontal, self,
+        )
         self._reset_state(emit_signal=False)
 
     @staticmethod
@@ -711,9 +919,54 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         value.setObjectName("monoMuted")
         return value
 
+    @staticmethod
+    def _set_visual_state(widget: QtWidgets.QWidget, state: str) -> None:
+        if widget.property("flowState") == state:
+            return
+        widget.setProperty("flowState", state)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+        for child in widget.findChildren(QtWidgets.QWidget):
+            child.setProperty("flowState", state)
+            child.style().unpolish(child)
+            child.style().polish(child)
+
+    def _sync_flow_visuals(self) -> None:
+        stage_states = self.stage_flow_overlay.states()
+        cloud_state = "waiting"
+        if "failed" in stage_states[1:3]:
+            cloud_state = "failed"
+        elif "active" in stage_states[1:3]:
+            cloud_state = "active"
+        elif stage_states[2] == "completed":
+            cloud_state = "completed"
+        protection_state = "waiting"
+        if stage_states[4] == "failed":
+            protection_state = "failed"
+        elif self._protection_feedback_received:
+            protection_state = "completed"
+        elif stage_states[4] == "completed":
+            protection_state = "active"
+        visual_states = [
+            stage_states[0],
+            cloud_state,
+            stage_states[3],
+            stage_states[4],
+            protection_state,
+        ]
+        for card, state in zip(self._flow_cards, visual_states):
+            self._set_visual_state(card, state)
+        animation_phase = (self._last_elapsed_ms % 760) / 760.0
+        self.side_flow_overlay.set_phase(animation_phase)
+        self.stage_flow_overlay.set_phase(animation_phase)
+        self.side_flow_overlay.update()
+        self.stage_flow_overlay.update()
+
     def set_reduced_motion(self, enabled: bool) -> None:
         self._reduced_motion = enabled
         self.road_map.reduced_motion = enabled
+        self.side_flow_overlay.set_reduced_motion(enabled)
+        self.stage_flow_overlay.set_reduced_motion(enabled)
         self._timer.setInterval(160 if enabled else 33)
 
     def set_link_ready(self, ready: bool) -> None:
@@ -790,6 +1043,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self._ack_remaining_ms = None
         self._ack_elapsed_ms = None
         self._ack_is_simulated = False
+        self._protection_feedback_received = False
         self._active_scene_id = 0
         self.current_event_id = ""
         self._last_elapsed_ms = 0
@@ -811,6 +1065,9 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.protection_status[1].setText("等待真实 DFPlayer 与泵阀状态")
         self.map_badge.setText("● 等待演示")
         self.road_map.set_state(0.0, 5.0, "等待演示")
+        self.side_flow_overlay.clear_pulses()
+        self.stage_flow_overlay.clear_pulses()
+        self._sync_flow_visuals()
         if emit_signal:
             self.reset_requested.emit()
 
@@ -884,6 +1141,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
                 self.helmet_status[1].setText("响应超时：未收到有效 ESP32 ACK")
                 self.deadline_value.setText("倒计时结束，当前演示响应失败")
                 self.map_badge.setText("● 响应超时")
+        self._sync_flow_visuals()
 
     def apply_chain_state(self, state: dict) -> None:
         hazard = state.get("road_hazard") if isinstance(state, dict) else None
@@ -930,6 +1188,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.network_value.setText(f"网络耗时 · {int(latency)} 毫秒" if isinstance(latency, (int, float)) else "网络耗时 · —")
         pattern = str(hazard.get("effective_rgb_pattern") or "")
         self.rgb_value.setText(f"RGB · {pattern}" if pattern else "RGB · 等待 ACK")
+        self._sync_flow_visuals()
 
     def apply_submission_error(self, message: str) -> None:
         """Expose real service rejection instead of leaving a simulated success state."""
@@ -941,6 +1200,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.helmet_status[1].setText(message or "服务拒绝场景事件")
         self.deadline_value.setText("下发失败；倒计时继续，仅用于观察动画过程")
         self.map_badge.setText("● 下发失败")
+        self._sync_flow_visuals()
 
     def apply_demo_reset_result(self, result: dict) -> None:
         if not self._demo_mode:
@@ -983,6 +1243,7 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.helmet_status[1].setText(f"ESP32 已响应 · 剩余安全时间 {remaining:.1f} 秒")
         self.deadline_value.setText(f"ESP32 已在期限前响应，剩余 {remaining:.1f} 秒")
         self.map_badge.setText("● ESP32 已响应")
+        self._sync_flow_visuals()
 
     def apply_serial_status(self, event) -> None:
         self.serial_status.setText(f"串口状态 · {event.state} · {event.event_id or '—'}")
@@ -996,6 +1257,17 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.voice_value.setText(f"语音 · {state}{track}")
         if state in {"playing", "completed", "done"}:
             self.protection_status[1].setText("收到真实 DFPlayer 反馈")
+            if (
+                self._ack_received
+                and self.current_event_id
+                and str(
+                    getattr(event, "event_id", "")
+                    or getattr(event, "command_id", "")
+                ) == self.current_event_id
+            ):
+                self._protection_feedback_received = True
+                self.side_flow_overlay.pulse(4)
+                self._sync_flow_visuals()
 
     def apply_pneumatic_status(self, event) -> None:
         """Surface true pump/valve telemetry without pretending an animation is hardware proof."""
@@ -1006,3 +1278,12 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         valve = "开" if bool(getattr(event, "valve_on", False)) else "关"
         state = str(getattr(event, "state", "未知"))
         self.protection_status[1].setText(f"真实气动反馈 · {state} · 泵 {pump} / 阀 {valve}")
+        physical_activity = (
+            bool(getattr(event, "pump_on", False))
+            or bool(getattr(event, "valve_on", False))
+            or state.lower() in {"inflating", "holding", "venting", "protected"}
+        )
+        if self._ack_received and self.current_event_id and physical_activity:
+            self._protection_feedback_received = True
+            self.side_flow_overlay.pulse(4)
+            self._sync_flow_visuals()

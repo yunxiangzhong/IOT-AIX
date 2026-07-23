@@ -52,6 +52,21 @@ def app_stylesheet() -> str:
     QFrame#mappingCell, QFrame#hostStatusCard, QFrame#scenarioInfoCard, QFrame#sheetStateCard {
         background: #FAFAFC; border: 1px solid #E5E5EA; border-radius: 10px;
     }
+    QFrame#scenarioInfoCard[flowState="active"] {
+        background: #F3F8FF; border-color: #80B7FF;
+    }
+    QFrame#scenarioInfoCard[flowState="completed"] {
+        background: #F1F8F2; border-color: #B9DFC2;
+    }
+    QFrame#scenarioInfoCard[flowState="failed"] {
+        background: #FFF2F2; border-color: #FFC1C5;
+    }
+    QFrame#scenarioInfoCard[flowState="active"] QLabel#mappingValue { color: #007AFF; font-weight: 650; }
+    QFrame#scenarioInfoCard[flowState="completed"] QLabel#mappingValue { color: #248A3D; font-weight: 650; }
+    QFrame#scenarioInfoCard[flowState="failed"] QLabel#mappingValue { color: #D70015; font-weight: 650; }
+    QLabel#mappingValue[flowState="active"] { color: #007AFF; font-weight: 650; }
+    QLabel#mappingValue[flowState="completed"] { color: #248A3D; font-weight: 650; }
+    QLabel#mappingValue[flowState="failed"] { color: #D70015; font-weight: 650; }
     QFrame#clickableStatusCard {
         background: #FAFAFC; border: 1px solid #E5E5EA; border-radius: 10px;
     }
