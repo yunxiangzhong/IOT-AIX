@@ -125,7 +125,7 @@ class MainWindowEventRoutingTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_collision_ack_only_clears_host_alert_without_pneumatic_or_voice_command(self):
+    def test_collision_ack_waits_for_matching_esp_confirmation_without_pneumatic_command(self):
         impact = (
             '{"type":"motion","version":2,"seq":201,"ts_ms":4200,'
             '"accel_g":{"x":0.0,"y":0.0,"z":2.31},'
@@ -139,10 +139,21 @@ class MainWindowEventRoutingTests(unittest.TestCase):
             window = self.make_window(root)
             try:
                 window.chain_client.send_pneumatic_command = Mock()
+                window.chain_client.send_collision_ack = Mock()
+                window._last_chain_state = {"boot_id": "0123456789abcdef"}
                 window._handle_raw_line(impact)
                 window.collision_alert_dialog.ack_button.click()
                 self.app.processEvents()
 
+                self.assertTrue(window.collision_alert_dialog.isVisible())
+                window.chain_client.send_collision_ack.assert_called_once_with(
+                    "0123456789abcdef", 1
+                )
+                window._collision_ack_succeeded({
+                    "accepted": True,
+                    "boot_id": "0123456789abcdef",
+                    "impact_count": 1,
+                })
                 self.assertFalse(window.collision_alert_dialog.isVisible())
                 window.chain_client.send_pneumatic_command.assert_not_called()
             finally:

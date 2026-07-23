@@ -217,9 +217,23 @@ if ([string]::IsNullOrWhiteSpace($mpuTaskBody) -or
     $impactEmitBlock -notmatch 'last_log_ms\s*=\s*next\.timestamp_ms\s*;') {
     throw "MPU collision events must be emitted immediately with a persistent counter"
 }
+$collisionRgbSubmitPattern = '(?s)if\s*\(\s*next\.motion\.impact_event\s*\)\s*\{' +
+    '.*?alert_arbiter_runtime_submit_collision\s*\(\s*device_identity_boot_id\s*\(\s*\)\s*,' +
+    '\s*next\.motion\.impact_count\s*\)\s*;.*?\}'
+if ($mpuTaskBody -notmatch $collisionRgbSubmitPattern) {
+    throw "Only a new MPU impact_event may latch the RGB simulated Airbag indicator"
+}
 
 $riskReceiverSourceText = Get-Content -Raw -LiteralPath (Join-Path $main "risk_receiver.c")
 $riskReceiverCodeText = Remove-CComments $riskReceiverSourceText
+foreach ($requiredIndicatorRoute in @(
+    '\.uri\s*=\s*"/semantic-indicator"',
+    '\.uri\s*=\s*"/collision-indicator/ack"'
+)) {
+    if ($riskReceiverCodeText -notmatch $requiredIndicatorRoute) {
+        throw "Missing strict RGB indicator endpoint: $requiredIndicatorRoute"
+    }
+}
 $pneumaticConfigMatch = [regex]::Match(
     $riskReceiverCodeText,
     '(?s)static esp_err_t pneumatic_config_handler\([^)]*\)\s*(\{.*?\})\s*esp_err_t risk_receiver_start')

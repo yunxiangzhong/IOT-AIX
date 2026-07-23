@@ -51,6 +51,14 @@ static void rgb_task(void *arg)
             set_color(AIX_RGB_MAX, 0, 0, phase < 120U || (phase >= 220U && phase < 340U));
             break;
         case RGB_PURPLE_BLINK_1HZ:
+            set_color(32, 0, AIX_RGB_MAX, phase < 500U);
+            break;
+        case RGB_CYAN_RESULT_PULSE:
+            set_color(0, AIX_RGB_MAX, AIX_RGB_MAX, true);
+            break;
+        case RGB_WHITE_AIRBAG_LATCHED:
+            set_color(AIX_RGB_MAX, AIX_RGB_MAX, AIX_RGB_MAX, true);
+            break;
         default:
             set_color(32, 0, AIX_RGB_MAX, phase < 500U);
             break;

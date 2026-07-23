@@ -67,6 +67,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_road_hazard_identity: tuple[str, str, str] | None = None
         self.collision_tracker = CollisionEventTracker()
         self.active_collision_id: str | None = None
+        self.active_collision_boot_id = ""
+        self.active_collision_impact_count = -1
         self.collision_total = 0
         self.latest_pneumatic_status: PneumaticStatusEvent | None = None
         self._last_collision_pneumatic_identity: tuple[object, ...] | None = None
@@ -191,6 +193,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chain_client.pneumatic_config_received.connect(self._accept_pneumatic_config)
         self.chain_client.pneumatic_command_finished.connect(self._accept_pneumatic_command)
         self.chain_client.pneumatic_error.connect(self._accept_pneumatic_error)
+        self.chain_client.semantic_record_received.connect(self._accept_semantic_record)
+        self.chain_client.semantic_record_error.connect(self._accept_semantic_error)
+        self.chain_client.collision_ack_finished.connect(self._collision_ack_succeeded)
+        self.chain_client.collision_ack_error.connect(self._collision_ack_failed)
 
         self._watchdog_timer = QtCore.QTimer(self)
         self._watchdog_timer.setInterval(500)
@@ -487,6 +493,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 if self.active_collision_id is None:
                     self.active_collision_id = f"collision-{uuid4().hex}"
                     self._last_collision_pneumatic_identity = None
+                self.active_collision_boot_id = str(
+                    self._last_chain_state.get("boot_id", "")
+                )
+                self.active_collision_impact_count = (
+                    int(event.impact_count)
+                    if event.impact_count is not None
+                    else -1
+                )
                 readiness = self._collision_readiness()
                 self.collision_alert_dialog.show_collision(event, self.collision_total, readiness)
                 if self.latest_pneumatic_status is not None:
@@ -590,6 +604,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._last_road_hazard_identity = identity
                 self.session_recorder.record_road_hazard({"type": "road_hazard_chain", **hazard})
         boot_id = str(state.get("boot_id") or "")
+        if self.active_collision_id is not None and len(boot_id) == 16:
+            self.active_collision_boot_id = boot_id
         if len(boot_id) == 16 and boot_id != self._last_pneumatic_boot:
             self._last_pneumatic_boot = boot_id
             self.chain_client.request_pneumatic_config()
@@ -647,15 +663,50 @@ class MainWindow(QtWidgets.QMainWindow):
         return protection_readiness(self.latest_pneumatic_status, require_vision=False)
 
     def _acknowledge_collision_alert(self) -> None:
+        if (
+            len(self.active_collision_boot_id) != 16
+            or self.active_collision_impact_count < 0
+        ):
+            self._collision_ack_failed("缺少真实 boot_id 或 impact_count")
+            return
+        self.chain_client.send_collision_ack(
+            self.active_collision_boot_id, self.active_collision_impact_count
+        )
+
+    def _collision_ack_succeeded(self, payload: dict) -> None:
         if self.active_collision_id is not None:
             self.session_recorder.record_collision({
                 "event": "acknowledged",
                 "collision_id": self.active_collision_id,
                 "alert_count": self.collision_total,
+                "boot_id": self.active_collision_boot_id,
+                "impact_count": self.active_collision_impact_count,
+                "rgb_ack": payload,
             })
+        self.collision_alert_dialog.acknowledge_succeeded()
         self.active_collision_id = None
+        self.active_collision_boot_id = ""
+        self.active_collision_impact_count = -1
         self.collision_total = 0
         self._last_collision_pneumatic_identity = None
+
+    def _collision_ack_failed(self, message: str) -> None:
+        self.collision_alert_dialog.acknowledge_failed(message)
+        self.dashboard.protocol_log.appendPlainText(
+            f"RGB 模拟 Airbag 确认失败：{message}"
+        )
+
+    def _accept_semantic_record(self, record: dict, keyframes: object) -> None:
+        self._ensure_session()
+        try:
+            frames = tuple(keyframes)
+            self.session_recorder.record_semantic(record, frames)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._accept_semantic_error(f"语义结果归档失败：{exc}")
+
+    def _accept_semantic_error(self, message: str) -> None:
+        self.dashboard.show_semantic_storage_error(message)
+        self.dashboard.protocol_log.appendPlainText(message)
 
     def _accept_pc_snapshot(self, data: bytes, frame_seq: int, capture_ts_ms: int, state: dict) -> None:
         self._ensure_session()

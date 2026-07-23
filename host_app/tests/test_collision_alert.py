@@ -52,7 +52,7 @@ class CollisionAlertDialogTests(unittest.TestCase):
         self.assertIn("#", self.dialog.title_label.styleSheet())
         self.assertIn("压力无效或过期", self.dialog.readiness_label.text())
 
-    def test_window_close_cannot_dismiss_alert_but_acknowledge_can(self):
+    def test_window_close_and_ack_request_cannot_dismiss_until_esp_confirms(self):
         acknowledged = []
         self.dialog.acknowledged.connect(lambda: acknowledged.append(True))
         self.dialog.show_collision(collision_event(), 1, None)
@@ -63,8 +63,19 @@ class CollisionAlertDialogTests(unittest.TestCase):
 
         self.dialog.ack_button.click()
         self.app.processEvents()
-        self.assertFalse(self.dialog.isVisible())
+        self.assertTrue(self.dialog.isVisible())
+        self.assertFalse(self.dialog.ack_button.isEnabled())
         self.assertEqual(acknowledged, [True])
+
+        self.dialog.acknowledge_failed("ESP32 拒绝旧确认")
+        self.assertTrue(self.dialog.isVisible())
+        self.assertTrue(self.dialog.ack_button.isEnabled())
+        self.assertIn("ESP32 拒绝旧确认", self.dialog.ack_status_label.text())
+
+        self.dialog.ack_button.click()
+        self.dialog.acknowledge_succeeded()
+        self.app.processEvents()
+        self.assertFalse(self.dialog.isVisible())
 
     def test_shutdown_allows_application_exit(self):
         self.dialog.show_collision(collision_event(), 1, None)

@@ -1,4 +1,5 @@
 # Repository ignores
+.env.local
 
 # Python virtual environments
 .venv/

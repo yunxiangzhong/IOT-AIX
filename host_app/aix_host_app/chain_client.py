@@ -41,6 +41,20 @@ def build_demo_reset_payload(device_id: str, session_id: str) -> dict:
     return {"device_id": device_id, "session_id": session_id}
 
 
+def build_collision_ack_payload(
+    device_id: str, boot_id: str, impact_count: int
+) -> dict:
+    if len(boot_id) != 16 or any(ch not in "0123456789abcdefABCDEF" for ch in boot_id):
+        raise ValueError("invalid collision boot_id")
+    if isinstance(impact_count, bool) or impact_count < 0:
+        raise ValueError("invalid collision impact_count")
+    return {
+        "device_id": device_id,
+        "boot_id": boot_id.lower(),
+        "impact_count": impact_count,
+    }
+
+
 class PcChainClient(QtCore.QObject):
     health_received = QtCore.Signal(dict)
     state_received = QtCore.Signal(dict)
@@ -57,6 +71,10 @@ class PcChainClient(QtCore.QObject):
     demo_action_error = QtCore.Signal(str)
     demo_reset_finished = QtCore.Signal(dict)
     demo_reset_error = QtCore.Signal(str)
+    semantic_record_received = QtCore.Signal(dict, object)
+    semantic_record_error = QtCore.Signal(str)
+    collision_ack_finished = QtCore.Signal(dict)
+    collision_ack_error = QtCore.Signal(str)
 
     def __init__(self, service_url: str, device_id: str, *, link_token: str = "", parent=None) -> None:
         super().__init__(parent)
@@ -79,6 +97,8 @@ class PcChainClient(QtCore.QObject):
         self._demo_heartbeat_timer = QtCore.QTimer(self)
         self._demo_heartbeat_timer.setInterval(5000)
         self._demo_heartbeat_timer.timeout.connect(self.send_demo_session_heartbeat)
+        self._semantic_pending: dict[str, dict] = {}
+        self._semantic_completed: set[str] = set()
 
     def configure(self, service_url: str, device_id: str) -> None:
         self.service_url = normalize_service_url(service_url)
@@ -89,6 +109,8 @@ class PcChainClient(QtCore.QObject):
         self._queued_snapshot = None
         self._demo_session_id = ""
         self._demo_heartbeat_timer.stop()
+        self._semantic_pending.clear()
+        self._semantic_completed.clear()
 
     def is_link_ready(self) -> bool:
         """True when the client has a service URL, device ID, and link token configured."""
@@ -111,6 +133,10 @@ class PcChainClient(QtCore.QObject):
         if self._pneumatic_config_reply is not None:
             self._pneumatic_config_reply.abort()
             self._pneumatic_config_reply = None
+        for pending in list(self._semantic_pending.values()):
+            for reply in pending.get("replies", []):
+                reply.abort()
+        self._semantic_pending.clear()
 
     def request_pneumatic_config(self) -> None:
         if not self.service_url or not self.device_id or self._pneumatic_config_reply is not None:
@@ -144,6 +170,36 @@ class PcChainClient(QtCore.QObject):
         request = build_scenario_request(f"{self.service_url}{endpoint}", self.link_token)
         reply = self._network.post(request, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
         reply.finished.connect(lambda r=reply: finished(r))
+
+    def send_collision_ack(self, boot_id: str, impact_count: int) -> None:
+        if not self.is_link_ready():
+            self.collision_ack_error.emit("真实链路未就绪，无法清除模拟 Airbag 白灯")
+            return
+        try:
+            payload = build_collision_ack_payload(
+                self.device_id, boot_id, impact_count
+            )
+        except ValueError as exc:
+            self.collision_ack_error.emit(str(exc))
+            return
+        self._post_json(
+            "/v1/collision-indicator/ack", payload, self._handle_collision_ack
+        )
+
+    def _handle_collision_ack(self, reply: QtNetwork.QNetworkReply) -> None:
+        try:
+            payload = self._read_json_reply(reply)
+            if (
+                reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError
+                or payload.get("accepted") is not True
+            ):
+                self.collision_ack_error.emit(
+                    str(payload.get("detail") or reply.errorString())
+                )
+                return
+            self.collision_ack_finished.emit(payload)
+        finally:
+            reply.deleteLater()
 
     def send_demo_session_start(self) -> None:
         if not self.is_link_ready() or self._last_frame_identity is None:
@@ -364,6 +420,7 @@ class PcChainClient(QtCore.QObject):
         if not isinstance(payload, dict) or payload.get("type") != "chain_state":
             self.error_changed.emit("PC 链路状态协议不匹配")
             return
+        self._consider_semantic(payload)
         identity = frame_identity_from_state(payload)
         if identity is None or identity == self._last_frame_identity:
             self.state_received.emit(payload)
@@ -373,6 +430,65 @@ class PcChainClient(QtCore.QObject):
             self._requested_state = deepcopy(payload)
         else:
             self._queued_snapshot = (identity, deepcopy(payload))
+
+    def _consider_semantic(self, state: dict) -> None:
+        semantic = state.get("semantic")
+        if not isinstance(semantic, dict):
+            return
+        recent = semantic.get("recent", [])
+        records = [item for item in recent if isinstance(item, dict)]
+        records.append(semantic)
+        for record in records:
+            self._consider_semantic_record(record)
+
+    def _consider_semantic_record(self, semantic: dict) -> None:
+        analysis_id = str(semantic.get("analysis_id", ""))
+        if (
+            not analysis_id
+            or analysis_id in self._semantic_completed
+            or analysis_id in self._semantic_pending
+        ):
+            return
+        pending = {"record": deepcopy(semantic), "frames": {}, "replies": []}
+        self._semantic_pending[analysis_id] = pending
+        for index in (1, 2, 3):
+            url = (
+                f"{self.service_url}/v1/semantic/{analysis_id}/keyframes/{index}.jpg"
+            )
+            reply = self._network.get(build_get_request(url, timeout_ms=1800))
+            pending["replies"].append(reply)
+            reply.finished.connect(
+                lambda current=reply, aid=analysis_id, idx=index:
+                self._handle_semantic_keyframe(current, aid, idx)
+            )
+
+    def _handle_semantic_keyframe(
+        self, reply: QtNetwork.QNetworkReply, analysis_id: str, index: int
+    ) -> None:
+        pending = self._semantic_pending.get(analysis_id)
+        if pending is None:
+            reply.deleteLater()
+            return
+        try:
+            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError:
+                self._semantic_pending.pop(analysis_id, None)
+                self.semantic_record_error.emit(
+                    f"语义关键帧 {index} 下载失败：{reply.errorString()}"
+                )
+                return
+            data = bytes(reply.readAll())
+            if len(data) < 4 or data[:2] != b"\xff\xd8" or data[-2:] != b"\xff\xd9":
+                self._semantic_pending.pop(analysis_id, None)
+                self.semantic_record_error.emit(f"语义关键帧 {index} 不是合法 JPEG")
+                return
+            pending["frames"][index] = data
+            if len(pending["frames"]) == 3:
+                self._semantic_pending.pop(analysis_id, None)
+                self._semantic_completed.add(analysis_id)
+                frames = tuple(pending["frames"][i] for i in (1, 2, 3))
+                self.semantic_record_received.emit(pending["record"], frames)
+        finally:
+            reply.deleteLater()
 
     def _handle_pneumatic_config(self) -> None:
         reply = self._pneumatic_config_reply

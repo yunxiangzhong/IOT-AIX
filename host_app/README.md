@@ -13,6 +13,7 @@
 | 串口遥测 | 解析并记录 pressure、motion v2、camera_status、action_status、pneumatic_status、hardware_health | COM21 已回传 `vision_critical` 时的泵开、阀通电和有效压力；泵阀没有独立电流或位置回读，气路性能仍需单独验收 |
 | 气动标定页 | 读取配置、保存释放阈值、发送泵阀自检/短充气脉冲/泄压/急停/故障复位，并显示返回状态 | UI 不能开启自动模式，不能跳过 ESP 的 token、压力、时长或故障保护 |
 | 碰撞求助记录 | 新 MPU 碰撞在本地打开静默、持续的求助窗口，并将状态变化写入 `collision_events.jsonl` | 不调用外部救援；窗口、日志和自动化测试都不是实体气囊验收 |
+| 边缘语义分析 | 固定最新结果框、全部历史窗口、三张关键帧和成功/失败记录归档 | 语义与 DA3+YOLO 风险链隔离；青灯仅表示新结果到达 |
 | PC 气动代理 | PC 服务以最近上传帧的来源 IP 转发到 ESP :8080，而不是由 UI 填写 ESP 地址 | 没有最近设备帧、token 不匹配或 ESP 控制关闭时，命令会失败/被拒绝 |
 | 会话记录 | 自动保存帧、视觉、遥测、动作、气动命令与配置 | 文件记录不是实物安全验收报告 |
 | 路侧协同场景 | L 形路口画布展示右侧盲区货车 ETA 5 秒、下方骑行者、摄像头视场与链路；倒计时结束前，骑行者从 18 km/h 降至 6 km/h | 路侧检测、货车画面和 ETA 都是模拟输入；演示响应在约 2.3 秒显示，真实 `road_hazard_ack` 到达时会覆盖它；货车在 0 秒停在停止线而非通过路口 |
@@ -66,6 +67,8 @@ action.ndjson
 pneumatic.ndjson
 road_hazard.ndjson
 collision_events.jsonl
+semantic.ndjson
+semantic/<analysis_id>/frame_01.jpg ... frame_03.jpg
 pressure.csv
 model.log
 session.json
@@ -76,6 +79,9 @@ pneumatic.ndjson 记录已发送命令、ESP 返回确认和气动状态；sessi
 road_hazard.ndjson 记录服务状态推进、真实 ACK 与串口 `road_hazard_status`。生产 UI 不生成事件或制造 ESP32 成功；设备离线、地址缺失、boot 不匹配、TTL 到期和 ACK 不匹配会在服务状态中保留实际失败原因。
 
 collision_events.jsonl 记录新 MPU 碰撞的本地求助窗口和气动共同门状态；它用于软件追溯，不是实物气囊或外部救援完成记录。
+
+碰撞窗口统一显示“RGB 模拟 Airbag 已打开”。点击确认后，窗口会等待 ESP32 返回匹配
+`boot_id + impact_count` 的 ACK；失败时保留窗口并允许重试。白灯和窗口都不能解释为真实充气。
 
 ## 启动
 

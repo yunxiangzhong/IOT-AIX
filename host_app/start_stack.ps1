@@ -15,6 +15,24 @@ $modelPython = Join-Path $modelRoot "env\python.exe"
 $serviceRoot = Join-Path $projectRoot "Models\DepthAnything3\service"
 $syncScript = Join-Path $projectRoot "AIX\sync_runtime_config.ps1"
 $hotspotScript = Join-Path $hostRoot "ensure_mobile_hotspot.ps1"
+$localEnvPaths = @(
+    (Join-Path $projectRoot ".env.local"),
+    (Join-Path $runtimeRoot ".env.local")
+) | Select-Object -Unique
+
+if (-not $env:VEI_API_KEY) {
+    foreach ($localEnvPath in $localEnvPaths) {
+        if (Test-Path -LiteralPath $localEnvPath) {
+            $keyLine = Get-Content -LiteralPath $localEnvPath |
+                Where-Object { $_ -match '^\s*VEI_API_KEY\s*=' } |
+                Select-Object -Last 1
+            if ($keyLine) {
+                $env:VEI_API_KEY = ($keyLine -split '=', 2)[1].Trim().Trim('"').Trim("'")
+                break
+            }
+        }
+    }
+}
 
 function Test-RealModelHealth {
     param([Parameter(Mandatory = $true)][object]$Health)

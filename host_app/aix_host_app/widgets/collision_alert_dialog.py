@@ -36,7 +36,18 @@ class CollisionAlertDialog(QtWidgets.QDialog):
         self.detail_label = QtWidgets.QLabel()
         self.readiness_label = QtWidgets.QLabel()
         self.pneumatic_label = QtWidgets.QLabel("气动实际状态：等待设备状态上报")
-        for label in (self.count_label, self.detail_label, self.readiness_label, self.pneumatic_label):
+        self.airbag_label = QtWidgets.QLabel(
+            "RGB 模拟 Airbag 已打开（白色常亮，不代表真实充气）"
+        )
+        self.ack_status_label = QtWidgets.QLabel()
+        for label in (
+            self.count_label,
+            self.detail_label,
+            self.airbag_label,
+            self.readiness_label,
+            self.pneumatic_label,
+            self.ack_status_label,
+        ):
             label.setWordWrap(True)
             layout.addWidget(label)
 
@@ -63,6 +74,9 @@ class CollisionAlertDialog(QtWidgets.QDialog):
             f"倾角 {self._number(event.tilt_deg)}°"
         )
         self._apply_readiness(readiness)
+        self.ack_status_label.clear()
+        self.ack_button.setText("确认已知晓")
+        self.ack_button.setEnabled(True)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -81,10 +95,21 @@ class CollisionAlertDialog(QtWidgets.QDialog):
         self._apply_readiness(readiness)
 
     def acknowledge(self) -> None:
+        self.ack_button.setEnabled(False)
+        self.ack_button.setText("正在等待 ESP32 确认…")
+        self.ack_status_label.setText("正在清除匹配的 RGB 模拟 Airbag 白灯")
         self.acknowledged.emit()
+
+    def acknowledge_succeeded(self) -> None:
+        self.ack_status_label.setText("ESP32 已确认，白色模拟 Airbag 指示已清除")
         self._allow_close = True
         self.close()
         self._allow_close = False
+
+    def acknowledge_failed(self, message: str) -> None:
+        self.ack_status_label.setText(f"确认失败：{message}；请重试")
+        self.ack_button.setText("重试确认")
+        self.ack_button.setEnabled(True)
 
     def shutdown(self) -> None:
         self._allow_close = True

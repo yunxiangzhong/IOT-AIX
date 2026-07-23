@@ -24,6 +24,8 @@ typedef enum {
     RGB_ORANGE_BLINK_2HZ,
     RGB_RED_DOUBLE_PULSE,
     RGB_PURPLE_BLINK_1HZ,
+    RGB_CYAN_RESULT_PULSE,
+    RGB_WHITE_AIRBAG_LATCHED,
 } rgb_pattern_t;
 
 typedef enum {

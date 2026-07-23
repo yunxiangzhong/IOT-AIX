@@ -7,6 +7,7 @@ from aix_host_app.chain_client import (
     PcChainClient,
     build_scenario_request,
     build_demo_reset_payload,
+    build_collision_ack_payload,
     frame_identity_from_state,
     normalize_service_url,
 )
@@ -40,6 +41,18 @@ class ChainClientTests(unittest.TestCase):
             {"device_id": "helmet-01", "session_id": "demo-session"},
         )
 
+    def test_collision_ack_payload_carries_real_boot_and_impact_identity(self):
+        self.assertEqual(
+            build_collision_ack_payload("helmet-01", "0123456789abcdef", 7),
+            {
+                "device_id": "helmet-01",
+                "boot_id": "0123456789abcdef",
+                "impact_count": 7,
+            },
+        )
+        with self.assertRaises(ValueError):
+            build_collision_ack_payload("helmet-01", "bad", 7)
+
     # --- link readiness ---
 
     def test_link_not_ready_without_token(self):
@@ -53,6 +66,24 @@ class ChainClientTests(unittest.TestCase):
     def test_link_ready_with_full_config(self):
         client = PcChainClient("http://127.0.0.1:8008", "dev-01", link_token="tok")
         self.assertTrue(client.is_link_ready())
+
+    def test_stop_allows_abort_callbacks_to_remove_semantic_pending_entries(self):
+        client = PcChainClient(
+            "http://127.0.0.1:8008", "dev-01", link_token="tok"
+        )
+
+        class ReplyWithSynchronousFinished:
+            def abort(self):
+                client._semantic_pending.pop("first", None)
+
+        client._semantic_pending = {
+            "first": {"replies": [ReplyWithSynchronousFinished()]},
+            "second": {"replies": []},
+        }
+
+        client.stop()
+
+        self.assertEqual(client._semantic_pending, {})
 
     # --- scenario error mapping ---
 

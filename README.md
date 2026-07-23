@@ -7,6 +7,8 @@ OV5640 → ESP32-S3 每 1000 ms 上传最新 JPEG → PC 已处理快照 / DA3 +
         → PC 回调 vision_risk → ESP action_policy → GPIO38 板载 RGB
         → action_ack + 串口 action_status → PySide6 上位机
         └→ /risk.voice_prompt → UART2 DFPlayer Mini → SPK1/SPK2 8 Ω 喇叭
+        └→ 每 6 秒三张真实关键帧 → 边缘大模型网关 → 上位机语义历史
+                                      └→ ESP32 青色 500 ms 结果到达提示
 
 MPU6050 / 压力遥测 → 气动安全策略 → GPIO40 气泵 MOSFET、GPIO41 电磁阀 MOSFET
                                       （默认构建关闭，未接入实物时不会输出控制）
@@ -21,6 +23,8 @@ MPU6050 / 压力遥测 → 气动安全策略 → GPIO40 气泵 MOSFET、GPIO41 
 | 上位机中控总览与协同场景 | Apple 浅色双页界面、顶层设备接入、诊断/标定入口、稳定画面模式、状态趋势与路口模拟已实现；18 张映射卡采用唯一权威数据源和内容去重，当前验证的 127 项主机侧测试通过 | 默认显示固定已分析画面；状态卡不会被健康心跳、普通采样和串口诊断轮流覆盖，但这些软件约束不等于实机安全验收 |
  | 路侧货车协同预警 | ESP32 `/road-hazard` 校验、幂等 ACK、TTL、RGB 仲裁和 PC 会话记录已实现；PC 服务和固件均拒绝 `simulated=true` | 生产 UI 不生成路侧事件；真实路侧相机、云端识别与 ETA 尚未接入。当前固件对真实路侧事件只仲裁 RGB，不会由此触发 DFPlayer 或气动控制 |
 | GPIO38 RGB 和 action_status | 已实现并构建通过 | 仅作原型语义提示，不是安全执行器 |
+| 边缘视频语义 | 三帧/6 秒独立线程、结构化中文结果、关键帧归档、降级状态和青色到达提示已实现 | 不生成风险分数或执行建议，不修改 DA3+YOLO 风险、语音或气动策略 |
+| RGB 模拟 Airbag | 新 MPU `impact_event/impact_count` 锁存白灯，匹配 boot/count 的上位机确认才清除 | 白灯仅表示“RGB 模拟 Airbag 已打开”，不是实体气囊充气证据 |
 | DFPlayer 视觉风险语音提示 | `/risk.voice_prompt`、UART2 DFPlayer 驱动、三级曲目映射、去重与主机侧测试已实现 | 已在 COM21 看到 `voice_status` 的 `ready`、曲目 1–3 的 `playing`/`finished`，并由实际听音确认；未完成 10 分钟整机/气动/安全验收，语音仅为原型提示 |
 | 压力遥测 | 固件采集、串口协议、上位机记录与阈值泄压策略已实现 | XGZP6847A 的测量量程仍为 200 kPa；软件控制硬上限固定为 20 kPa，默认目标/上限为 8/12 kPa |
 | MPU6050 与运动检测 | I2C 驱动、motion v2、相邻样本 Δ\|a\| 碰撞检测及 C 测试已实现 | 仅 Δ\|a\|≥1.2 g 且 0<dt≤20 ms 触发新碰撞；200 ms 不应期合并同一次振铃，rapid tilt 仅作诊断；仍缺少佩戴状态的静置校准和误报率验收 |

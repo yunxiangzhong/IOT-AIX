@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,11 +21,13 @@ class SessionRecorder:
         self._pneumatic = None
         self._road_hazard = None
         self._collision = None
+        self._semantic = None
         self._model_log = None
         self._pressure = None
         self._pressure_writer = None
         self._saved_frames: set[tuple[int, int]] = set()
         self._saved_actions: set[tuple[int, str, str, bool]] = set()
+        self._saved_semantic: set[str] = set()
 
     def start(self, serial_port: str, baudrate: int, session_id: str) -> Path:
         self.close()
@@ -54,6 +57,7 @@ class SessionRecorder:
             self._pneumatic = (session_dir / "pneumatic.ndjson").open("w", encoding="utf-8")
             self._road_hazard = (session_dir / "road_hazard.ndjson").open("w", encoding="utf-8")
             self._collision = (session_dir / "collision_events.jsonl").open("w", encoding="utf-8")
+            self._semantic = (session_dir / "semantic.ndjson").open("w", encoding="utf-8")
             self._model_log = (session_dir / "model.log").open("w", encoding="utf-8")
             self._pressure = (session_dir / "pressure.csv").open("w", newline="", encoding="utf-8")
             self._pressure_writer = csv.writer(self._pressure)
@@ -132,6 +136,29 @@ class SessionRecorder:
             return
         self._write_line(self._collision, {**payload, "wall_time": datetime.now().astimezone().isoformat()})
 
+    def record_semantic(
+        self, payload: dict[str, Any], keyframes: tuple[bytes, bytes, bytes]
+    ) -> bool:
+        if self.session_dir is None or self._semantic is None:
+            raise RuntimeError("recording session is not active")
+        analysis_id = str(payload.get("analysis_id", ""))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", analysis_id):
+            raise ValueError("invalid semantic analysis_id")
+        if analysis_id in self._saved_semantic:
+            return False
+        if len(keyframes) != 3 or any(not isinstance(data, bytes) for data in keyframes):
+            raise ValueError("exactly three semantic JPEG keyframes are required")
+        target = self.session_dir / "semantic" / analysis_id
+        target.mkdir(parents=True, exist_ok=False)
+        for index, data in enumerate(keyframes, start=1):
+            (target / f"frame_{index:02d}.jpg").write_bytes(data)
+        self._write_line(
+            self._semantic,
+            {"wall_time": datetime.now().astimezone().isoformat(), **payload},
+        )
+        self._saved_semantic.add(analysis_id)
+        return True
+
     def append_model_log(self, line: str) -> None:
         if self._model_log is None:
             return
@@ -154,7 +181,7 @@ class SessionRecorder:
 
     def _teardown_session(self) -> Exception | None:
         error = None
-        for handle in (self._telemetry, self._vision, self._action, self._pneumatic, self._road_hazard, self._collision, self._model_log, self._pressure):
+        for handle in (self._telemetry, self._vision, self._action, self._pneumatic, self._road_hazard, self._collision, self._semantic, self._model_log, self._pressure):
             if handle is None:
                 continue
             try:
@@ -162,10 +189,11 @@ class SessionRecorder:
             except Exception as exc:
                 if error is None:
                     error = exc
-        self._telemetry = self._vision = self._action = self._pneumatic = self._road_hazard = self._collision = self._model_log = self._pressure = None
+        self._telemetry = self._vision = self._action = self._pneumatic = self._road_hazard = self._collision = self._semantic = self._model_log = self._pressure = None
         self._pressure_writer = None
         self._saved_frames.clear()
         self._saved_actions.clear()
+        self._saved_semantic.clear()
         if self._metadata is not None:
             self._metadata["ended_at"] = datetime.now().astimezone().isoformat()
             self._metadata["status"] = "closed"

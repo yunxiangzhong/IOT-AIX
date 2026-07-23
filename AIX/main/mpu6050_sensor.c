@@ -12,6 +12,8 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "alert_arbiter.h"
+#include "device_identity.h"
 
 #define MPU6050_I2C_PORT I2C_NUM_0
 #define MPU6050_I2C_CLOCK_HZ 400000U
@@ -145,6 +147,10 @@ static void mpu6050_task(void *arg)
         s_has_latest = true;
         taskEXIT_CRITICAL(&s_latest_lock);
 
+        if (next.motion.impact_event) {
+            (void)alert_arbiter_runtime_submit_collision(
+                device_identity_boot_id(), next.motion.impact_count);
+        }
         if (next.motion.impact_event || next.timestamp_ms - last_log_ms >= MPU6050_LOG_PERIOD_MS) {
             emit_motion(&next);
             last_log_ms = next.timestamp_ms;

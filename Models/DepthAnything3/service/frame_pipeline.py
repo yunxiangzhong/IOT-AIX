@@ -138,6 +138,8 @@ class ChainStateRepository:
         self._detector_name = ""
         self._backend = "cuda"
         self._gpu = "cuda"
+        self._semantic_enabled = False
+        self._semantic_error = ""
 
     def _base(self, device_id: str) -> dict:
         return {
@@ -160,6 +162,24 @@ class ChainStateRepository:
                 "valid_results": 0,
             },
             "callback": {"state": "waiting", "latency_ms": None, "attempts": 0, "confirmed_count": 0, "failed_count": 0, "suppressed_count": 0},
+            "semantic": {
+                "enabled": self._semantic_enabled,
+                "status": "waiting" if self._semantic_enabled else "disabled",
+                "analysis_id": "",
+                "model": "doubao-seed-1.6-flash",
+                "frame_seqs": [],
+                "result": None,
+                "latency_ms": None,
+                "completed_ts_ms": 0,
+                "total": 0,
+                "recent": [],
+                "error": self._semantic_error,
+                "rgb_delivery": {
+                    "state": "waiting",
+                    "flashed": False,
+                    "effective_rgb_pattern": "",
+                },
+            },
             "risk": {"valid": False, "score": 0, "band": "low", "reason": ""},
             "action": {"confirmed": False, "state": "loading", "rgb_pattern": "", "frame_seq": -1},
             "road_hazard": {
@@ -273,6 +293,39 @@ class ChainStateRepository:
             for state in self._states.values():
                 state["operating_mode"] = deepcopy(snapshot)
                 self._touch(state)
+
+    def set_semantic_enabled(self, enabled: bool, *, error: str = "") -> None:
+        with self._lock:
+            self._semantic_enabled = enabled
+            self._semantic_error = error
+            for state in self._states.values():
+                state["semantic"]["enabled"] = enabled
+                state["semantic"]["status"] = "waiting" if enabled else "disabled"
+                state["semantic"]["error"] = error
+                self._touch(state)
+
+    def record_semantic(self, device_id: str, record: dict) -> None:
+        with self._lock:
+            state = self._states.setdefault(device_id, self._base(device_id))
+            previous_total = int(state["semantic"].get("total", 0))
+            recent = list(state["semantic"].get("recent", []))
+            recent.append(deepcopy(record))
+            recent = recent[-20:]
+            state["semantic"] = {
+                "enabled": True,
+                "status": str(record.get("status", "error")),
+                "analysis_id": str(record.get("analysis_id", "")),
+                "model": str(record.get("model", "doubao-seed-1.6-flash")),
+                "frame_seqs": list(record.get("frame_seqs", [])),
+                "result": deepcopy(record.get("result")),
+                "latency_ms": record.get("latency_ms"),
+                "completed_ts_ms": int(record.get("completed_ts_ms", 0)),
+                "total": previous_total + 1,
+                "recent": recent,
+                "error": str(record.get("error", "")),
+                "rgb_delivery": deepcopy(record.get("rgb_delivery", {})),
+            }
+            self._touch(state)
 
     def record_callback(
         self,

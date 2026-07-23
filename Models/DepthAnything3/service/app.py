@@ -18,6 +18,11 @@ from operating_mode import OperatingModeController
 from pneumatic_proxy import PneumaticProtocolError, PneumaticProxy, PneumaticProxyError, StaleDeviceError
 from road_hazard import RoadHazardConflictError, RoadHazardEvent, RoadHazardSender, RoadHazardUnavailableError, RoadHazardValidationError
 from schemas import build_vision_depth_response
+from semantic_gateway import (
+    SemanticAnalysisWorker,
+    SemanticGatewayClient,
+    SemanticResultCache,
+)
 
 
 class InferenceEngine(Protocol):
@@ -63,6 +68,8 @@ def create_app(
     pneumatic_proxy: PneumaticProxy | None = None,
     road_hazard_sender: RoadHazardSender | None = None,
     device_transport: Callable[[str, str, dict, float], dict] | None = None,
+    semantic_client: SemanticGatewayClient | None = None,
+    semantic_error: str = "",
     start_worker: bool = True,
 ) -> FastAPI:
     store = road_hazard_sender.store if road_hazard_sender is not None else LatestFrameStore()
@@ -73,6 +80,33 @@ def create_app(
     hazards = road_hazard_sender or RoadHazardSender(store, states, token=token)
     mode = OperatingModeController()
     worker = AnalysisWorker(store, states, callback, analyzer=analyzer, dispatch_enabled=mode.is_real)
+    semantic_cache = SemanticResultCache(capacity=20)
+
+    def send_semantic_indicator(frame: FrameEnvelope, payload: dict) -> dict:
+        response = device_call(
+            f"http://{frame.source_ip}:8080/semantic-indicator",
+            token,
+            payload,
+            1.5,
+        )
+        if not isinstance(response, dict) or response.get("accepted") is not True:
+            raise OSError("ESP32 rejected semantic indicator")
+        return response
+
+    semantic_worker = (
+        SemanticAnalysisWorker(
+            client=semantic_client,
+            cache=semantic_cache,
+            record=states.record_semantic,
+            indicator=send_semantic_indicator,
+        )
+        if semantic_client is not None
+        else None
+    )
+    states.set_semantic_enabled(
+        semantic_worker is not None,
+        error=semantic_error if semantic_worker is None else "",
+    )
     if analyzer is not None:
         states.set_model(
             "ready",
@@ -96,6 +130,8 @@ def create_app(
     async def lifespan(_app: FastAPI):
         if start_worker:
             worker.start()
+            if semantic_worker is not None:
+                semantic_worker.start()
         hazards.start()
         if analyzer is None and analyzer_loader is not None:
             threading.Thread(target=load_models, name="aix-model-loader", daemon=True).start()
@@ -103,6 +139,8 @@ def create_app(
             yield
         finally:
             worker.stop()
+            if semantic_worker is not None:
+                semantic_worker.stop()
             hazards.stop()
 
     app = FastAPI(title="AIX Depth Anything 3 Service", lifespan=lifespan)
@@ -112,6 +150,8 @@ def create_app(
     app.state.pneumatic_proxy = pneumatic
     app.state.road_hazard_sender = hazards
     app.state.operating_mode = mode
+    app.state.semantic_worker = semantic_worker
+    app.state.semantic_cache = semantic_cache
 
     @app.get("/healthz")
     def healthz() -> dict[str, str | bool]:
@@ -130,6 +170,8 @@ def create_app(
             "device": device,
             "gpu": device,
             "operating_mode": mode.snapshot()["mode"],
+            "semantic_enabled": semantic_worker is not None,
+            "semantic_error": semantic_error if semantic_worker is None else "",
         }
 
     @app.post("/v1/frames", status_code=202)
@@ -171,6 +213,8 @@ def create_app(
         )
         queue_replaced = store.put(item)
         states.record_frame(item, queue_replaced)
+        if semantic_worker is not None and mode.is_real():
+            semantic_worker.offer(item)
         return {
             "type": "frame_ack",
             "version": 1,
@@ -223,6 +267,60 @@ def create_app(
         if state is None:
             raise HTTPException(status_code=404, detail="no state for device")
         return state
+
+    @app.get("/v1/semantic/{analysis_id}/keyframes/{index}.jpg")
+    def semantic_keyframe(analysis_id: str, index: int) -> Response:
+        if index not in (1, 2, 3):
+            raise HTTPException(status_code=422, detail="keyframe index must be 1, 2, or 3")
+        try:
+            image_bytes = semantic_cache.keyframe(analysis_id, index)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="semantic keyframe not found") from None
+        return Response(content=image_bytes, media_type="image/jpeg")
+
+    @app.post("/v1/collision-indicator/ack")
+    async def collision_indicator_ack(
+        request: Request,
+        x_aix_token: str | None = Header(default=None),
+    ) -> dict:
+        if not token or x_aix_token != token:
+            raise HTTPException(status_code=401, detail="invalid link token")
+        body = await request.body()
+        if len(body) > 1024:
+            raise HTTPException(status_code=413, detail="collision ACK payload too large")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=422, detail="invalid collision ACK JSON") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="collision ACK must be an object")
+        device_id = payload.get("device_id")
+        boot_id = payload.get("boot_id")
+        impact_count = payload.get("impact_count")
+        if (
+            not isinstance(device_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", device_id)
+            or not isinstance(boot_id, str)
+            or not re.fullmatch(r"[0-9a-fA-F]{16}", boot_id)
+            or isinstance(impact_count, bool)
+            or not isinstance(impact_count, int)
+            or impact_count < 0
+        ):
+            raise HTTPException(status_code=422, detail="invalid collision ACK identity")
+        frame = _latest_device_frame(device_id)
+        if frame.boot_id != boot_id.lower():
+            raise HTTPException(status_code=409, detail="stale collision boot identity")
+        return _device_call(
+            frame,
+            "/collision-indicator/ack",
+            {
+                "type": "collision_indicator_ack",
+                "version": 1,
+                "device_id": device_id,
+                "boot_id": boot_id.lower(),
+                "impact_count": impact_count,
+            },
+        )
 
     @app.get("/v1/operating-mode")
     def operating_mode() -> dict:

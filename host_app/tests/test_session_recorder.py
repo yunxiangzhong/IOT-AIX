@@ -86,6 +86,33 @@ class SessionRecorderTests(unittest.TestCase):
             self.assertNotEqual(events[0]["wall_time"], "forged")
             self.assertIsNotNone(datetime.fromisoformat(events[0]["wall_time"]).tzinfo)
 
+    def test_records_each_semantic_attempt_and_three_keyframes_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recorder = SessionRecorder(Path(temp_dir))
+            session = recorder.start("COM21", 115200, "session-1")
+            payload = {
+                "analysis_id": "sem-0123456789abcdef-3-7000",
+                "status": "ready",
+                "model": "doubao-seed-1.6-flash",
+                "frame_seqs": [1, 2, 3],
+                "rgb_delivery": {"state": "confirmed", "flashed": True},
+            }
+
+            first = recorder.record_semantic(
+                payload,
+                (b"\xff\xd8one\xff\xd9", b"\xff\xd8two\xff\xd9", b"\xff\xd8three\xff\xd9"),
+            )
+            second = recorder.record_semantic(payload, (b"different",) * 3)
+            recorder.close()
+
+            self.assertTrue(first)
+            self.assertFalse(second)
+            lines = (session / "semantic.ndjson").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            semantic_dir = session / "semantic" / payload["analysis_id"]
+            self.assertEqual((semantic_dir / "frame_01.jpg").read_bytes(), b"\xff\xd8one\xff\xd9")
+            self.assertEqual((semantic_dir / "frame_03.jpg").read_bytes(), b"\xff\xd8three\xff\xd9")
+
     def test_start_failure_closes_open_streams_and_allows_a_retry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             recorder = SessionRecorder(Path(temp_dir))

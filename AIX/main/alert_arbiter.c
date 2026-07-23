@@ -73,6 +73,18 @@ static alert_effective_t effective_locked(alert_arbiter_t *arbiter, uint64_t now
         effective.expires_in_ms = remaining;
         snprintf(effective.event_id, sizeof(effective.event_id), "%s", event_id);
     }
+    if (arbiter->semantic_until_ms > now_ms &&
+        effective.state != ACTION_STATE_CRITICAL &&
+        effective.state != ACTION_STATE_HIGH &&
+        effective.state != ACTION_STATE_FAULT) {
+        effective.pattern = RGB_CYAN_RESULT_PULSE;
+        effective.semantic = true;
+    }
+    if (arbiter->collision_latched) {
+        effective.pattern = RGB_WHITE_AIRBAG_LATCHED;
+        effective.collision = true;
+        effective.semantic = false;
+    }
     return effective;
 }
 
@@ -86,7 +98,90 @@ void alert_arbiter_init(
     memset(arbiter, 0, sizeof(*arbiter));
     atomic_flag_clear(&arbiter->lock);
     road_hazard_policy_init(&arbiter->hazards, device_id, boot_id);
+    snprintf(arbiter->boot_id, sizeof(arbiter->boot_id), "%s", boot_id != NULL ? boot_id : "");
     if (initial_local != NULL) arbiter->local = *initial_local;
+}
+
+semantic_indicator_result_t alert_arbiter_submit_semantic(
+    alert_arbiter_t *arbiter,
+    const char *analysis_id,
+    uint64_t now_ms,
+    semantic_indicator_outcome_t *outcome)
+{
+    if (outcome != NULL) memset(outcome, 0, sizeof(*outcome));
+    if (arbiter == NULL || analysis_id == NULL || analysis_id[0] == '\0' ||
+        strlen(analysis_id) >= SEMANTIC_ANALYSIS_ID_CAPACITY) {
+        return SEMANTIC_INDICATOR_REJECT_SCHEMA;
+    }
+    lock_arbiter(arbiter);
+    if (strcmp(arbiter->last_analysis_id, analysis_id) == 0) {
+        if (outcome != NULL) {
+            outcome->flashed = arbiter->semantic_last_flashed;
+            outcome->suppressed = arbiter->semantic_last_suppressed;
+            outcome->reason = outcome->suppressed ? "higher_priority" : "duplicate";
+        }
+        unlock_arbiter(arbiter);
+        return SEMANTIC_INDICATOR_DUPLICATE;
+    }
+    const alert_effective_t current = effective_locked(arbiter, now_ms);
+    const bool suppressed = current.collision ||
+        current.state == ACTION_STATE_CRITICAL ||
+        current.state == ACTION_STATE_HIGH ||
+        current.state == ACTION_STATE_FAULT;
+    snprintf(arbiter->last_analysis_id, sizeof(arbiter->last_analysis_id), "%s", analysis_id);
+    arbiter->semantic_last_suppressed = suppressed;
+    arbiter->semantic_last_flashed = !suppressed;
+    arbiter->semantic_until_ms = suppressed ? 0U : now_ms + 500U;
+    if (outcome != NULL) {
+        outcome->flashed = !suppressed;
+        outcome->suppressed = suppressed;
+        outcome->reason = suppressed ? "higher_priority" : "";
+    }
+    unlock_arbiter(arbiter);
+    return SEMANTIC_INDICATOR_ACCEPTED;
+}
+
+collision_indicator_result_t alert_arbiter_submit_collision(
+    alert_arbiter_t *arbiter, const char *boot_id, uint32_t impact_count)
+{
+    if (arbiter == NULL || boot_id == NULL) {
+        return COLLISION_INDICATOR_REJECT_IDENTITY;
+    }
+    lock_arbiter(arbiter);
+    if (strcmp(arbiter->boot_id, boot_id) != 0) {
+        unlock_arbiter(arbiter);
+        return COLLISION_INDICATOR_REJECT_IDENTITY;
+    }
+    const bool wrapped = arbiter->collision_has_count &&
+        arbiter->collision_impact_count > 0xF0000000U &&
+        impact_count < 0x0FFFFFFFU;
+    if ((!arbiter->collision_has_count && impact_count == 0U) ||
+        (arbiter->collision_has_count &&
+         !wrapped && impact_count <= arbiter->collision_impact_count)) {
+        unlock_arbiter(arbiter);
+        return COLLISION_INDICATOR_DUPLICATE;
+    }
+    arbiter->collision_impact_count = impact_count;
+    arbiter->collision_has_count = true;
+    arbiter->collision_latched = true;
+    unlock_arbiter(arbiter);
+    return COLLISION_INDICATOR_ACCEPTED;
+}
+
+collision_ack_result_t alert_arbiter_ack_collision(
+    alert_arbiter_t *arbiter, const char *boot_id, uint32_t impact_count)
+{
+    if (arbiter == NULL || boot_id == NULL) return COLLISION_ACK_REJECT_IDENTITY;
+    lock_arbiter(arbiter);
+    if (!arbiter->collision_latched ||
+        strcmp(arbiter->boot_id, boot_id) != 0 ||
+        arbiter->collision_impact_count != impact_count) {
+        unlock_arbiter(arbiter);
+        return COLLISION_ACK_REJECT_IDENTITY;
+    }
+    arbiter->collision_latched = false;
+    unlock_arbiter(arbiter);
+    return COLLISION_ACK_ACCEPTED;
 }
 
 void alert_arbiter_set_local(alert_arbiter_t *arbiter, const action_decision_t *decision, uint64_t now_ms)
@@ -252,6 +347,29 @@ alert_effective_t alert_arbiter_runtime_get_effective(uint64_t now_ms)
 const char *alert_arbiter_runtime_last_voice_state(void)
 {
     return s_last_voice_state;
+}
+
+semantic_indicator_result_t alert_arbiter_runtime_submit_semantic(
+    const char *analysis_id,
+    uint64_t now_ms,
+    semantic_indicator_outcome_t *outcome)
+{
+    if (!s_runtime_started) return SEMANTIC_INDICATOR_REJECT_SCHEMA;
+    return alert_arbiter_submit_semantic(&s_runtime, analysis_id, now_ms, outcome);
+}
+
+collision_indicator_result_t alert_arbiter_runtime_submit_collision(
+    const char *boot_id, uint32_t impact_count)
+{
+    if (!s_runtime_started) return COLLISION_INDICATOR_REJECT_IDENTITY;
+    return alert_arbiter_submit_collision(&s_runtime, boot_id, impact_count);
+}
+
+collision_ack_result_t alert_arbiter_runtime_ack_collision(
+    const char *boot_id, uint32_t impact_count)
+{
+    if (!s_runtime_started) return COLLISION_ACK_REJECT_IDENTITY;
+    return alert_arbiter_ack_collision(&s_runtime, boot_id, impact_count);
 }
 
 #endif

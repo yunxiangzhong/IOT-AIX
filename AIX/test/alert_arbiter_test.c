@@ -89,6 +89,71 @@ int main(void)
         return 1;
     }
 
+    action_decision_t local_safe = local(ACTION_STATE_SAFE, RGB_GREEN_SOLID);
+    alert_arbiter_set_local(&arbiter, &local_safe, 5200U);
+    semantic_indicator_outcome_t semantic = {0};
+    if (alert_arbiter_submit_semantic(&arbiter, "analysis-1", 5200U, &semantic) !=
+            SEMANTIC_INDICATOR_ACCEPTED ||
+        !semantic.flashed || semantic.suppressed) {
+        printf("semantic pulse was not accepted\n");
+        return 1;
+    }
+    effective = alert_arbiter_get_effective(&arbiter, 5699U);
+    if (!effective.semantic || effective.pattern != RGB_CYAN_RESULT_PULSE) {
+        printf("semantic pulse did not remain active for 500ms\n");
+        return 1;
+    }
+    effective = alert_arbiter_get_effective(&arbiter, 5700U);
+    if (effective.semantic || effective.pattern != RGB_GREEN_SOLID) {
+        printf("semantic pulse did not restore local pattern at 500ms\n");
+        return 1;
+    }
+    if (alert_arbiter_submit_semantic(&arbiter, "analysis-1", 6000U, &semantic) !=
+            SEMANTIC_INDICATOR_DUPLICATE ||
+        !semantic.flashed ||
+        alert_arbiter_get_effective(&arbiter, 6000U).pattern != RGB_GREEN_SOLID) {
+        printf("duplicate semantic result did not return original ACK safely\n");
+        return 1;
+    }
+
+    alert_arbiter_set_local(&arbiter, &local_critical, 6100U);
+    if (alert_arbiter_submit_semantic(&arbiter, "analysis-2", 6100U, &semantic) !=
+            SEMANTIC_INDICATOR_ACCEPTED ||
+        !semantic.suppressed || semantic.flashed) {
+        printf("critical state did not suppress semantic pulse\n");
+        return 1;
+    }
+    effective = alert_arbiter_get_effective(&arbiter, 6100U);
+    if (effective.pattern != RGB_RED_DOUBLE_PULSE) return 1;
+
+    if (alert_arbiter_submit_collision(&arbiter, "boot-01", 3U) !=
+        COLLISION_INDICATOR_ACCEPTED) {
+        printf("new MPU collision was not latched\n");
+        return 1;
+    }
+    effective = alert_arbiter_get_effective(&arbiter, 6200U);
+    if (!effective.collision || effective.pattern != RGB_WHITE_AIRBAG_LATCHED) {
+        printf("collision white did not override critical\n");
+        return 1;
+    }
+    if (alert_arbiter_ack_collision(&arbiter, "old-boot", 3U) !=
+            COLLISION_ACK_REJECT_IDENTITY ||
+        alert_arbiter_ack_collision(&arbiter, "boot-01", 2U) !=
+            COLLISION_ACK_REJECT_IDENTITY) {
+        printf("stale collision acknowledgement was accepted\n");
+        return 1;
+    }
+    if (alert_arbiter_ack_collision(&arbiter, "boot-01", 3U) !=
+        COLLISION_ACK_ACCEPTED) {
+        printf("matching collision acknowledgement was rejected\n");
+        return 1;
+    }
+    effective = alert_arbiter_get_effective(&arbiter, 6201U);
+    if (effective.collision || effective.pattern != RGB_RED_DOUBLE_PULSE) {
+        printf("collision acknowledgement did not restore prior pattern\n");
+        return 1;
+    }
+
     printf("alert_arbiter_test: ALL PASSED\n");
     return 0;
 }

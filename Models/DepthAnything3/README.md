@@ -22,9 +22,16 @@ logs/                  服务运行日志
 - `GET /v1/frame/latest.jpg`：最新上传原图，仅用于诊断。
 - `GET /v1/frame/processed.jpg`：最新已完成分析的画面，上位机默认使用此接口。
 - `GET /v1/state/latest`：同一 `frame_seq` 的检测框、稳定风险和动作确认。
+- `GET /v1/semantic/{analysis_id}/keyframes/{1|2|3}.jpg`：读取服务缓存的实际网关输入帧；标识和索引均严格校验。
+- `POST /v1/collision-indicator/ack`：用最近真实设备地址代理匹配 boot/count 的白色模拟 Airbag 确认。
 - `POST /v1/road-hazards`：接收路侧协同预警事件，立即返回 202；仅向最近 3 秒内有上传画面的同设备地址异步下发，并在 `state/latest` 的 `road_hazard` 中记录采集、识别、到达预测、下发和 ACK 五阶段。该演示链路只接受受控枚举与严格匹配的设备 ACK，不代表已完成实车验证。
 - `GET /healthz`：HTTP、模型、GPU 与后端状态。
 
 风险采用交通目标优先、非对称 EMA、两帧升级和三帧降级；场景深度本身最多到“注意”。它表示相对视觉接近程度，不是碰撞概率或安全控制结论。
+
+边缘语义支路从环境变量 `VEI_API_KEY` 读取火山引擎边缘网关密钥，固定调用
+`doubao-seed-1.6-flash`。启动脚本仅在当前进程没有该变量时读取仓库根目录下被忽略的
+`.env.local`；可复制 `.env.local.example`，但不得提交真实密钥。语义输出只包含场景、
+道路环境、交通流、视野、跨帧变化、可信度和不确定性；响应中出现风险或执行字段会被拒绝。
 
 许可边界：Ultralytics 软件及默认模型采用 `AGPL-3.0-or-later`，商业闭源分发需自行评估并可能需要 Ultralytics Enterprise License。本仓库的部署不改变该许可条件。

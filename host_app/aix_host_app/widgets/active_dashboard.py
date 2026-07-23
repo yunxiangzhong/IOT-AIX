@@ -36,6 +36,8 @@ RISK_REASON_LABELS = {
 RGB_PATTERN_LABELS = {
     "blue_blink_1hz": "蓝灯慢闪", "green_solid": "绿灯常亮", "yellow_blink_1hz": "黄灯慢闪",
     "orange_blink_2hz": "橙灯快速闪烁", "red_double_pulse": "红灯双脉冲", "purple_blink_1hz": "紫灯慢闪",
+    "cyan_result_pulse": "青色语义结果到达脉冲",
+    "white_airbag_latched": "白色 RGB 模拟 Airbag 已打开",
 }
 
 
@@ -190,6 +192,7 @@ class _HostStatusCard(QtWidgets.QFrame):
         layout.setSpacing(3)
         caption = QtWidgets.QLabel(title)
         caption.setObjectName("metricTitle")
+        self.title = caption
         self.value = QtWidgets.QLabel(value)
         self.value.setObjectName("hostStatusValue")
         self.value.setWordWrap(True)
@@ -237,6 +240,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self._last_display_frame_seq = -1
         self._static_visual_mode = False
         self._last_state_revision: int | None = None
+        self._semantic_ids: set[str] = set()
         self._sensor_received_at_ms: dict[str, int] = {}
         self._sensor_source_ts_ms: dict[str, int] = {}
         self._last_pressure_sample: PressureSample | None = None
@@ -346,6 +350,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         guard_layout.addWidget(self.execution_guard)
         guard_layout.addWidget(self.pneumatic_acceptance_note)
         right_layout.addWidget(guard)
+        right_layout.addWidget(self._build_semantic_panel())
         right_layout.addWidget(self._build_upper_status())
 
         self._set_initial_mapping_values()
@@ -406,6 +411,43 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         layout.addWidget(footer)
         return camera
 
+    def _build_semantic_panel(self) -> QtWidgets.QFrame:
+        panel = QtWidgets.QFrame()
+        panel.setObjectName("semanticPanel")
+        layout = QtWidgets.QVBoxLayout(panel)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(5)
+        heading = QtWidgets.QHBoxLayout()
+        title = QtWidgets.QLabel("边缘语义分析")
+        title.setObjectName("columnTitle")
+        self.semantic_history_button = QtWidgets.QPushButton("查看全部结果")
+        heading.addWidget(title)
+        heading.addStretch(1)
+        heading.addWidget(self.semantic_history_button)
+        layout.addLayout(heading)
+        self.semantic_latest = QtWidgets.QPlainTextEdit("等待边缘大模型网关结果")
+        self.semantic_latest.setReadOnly(True)
+        self.semantic_latest.setFixedHeight(112)
+        self.semantic_latest.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        layout.addWidget(self.semantic_latest)
+        self.semantic_storage_error = QtWidgets.QLabel()
+        self.semantic_storage_error.setWordWrap(True)
+        layout.addWidget(self.semantic_storage_error)
+
+        self.semantic_history_dialog = QtWidgets.QDialog(self)
+        self.semantic_history_dialog.setWindowTitle("边缘语义分析 · 全部结果")
+        self.semantic_history_dialog.resize(760, 520)
+        history_layout = QtWidgets.QVBoxLayout(self.semantic_history_dialog)
+        self.semantic_history = QtWidgets.QListWidget()
+        self.semantic_history.setWordWrap(True)
+        history_layout.addWidget(self.semantic_history)
+        self.semantic_history_button.clicked.connect(
+            self.semantic_history_dialog.show
+        )
+        return panel
+
     def _build_upper_status(self) -> QtWidgets.QFrame:
         panel = QtWidgets.QFrame()
         panel.setObjectName("upperComputerPanel")
@@ -415,7 +457,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         heading = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("上位机状态")
         title.setObjectName("columnTitle")
-        self.safety_note = QtWidgets.QLabel("本地服务、GPU、模型与协同链路")
+        self.safety_note = QtWidgets.QLabel("本地服务、GPU、模型与边缘大模型网关")
         self.safety_note.setObjectName("muted")
         heading.addWidget(title)
         heading.addStretch(1)
@@ -426,7 +468,9 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         self.host_service_card = _HostStatusCard("服务", "● 启动中", "等待健康检查")
         self.device_card = _HostStatusCard("设备链路", "等待连接", "等待视觉帧")
         self.model_card = _HostStatusCard("CUDA 与模型", "加载中", "DA3 / YOLO")
-        self.cloud_card = _HostStatusCard("协同链路", "本地服务链路", "等待真实设备回传")
+        self.cloud_card = _HostStatusCard(
+            "边缘大模型网关", "未启用", "等待网关配置"
+        )
         for card in (self.host_service_card, self.device_card, self.model_card, self.cloud_card):
             cards.addWidget(card, 1)
         layout.addLayout(cards)
@@ -756,6 +800,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
         callback = state.get("callback", {})
         risk = state.get("risk", {})
         action = state.get("action", {})
+        semantic = state.get("semantic", {})
         display = state.get("display", {})
         if display.get("ready"):
             try:
@@ -784,6 +829,7 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             f"本地服务回传 · {_state_label(callback.get('state'))} · {float(callback_latency):.0f} ms"
             if isinstance(callback_latency, (int, float)) else "本地服务回传 · 等待真实反馈"
         )
+        self._apply_semantic(semantic if isinstance(semantic, dict) else {})
         self.decision_freshness.setText(
             f"帧时效 {int(age)} ms · {float(upload.get('fps', 0)):.2f} 帧/秒" if isinstance(age, (int, float)) else "等待健康检查"
         )
@@ -868,6 +914,93 @@ class ActiveVisionDashboard(QtWidgets.QWidget):
             f"回传{_state_label(callback.get('state'))}，动作{_state_label(action.get('state'))}"
         )
         self.last_error_text = _error_label(state.get("last_error"))
+
+    def _apply_semantic(self, semantic: dict) -> None:
+        enabled = bool(semantic.get("enabled", False))
+        status = str(semantic.get("status", "disabled"))
+        latency = semantic.get("latency_ms")
+        model = str(semantic.get("model") or "doubao-seed-1.6-flash")
+        if not enabled:
+            self.cloud_value.setText("未启用")
+            if semantic.get("error"):
+                self.semantic_storage_error.setText(str(semantic.get("error")))
+        else:
+            self.cloud_value.setText(
+                f"● {_state_label(status)}"
+                + (f" · {float(latency):.0f} ms" if isinstance(latency, (int, float)) else "")
+            )
+            self.decision_callback.setText(
+                f"{model} · {_state_label(status)}"
+                + (f" · {float(latency):.0f} ms" if isinstance(latency, (int, float)) else "")
+            )
+
+        for record in semantic.get("recent", []):
+            if isinstance(record, dict):
+                self._append_semantic_history(record)
+
+        analysis_id = str(semantic.get("analysis_id", ""))
+        if not analysis_id:
+            return
+        text = self._semantic_record_text(semantic)
+        self.semantic_latest.setPlainText(text)
+        self._append_semantic_history(semantic, text)
+
+    @staticmethod
+    def _semantic_record_text(semantic: dict) -> str:
+        status = str(semantic.get("status", "error"))
+        latency = semantic.get("latency_ms")
+        result = semantic.get("result")
+        frame_seqs = semantic.get("frame_seqs", [])
+        rgb = semantic.get("rgb_delivery", {})
+        completed_ts_ms = semantic.get("completed_ts_ms")
+        timestamp = "时间未知"
+        if isinstance(completed_ts_ms, (int, float)) and completed_ts_ms > 0:
+            timestamp = QtCore.QDateTime.fromMSecsSinceEpoch(
+                int(completed_ts_ms)
+            ).toString("yyyy-MM-dd HH:mm:ss")
+        if status == "ready" and isinstance(result, dict):
+            rgb_text = (
+                "青色到达灯已闪烁"
+                if rgb.get("flashed")
+                else f"青色到达灯未闪烁（{rgb.get('reason') or rgb.get('state') or '未知'}）"
+            )
+            changes = "；".join(str(item) for item in result.get("changes", [])) or "未发现明显变化"
+            text = (
+                f"{timestamp} · 帧 {', '.join(str(item) for item in frame_seqs)} · {latency or '—'} ms\n"
+                f"摘要：{result.get('summary') or '—'}\n"
+                f"道路环境：{result.get('road_environment') or '—'}；"
+                f"交通流：{result.get('traffic_flow') or '—'}；"
+                f"视野：{result.get('visibility') or '—'}\n"
+                f"跨帧变化：{changes}；可信度：{result.get('confidence', '—')}；"
+                f"不确定性：{result.get('uncertainty') or '无'}；{rgb_text}"
+            )
+        else:
+            text = (
+                f"{timestamp} · 帧 {', '.join(str(item) for item in frame_seqs)} · 调用失败\n"
+                f"原因：{semantic.get('error') or '未知错误'}"
+            )
+        return text
+
+    def _append_semantic_history(
+        self, semantic: dict, text: str | None = None
+    ) -> None:
+        analysis_id = str(semantic.get("analysis_id", ""))
+        if not analysis_id:
+            return
+        if analysis_id in self._semantic_ids:
+            return
+        self._semantic_ids.add(analysis_id)
+        scrollbar = self.semantic_history.verticalScrollBar()
+        previous = scrollbar.value()
+        item = QtWidgets.QListWidgetItem(
+            text if text is not None else self._semantic_record_text(semantic)
+        )
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, analysis_id)
+        self.semantic_history.addItem(item)
+        scrollbar.setValue(previous)
+
+    def show_semantic_storage_error(self, message: str) -> None:
+        self.semantic_storage_error.setText(message)
 
     def _mark_sensor_received(self, key: str, source_ts_ms: int) -> None:
         self._sensor_received_at_ms[key] = QtCore.QDateTime.currentMSecsSinceEpoch()

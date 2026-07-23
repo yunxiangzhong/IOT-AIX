@@ -195,6 +195,46 @@ class ActiveVisionDashboardTests(unittest.TestCase):
         self.assertIn("已就绪", dashboard.model_stage.meta.text())
         self.assertIn("等待视觉帧", dashboard.risk_reason.text())
 
+    def test_semantic_gateway_card_latest_result_and_history_are_independent(self):
+        dashboard = ActiveVisionDashboard()
+        base = {
+            "device_id": "aix-helmet-01",
+            "upload": {"state": "healthy", "last_frame_seq": 18, "fps": 1.0},
+            "model": {"state": "ready", "gpu": "cuda"},
+            "callback": {"state": "waiting"},
+            "risk": {"valid": False, "score": 0, "band": "low"},
+            "action": {"confirmed": False, "state": "loading"},
+        }
+        state = dict(base)
+        state["semantic"] = {
+            "enabled": True,
+            "status": "ready",
+            "analysis_id": "sem-1",
+            "model": "doubao-seed-1.6-flash",
+            "frame_seqs": [10, 14, 18],
+            "latency_ms": 432.0,
+            "result": {
+                "summary": "前方道路施工，车辆缓慢通行。",
+                "road_environment": "construction_or_blockage",
+                "traffic_flow": "slow",
+                "visibility": "clear",
+                "changes": ["施工围挡持续可见"],
+                "confidence": 0.88,
+                "uncertainty": "无法确认车道数量",
+            },
+            "rgb_delivery": {"state": "confirmed", "flashed": True},
+            "error": "",
+        }
+        dashboard.apply_chain_state(state)
+
+        self.assertEqual(dashboard.cloud_card.title.text(), "边缘大模型网关")
+        self.assertIn("已就绪", dashboard.cloud_value.text())
+        self.assertIn("前方道路施工", dashboard.semantic_latest.toPlainText())
+        self.assertEqual(dashboard.semantic_history.count(), 1)
+
+        dashboard.apply_chain_state({**state, "revision": 2})
+        self.assertEqual(dashboard.semantic_history.count(), 1)
+
     def test_health_poll_cannot_reset_an_existing_chain_result(self):
         dashboard = ActiveVisionDashboard()
         dashboard.apply_chain_state({

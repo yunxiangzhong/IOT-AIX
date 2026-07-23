@@ -204,6 +204,7 @@ int risk_receiver_format_road_hazard_status(
 #define RISK_BODY_MAX 2048U
 #define ROAD_HAZARD_BODY_MAX 2048U
 #define PNEUMATIC_BODY_MAX 1024U
+#define INDICATOR_BODY_MAX 1024U
 #define RISK_CACHE_DEVICE_ID_CAPACITY 64U
 #define RISK_CACHE_BOOT_ID_CAPACITY 32U
 #define DEMO_SESSION_ID_CAPACITY 64U
@@ -830,6 +831,123 @@ static esp_err_t road_hazard_handler(httpd_req_t *request)
         alert_arbiter_runtime_last_voice_state(), "", current_ms);
 }
 
+static esp_err_t semantic_indicator_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        httpd_resp_set_status(request, "401 Unauthorized");
+        return httpd_resp_sendstr(request, "invalid link token");
+    }
+    char *body = receive_json_body(request, INDICATOR_BODY_MAX);
+    cJSON *root = body != NULL ? cJSON_Parse(body) : NULL;
+    free(body);
+    if (!cJSON_IsObject(root) || cJSON_GetArraySize(root) != 6) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(request, "422 Unprocessable Entity");
+        return httpd_resp_sendstr(request, "invalid semantic indicator schema");
+    }
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    const cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "version");
+    const cJSON *device = cJSON_GetObjectItemCaseSensitive(root, "device_id");
+    const cJSON *boot = cJSON_GetObjectItemCaseSensitive(root, "boot_id");
+    const cJSON *analysis = cJSON_GetObjectItemCaseSensitive(root, "analysis_id");
+    const cJSON *frame_seq = cJSON_GetObjectItemCaseSensitive(root, "frame_seq");
+    char analysis_id[SEMANTIC_ANALYSIS_ID_CAPACITY] = "";
+    const bool valid =
+        cJSON_IsString(type) && strcmp(type->valuestring, "semantic_indicator") == 0 &&
+        cJSON_IsNumber(version) && version->valuedouble == 1.0 &&
+        device_and_boot_match(device, boot) &&
+        cJSON_IsString(analysis) &&
+        risk_receiver_copy_safe_road_hazard_event_id(
+            analysis_id, sizeof(analysis_id), analysis->valuestring) &&
+        cJSON_IsNumber(frame_seq) && frame_seq->valuedouble >= 0.0 &&
+        frame_seq->valuedouble <= 4294967295.0 &&
+        frame_seq->valuedouble == (double)(uint32_t)frame_seq->valuedouble;
+    cJSON_Delete(root);
+    if (!valid) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "semantic indicator identity mismatch");
+    }
+    semantic_indicator_outcome_t outcome = {0};
+    const uint64_t current_ms = receiver_now_ms();
+    const semantic_indicator_result_t result =
+        alert_arbiter_runtime_submit_semantic(analysis_id, current_ms, &outcome);
+    const alert_effective_t effective =
+        alert_arbiter_runtime_get_effective(current_ms);
+    char response[512];
+    const int written = snprintf(
+        response, sizeof(response),
+        "{\"type\":\"semantic_indicator_ack\",\"version\":1,\"accepted\":true,"
+        "\"duplicate\":%s,\"analysis_id\":\"%s\",\"flashed\":%s,"
+        "\"suppressed\":%s,\"reason\":\"%s\",\"effective_rgb_pattern\":\"%s\"}",
+        result == SEMANTIC_INDICATOR_DUPLICATE ? "true" : "false",
+        analysis_id, outcome.flashed ? "true" : "false",
+        outcome.suppressed ? "true" : "false",
+        outcome.reason != NULL ? outcome.reason : "",
+        rgb_pattern_name(effective.pattern));
+    if (result == SEMANTIC_INDICATOR_REJECT_SCHEMA ||
+        written < 0 || (size_t)written >= sizeof(response)) {
+        httpd_resp_set_status(request, "422 Unprocessable Entity");
+        return httpd_resp_sendstr(request, "semantic indicator rejected");
+    }
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, response);
+}
+
+static esp_err_t collision_indicator_ack_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        httpd_resp_set_status(request, "401 Unauthorized");
+        return httpd_resp_sendstr(request, "invalid link token");
+    }
+    char *body = receive_json_body(request, INDICATOR_BODY_MAX);
+    cJSON *root = body != NULL ? cJSON_Parse(body) : NULL;
+    free(body);
+    if (!cJSON_IsObject(root) || cJSON_GetArraySize(root) != 5) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(request, "422 Unprocessable Entity");
+        return httpd_resp_sendstr(request, "invalid collision ACK schema");
+    }
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    const cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "version");
+    const cJSON *device = cJSON_GetObjectItemCaseSensitive(root, "device_id");
+    const cJSON *boot = cJSON_GetObjectItemCaseSensitive(root, "boot_id");
+    const cJSON *impact_count = cJSON_GetObjectItemCaseSensitive(root, "impact_count");
+    const bool valid =
+        cJSON_IsString(type) &&
+        strcmp(type->valuestring, "collision_indicator_ack") == 0 &&
+        cJSON_IsNumber(version) && version->valuedouble == 1.0 &&
+        device_and_boot_match(device, boot) &&
+        cJSON_IsNumber(impact_count) && impact_count->valuedouble >= 0.0 &&
+        impact_count->valuedouble <= 4294967295.0 &&
+        impact_count->valuedouble == (double)(uint32_t)impact_count->valuedouble;
+    const uint32_t count = valid ? (uint32_t)impact_count->valuedouble : 0U;
+    cJSON_Delete(root);
+    if (!valid) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "collision ACK identity mismatch");
+    }
+    const collision_ack_result_t result =
+        alert_arbiter_runtime_ack_collision(device_identity_boot_id(), count);
+    const alert_effective_t effective =
+        alert_arbiter_runtime_get_effective(receiver_now_ms());
+    char response[320];
+    const int written = snprintf(
+        response, sizeof(response),
+        "{\"type\":\"collision_indicator_ack\",\"version\":1,\"accepted\":%s,"
+        "\"boot_id\":\"%s\",\"impact_count\":%lu,"
+        "\"effective_rgb_pattern\":\"%s\",\"error\":\"%s\"}",
+        result == COLLISION_ACK_ACCEPTED ? "true" : "false",
+        device_identity_boot_id(), (unsigned long)count,
+        rgb_pattern_name(effective.pattern),
+        result == COLLISION_ACK_ACCEPTED ? "" : "identity_mismatch");
+    if (written < 0 || (size_t)written >= sizeof(response)) return ESP_ERR_INVALID_SIZE;
+    if (result != COLLISION_ACK_ACCEPTED) {
+        httpd_resp_set_status(request, "409 Conflict");
+    }
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, response);
+}
+
 static esp_err_t risk_handler(httpd_req_t *request)
 {
     char *body = NULL;
@@ -1272,6 +1390,18 @@ esp_err_t risk_receiver_start(void)
         .handler = demo_action_reset_handler,
         .user_ctx = NULL,
     };
+    httpd_uri_t semantic_indicator_uri = {
+        .uri = "/semantic-indicator",
+        .method = HTTP_POST,
+        .handler = semantic_indicator_handler,
+        .user_ctx = NULL,
+    };
+    httpd_uri_t collision_indicator_ack_uri = {
+        .uri = "/collision-indicator/ack",
+        .method = HTTP_POST,
+        .handler = collision_indicator_ack_handler,
+        .user_ctx = NULL,
+    };
     s_demo_lock = xSemaphoreCreateMutex();
     if (s_demo_lock == NULL) {
         return ESP_ERR_NO_MEM;
@@ -1294,10 +1424,12 @@ esp_err_t risk_receiver_start(void)
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &demo_end_uri), TAG, "register demo end failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &demo_action_uri), TAG, "register demo action failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &demo_action_reset_uri), TAG, "register demo action reset failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &semantic_indicator_uri), TAG, "register semantic indicator failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &collision_indicator_ack_uri), TAG, "register collision indicator ACK failed");
     if (xTaskCreate(demo_watchdog_task, "demo_watchdog", 3072, NULL, 3, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "vision, road hazard, pneumatic, demo and healthz receiver listening on port %d", CONFIG_AIX_RISK_RECEIVER_PORT);
+    ESP_LOGI(TAG, "vision, semantic RGB, collision RGB, road hazard, pneumatic, demo and healthz receiver listening on port %d", CONFIG_AIX_RISK_RECEIVER_PORT);
     printf("{\"type\":\"risk_receiver_status\",\"version\":1,\"listening\":true,\"port\":%d}\n",
            CONFIG_AIX_RISK_RECEIVER_PORT);
     fflush(stdout);

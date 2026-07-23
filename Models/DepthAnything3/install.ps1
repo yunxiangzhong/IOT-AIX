@@ -64,7 +64,7 @@ if ($LASTEXITCODE -ne 0) { throw "xformers installation failed" }
 if ($LASTEXITCODE -ne 0) { throw "Depth Anything 3 installation failed" }
 & $python -m pip install addict
 if ($LASTEXITCODE -ne 0) { throw "Depth Anything 3 missing runtime dependency installation failed" }
-& $python -m pip install fastapi uvicorn "ultralytics==8.4.96" "onnx==1.22.0" "onnxslim==0.1.94"
+& $python -m pip install fastapi uvicorn "openai==2.47.0" "ultralytics==8.4.96" "onnx==1.22.0" "onnxslim==0.1.94"
 if ($LASTEXITCODE -ne 0) { throw "inference service dependency installation failed" }
 
 & $python (Join-Path $PSScriptRoot "download_weights.py") --repo $modelRepo --revision $modelRevision --output $weights

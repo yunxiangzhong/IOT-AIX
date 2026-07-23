@@ -29,6 +29,8 @@ class DeploymentScriptTests(unittest.TestCase):
 
         self.assertIn("YOLO_CONFIG_DIR", launcher)
         self.assertIn('cache\\ultralytics', launcher)
+        self.assertIn('Push-Location (Join-Path $PSScriptRoot "service")', launcher)
+        self.assertIn('$sharedProjectRoot ".env.local"', launcher)
 
     def test_runtime_scripts_share_heavy_assets_with_linked_worktrees(self) -> None:
         installer = (MODEL_ROOT / "install.ps1").read_text(encoding="utf-8")

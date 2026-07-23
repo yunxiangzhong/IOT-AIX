@@ -11,7 +11,7 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVICE_ROOT))
 
 from app import create_app
-from frame_pipeline import FrameEnvelope, LatestFrameStore, RiskCallbackClient, VoicePromptPolicy
+from frame_pipeline import ChainStateRepository, FrameEnvelope, LatestFrameStore, RiskCallbackClient, VoicePromptPolicy
 
 
 JPEG_A = b"\xff\xd8frame-a\xff\xd9"
@@ -41,6 +41,35 @@ class LatestFrameStoreTests(unittest.TestCase):
         self.assertIsNotNone(pending)
         self.assertEqual(pending.frame_seq, 2)
         self.assertEqual(store.latest("aix-helmet-01").jpeg, JPEG_B)
+
+
+class SemanticStateTests(unittest.TestCase):
+    def test_semantic_update_is_independent_from_risk(self) -> None:
+        states = ChainStateRepository()
+        item = frame(7)
+        states.record_frame(item)
+        before = states.latest(item.device_id)["risk"]
+        states.record_semantic(
+            item.device_id,
+            {
+                "status": "ready",
+                "analysis_id": "sem-1",
+                "model": "doubao-seed-1.6-flash",
+                "frame_seqs": [1, 4, 7],
+                "latency_ms": 321.5,
+                "result": {"summary": "道路畅通"},
+                "error": "",
+                "rgb_delivery": {"state": "confirmed", "flashed": True},
+            },
+        )
+        state = states.latest(item.device_id)
+
+        self.assertEqual(state["semantic"]["analysis_id"], "sem-1")
+        self.assertEqual(state["semantic"]["total"], 1)
+        self.assertEqual(
+            state["semantic"]["recent"][0]["analysis_id"], "sem-1"
+        )
+        self.assertEqual(state["risk"], before)
 
 
 class FrameApiTests(unittest.TestCase):

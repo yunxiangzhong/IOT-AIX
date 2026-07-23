@@ -139,8 +139,9 @@ const char *rgb_pattern_name(rgb_pattern_t pattern)
     static const char *const names[] = {
         "blue_blink_1hz", "green_solid", "yellow_blink_1hz",
         "orange_blink_2hz", "red_double_pulse", "purple_blink_1hz",
+        "cyan_result_pulse", "white_airbag_latched",
     };
-    return pattern >= RGB_BLUE_BLINK_1HZ && pattern <= RGB_PURPLE_BLINK_1HZ ? names[pattern] : "purple_blink_1hz";
+    return pattern >= RGB_BLUE_BLINK_1HZ && pattern <= RGB_WHITE_AIRBAG_LATCHED ? names[pattern] : "purple_blink_1hz";
 }
 
 const char *risk_accept_result_name(risk_accept_result_t result)
