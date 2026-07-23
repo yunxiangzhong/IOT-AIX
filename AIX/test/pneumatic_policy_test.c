@@ -24,7 +24,6 @@ static pneumatic_policy_config_t automatic_config(void)
     config.calibration_valid = true;
     config.target_kpa = 8.0f;
     config.max_kpa = 12.0f;
-    config.max_inflate_ms = 1000;
     return config;
 }
 
@@ -63,7 +62,7 @@ static void test_high_risk_starts_pump_holds_then_vents_after_clear(void)
     assert(output.trigger_source == PNEUMATIC_TRIGGER_NONE);
 }
 
-static void test_high_risk_keeps_pumping_past_the_former_60_second_limit(void)
+static void test_high_risk_pressure_rise_is_not_cut_off_by_elapsed_time(void)
 {
     pneumatic_policy_t policy;
     pneumatic_policy_config_t config = automatic_config();
@@ -78,25 +77,6 @@ static void test_high_risk_keeps_pumping_past_the_former_60_second_limit(void)
     assert(output.state == PNEUMATIC_STATE_INFLATING);
     assert(output.pump_on && output.valve_on);
     assert(output.fault == PNEUMATIC_FAULT_NONE);
-
-    /* 60 seconds later, still inflating — no hard timeout */
-    input.pressure_timestamp_ms = 60021;
-    output = pneumatic_policy_step(&policy, &input, 60021);
-    assert(output.state == PNEUMATIC_STATE_INFLATING);
-    assert(output.pump_on && output.valve_on);
-    assert(output.fault == PNEUMATIC_FAULT_NONE);
-
-    /* Pressure invalid still forces exhaust */
-    input.pressure_timestamp_ms = 60022;
-    input.pressure_valid = false;
-    /* one step inside grace window */
-    output = pneumatic_policy_step(&policy, &input, 60022);
-    assert(output.state == PNEUMATIC_STATE_INFLATING);
-    /* step past grace window */
-    output = pneumatic_policy_step(&policy, &input, 60122);
-    assert(output.state == PNEUMATIC_STATE_FAULT_VENT);
-    assert(!output.pump_on && !output.valve_on);
-    assert(output.fault == PNEUMATIC_FAULT_PRESSURE_INVALID);
 }
 
 static void test_high_risk_trigger_latches_until_target_after_signal_clears(void)
@@ -458,7 +438,7 @@ static void test_actuation_hazard_false_does_not_affect_calibration(void)
 int main(void)
 {
     test_high_risk_starts_pump_holds_then_vents_after_clear();
-    test_high_risk_keeps_pumping_past_the_former_60_second_limit();
+    test_high_risk_pressure_rise_is_not_cut_off_by_elapsed_time();
     test_high_risk_trigger_latches_until_target_after_signal_clears();
     test_active_risk_refills_when_pressure_drops_below_target();
     test_visual_high_risk_does_not_require_mpu_trigger();

@@ -15,6 +15,8 @@ static action_policy_t s_policy;
 static action_decision_t s_decision;
 static SemaphoreHandle_t s_lock;
 static bool s_started;
+static bool s_demo_active;
+static action_decision_t s_demo_decision;
 
 static uint64_t now_ms(void)
 {
@@ -52,7 +54,7 @@ static void controller_task(void *arg)
         action_decision_t next;
         bool changed;
         xSemaphoreTake(s_lock, portMAX_DELAY);
-        next = action_policy_decide(&s_policy, current_ms);
+        next = s_demo_active ? s_demo_decision : action_policy_decide(&s_policy, current_ms);
         changed = decision_changed(&next, &s_decision);
         s_decision = next;
         xSemaphoreGive(s_lock);
@@ -127,7 +129,7 @@ action_decision_t action_controller_get_decision(void)
         return result;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    result = action_policy_decide(&s_policy, now_ms());
+    result = s_demo_active ? s_demo_decision : action_policy_decide(&s_policy, now_ms());
     xSemaphoreGive(s_lock);
     const alert_effective_t effective = alert_arbiter_runtime_get_effective(now_ms());
     if (effective.remote) {
@@ -140,6 +142,95 @@ action_decision_t action_controller_get_decision(void)
         result.stale = false;
     }
     return result;
+}
+
+static action_decision_t demo_idle_decision(void)
+{
+    return (action_decision_t){
+        .state = ACTION_STATE_SAFE,
+        .rgb_pattern = RGB_GREEN_SOLID,
+        .valid = true,
+        .stale = false,
+        .actuation_hazard_present = false,
+        .actuation_hazard_active = false,
+    };
+}
+
+bool action_controller_apply_demo(uint8_t scene_id, uint32_t frame_seq, action_decision_t *decision)
+{
+    if (!s_started || scene_id < 4U || scene_id > 6U) {
+        return false;
+    }
+    action_decision_t demo = {
+        .state = ACTION_STATE_CRITICAL,
+        .rgb_pattern = scene_id == 4U ? RGB_RED_DOUBLE_PULSE
+                         : scene_id == 5U ? RGB_ORANGE_BLINK_2HZ
+                                          : RGB_PURPLE_BLINK_1HZ,
+        .source_frame_seq = frame_seq,
+        .risk_score = 95U,
+        .stale = false,
+        .valid = true,
+        .actuation_hazard_present = true,
+        .actuation_hazard_active = true,
+    };
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_demo_decision = demo;
+    s_demo_active = true;
+    xSemaphoreGive(s_lock);
+    alert_arbiter_runtime_set_local(&demo, now_ms());
+    emit_status(&demo, now_ms());
+    if (decision != NULL) {
+        *decision = demo;
+    }
+    return true;
+}
+
+void action_controller_enter_demo(void)
+{
+    if (!s_started) {
+        return;
+    }
+    const uint64_t timestamp_ms = now_ms();
+    const action_decision_t idle = demo_idle_decision();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_demo_active = true;
+    s_demo_decision = idle;
+    s_decision = idle;
+    xSemaphoreGive(s_lock);
+    alert_arbiter_runtime_set_local(&idle, timestamp_ms);
+    emit_status(&idle, timestamp_ms);
+}
+
+void action_controller_reset_demo(void)
+{
+    if (!s_started) {
+        return;
+    }
+    const uint64_t timestamp_ms = now_ms();
+    const action_decision_t idle = demo_idle_decision();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_demo_active = true;
+    s_demo_decision = idle;
+    s_decision = idle;
+    xSemaphoreGive(s_lock);
+    alert_arbiter_runtime_set_local(&idle, timestamp_ms);
+    emit_status(&idle, timestamp_ms);
+}
+
+void action_controller_clear_demo(void)
+{
+    if (!s_started) {
+        return;
+    }
+    const uint64_t timestamp_ms = now_ms();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_demo_active = false;
+    s_demo_decision = (action_decision_t){0};
+    s_decision = action_policy_decide(&s_policy, timestamp_ms);
+    const action_decision_t local = s_decision;
+    xSemaphoreGive(s_lock);
+    alert_arbiter_runtime_set_local(&local, timestamp_ms);
+    emit_status(&local, timestamp_ms);
 }
 
 #endif

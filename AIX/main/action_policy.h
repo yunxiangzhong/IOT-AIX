@@ -55,6 +55,8 @@ typedef struct {
     bool valid;
     bool actuation_hazard_present;
     bool actuation_hazard_active;
+    bool scene_requested;
+    uint8_t scene_id;
 } vision_risk_input_t;
 
 typedef struct {

@@ -91,7 +91,7 @@ class PneumaticProxy:
         if command_name not in _COMMANDS:
             raise PneumaticProtocolError("unsupported pneumatic command")
         if command_name == "save_calibration":
-            for key in ("target_kpa", "max_kpa", "max_inflate_ms"):
+            for key in ("target_kpa", "max_kpa"):
                 if not isinstance(command.get(key), (int, float)) or isinstance(command.get(key), bool):
                     raise PneumaticProtocolError(f"{key} is required for save_calibration")
         return command_id, command_name
@@ -111,7 +111,6 @@ class PneumaticProxy:
             payload.update(
                 target_kpa=float(command["target_kpa"]),
                 max_kpa=float(command["max_kpa"]),
-                max_inflate_ms=int(command["max_inflate_ms"]),
             )
         url = f"http://{frame.source_ip}:8080/pneumatic/command"
         try:
@@ -139,7 +138,7 @@ class PneumaticProxy:
         if (
             not isinstance(config, dict)
             or config.get("type") != "pneumatic_config"
-            or config.get("version") != 1
+            or config.get("version") != 2
             or config.get("device_id") != frame.device_id
             or config.get("boot_id") != frame.boot_id
         ):

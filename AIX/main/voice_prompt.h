@@ -44,6 +44,8 @@ typedef struct {
 } voice_prompt_policy_t;
 
 bool voice_prompt_track_for_band(const char *risk_band, uint8_t *out_track);
+bool voice_prompt_track_for_scene(uint8_t scene_id, uint8_t *out_track);
+bool voice_prompt_scene_is_valid(uint8_t scene_id);
 bool voice_prompt_request_is_valid(const char *risk_band, const voice_prompt_request_t *request);
 bool voice_prompt_queue_item_init(voice_prompt_queue_item_t *out_item, const voice_prompt_request_t *request);
 const char *voice_prompt_status_name(voice_prompt_status_t status);
@@ -59,11 +61,16 @@ voice_prompt_result_t voice_prompt_policy_submit(
     voice_prompt_policy_t *policy,
     const char *risk_band,
     const voice_prompt_request_t *request);
+voice_prompt_result_t voice_prompt_policy_submit_scene(
+    voice_prompt_policy_t *policy,
+    uint8_t scene_id,
+    const voice_prompt_request_t *request);
 
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
 
 esp_err_t voice_prompt_start(void);
 voice_prompt_result_t voice_prompt_submit(const char *risk_band, const voice_prompt_request_t *request);
+voice_prompt_result_t voice_prompt_submit_scene(uint8_t scene_id, const voice_prompt_request_t *request);
 bool voice_prompt_is_ready(void);
 #endif

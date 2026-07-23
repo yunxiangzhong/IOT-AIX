@@ -45,18 +45,20 @@ risk_accept_result_t action_policy_accept(action_policy_t *policy, const vision_
     if (strcmp(policy->boot_id, risk->boot_id) != 0) {
         return RISK_REJECT_BOOT;
     }
-    if (policy->has_risk && risk->frame_seq <= policy->frame_seq) {
+    if (!risk->scene_requested && policy->has_risk && risk->frame_seq <= policy->frame_seq) {
         return RISK_REJECT_SEQUENCE;
     }
     if (now_ms - risk->capture_ts_ms > ACTION_POLICY_RISK_TTL_MS) {
         return RISK_REJECT_STALE;
     }
-    if (strcmp(expected_band(risk->risk_score), risk->risk_band) != 0) {
+    if (!risk->scene_requested && strcmp(expected_band(risk->risk_score), risk->risk_band) != 0) {
         return RISK_REJECT_BAND;
     }
 
     policy->has_risk = true;
-    policy->frame_seq = risk->frame_seq;
+    if (!risk->scene_requested) {
+        policy->frame_seq = risk->frame_seq;
+    }
     policy->capture_ts_ms = risk->capture_ts_ms;
     policy->received_ts_ms = now_ms;
     policy->risk_score = (uint8_t)risk->risk_score;

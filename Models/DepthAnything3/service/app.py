@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import re
 import json
+import urllib.request
 import threading
 import time
 from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import Protocol
+from typing import Callable, Protocol
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response
 
 from frame_pipeline import AnalysisWorker, ChainStateRepository, FrameEnvelope, LatestFrameStore, RiskCallbackClient
 from inference import PredictionSummary
+from operating_mode import OperatingModeController
 from pneumatic_proxy import PneumaticProtocolError, PneumaticProxy, PneumaticProxyError, StaleDeviceError
 from road_hazard import RoadHazardConflictError, RoadHazardEvent, RoadHazardSender, RoadHazardUnavailableError, RoadHazardValidationError
 from schemas import build_vision_depth_response
@@ -29,6 +31,28 @@ def _is_jpeg(image_bytes: bytes) -> bool:
     return len(image_bytes) >= 4 and image_bytes[:2] == b"\xff\xd8" and image_bytes[-2:] == b"\xff\xd9"
 
 
+def _http_get(url: str, timeout_s: float) -> dict:
+    """Simple GET for /healthz probing — no auth token needed."""
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        if resp.status != 200:
+            raise OSError(f"health check returned HTTP {resp.status}")
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _http_post_json(url: str, token: str, payload: dict, timeout_s: float) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-AIX-Token": token},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        if response.status not in (200, 202):
+            raise OSError(f"device returned HTTP {response.status}")
+        return json.loads(response.read().decode("utf-8"))
+
+
 def create_app(
     engine: InferenceEngine | None,
     analyzer=None,
@@ -38,14 +62,17 @@ def create_app(
     callback_client: RiskCallbackClient | None = None,
     pneumatic_proxy: PneumaticProxy | None = None,
     road_hazard_sender: RoadHazardSender | None = None,
+    device_transport: Callable[[str, str, dict, float], dict] | None = None,
     start_worker: bool = True,
 ) -> FastAPI:
     store = road_hazard_sender.store if road_hazard_sender is not None else LatestFrameStore()
     states = road_hazard_sender.states if road_hazard_sender is not None else ChainStateRepository("ready" if analyzer is not None else "loading")
     callback = callback_client or RiskCallbackClient(token=token)
+    device_call = device_transport or _http_post_json
     pneumatic = pneumatic_proxy or PneumaticProxy(store, token=token)
     hazards = road_hazard_sender or RoadHazardSender(store, states, token=token)
-    worker = AnalysisWorker(store, states, callback, analyzer=analyzer)
+    mode = OperatingModeController()
+    worker = AnalysisWorker(store, states, callback, analyzer=analyzer, dispatch_enabled=mode.is_real)
     if analyzer is not None:
         states.set_model(
             "ready",
@@ -84,6 +111,7 @@ def create_app(
     app.state.analysis_worker = worker
     app.state.pneumatic_proxy = pneumatic
     app.state.road_hazard_sender = hazards
+    app.state.operating_mode = mode
 
     @app.get("/healthz")
     def healthz() -> dict[str, str | bool]:
@@ -101,6 +129,7 @@ def create_app(
             "backend": model_health.get("backend", device),
             "device": device,
             "gpu": device,
+            "operating_mode": mode.snapshot()["mode"],
         }
 
     @app.post("/v1/frames", status_code=202)
@@ -195,6 +224,150 @@ def create_app(
             raise HTTPException(status_code=404, detail="no state for device")
         return state
 
+    @app.get("/v1/operating-mode")
+    def operating_mode() -> dict:
+        snapshot = mode.snapshot()
+        states.set_operating_mode(snapshot)
+        return snapshot
+
+    def _latest_device_frame(device_id: str) -> FrameEnvelope:
+        frame = store.latest(device_id)
+        if frame is None:
+            raise HTTPException(status_code=503, detail="no recent frame for device; cannot route to ESP32")
+        return frame
+
+    def _device_call(frame: FrameEnvelope, endpoint: str, payload: dict) -> dict:
+        try:
+            response = device_call(f"http://{frame.source_ip}:8080{endpoint}", token, payload, 1.5)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"ESP32 endpoint unreachable at {frame.source_ip}:8080{endpoint}: {exc}") from exc
+        if not isinstance(response, dict) or response.get("accepted") is not True:
+            raise HTTPException(status_code=502, detail=f"ESP32 rejected {endpoint} request")
+        return response
+
+    @app.post("/v1/demo/session/start", status_code=202)
+    async def demo_session_start(request: Request, x_aix_token: str | None = Header(default=None)) -> dict:
+        if not token or x_aix_token != token:
+            raise HTTPException(status_code=401, detail="invalid link token")
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=422, detail="demo session must be JSON") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="demo session must be a JSON object")
+        device_id_val = str(payload.get("device_id", ""))
+        session_id = str(payload.get("session_id", ""))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", device_id_val) or not session_id:
+            raise HTTPException(status_code=422, detail="invalid device_id or session_id")
+        try:
+            lease_ms = int(payload.get("lease_ms", 15_000))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="lease_ms must be an integer") from exc
+        frame = _latest_device_frame(device_id_val)
+        device_payload = {
+            "type": "demo_session_start", "version": 1, "device_id": device_id_val,
+            "boot_id": frame.boot_id, "session_id": session_id, "lease_ms": lease_ms,
+        }
+        _device_call(frame, "/demo/session/start", device_payload)
+        started = mode.start(session_id, lease_ms=lease_ms)
+        if not started["accepted"]:
+            raise HTTPException(status_code=409, detail=started["error"])
+        states.set_operating_mode(started)
+        return started
+
+    @app.post("/v1/demo/session/heartbeat", status_code=202)
+    async def demo_session_heartbeat(request: Request, x_aix_token: str | None = Header(default=None)) -> dict:
+        if not token or x_aix_token != token:
+            raise HTTPException(status_code=401, detail="invalid link token")
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="demo heartbeat must be a JSON object")
+        device_id_val = str(payload.get("device_id", ""))
+        session_id = str(payload.get("session_id", ""))
+        lease_ms = int(payload.get("lease_ms", 15_000))
+        frame = _latest_device_frame(device_id_val)
+        _device_call(frame, "/demo/session/heartbeat", {
+            "type": "demo_session_heartbeat", "version": 1, "device_id": device_id_val,
+            "boot_id": frame.boot_id, "session_id": session_id, "lease_ms": lease_ms,
+        })
+        result = mode.heartbeat(session_id, lease_ms=lease_ms)
+        if not result["accepted"]:
+            raise HTTPException(status_code=409, detail=result["error"])
+        states.set_operating_mode(result)
+        return result
+
+    @app.post("/v1/demo/action", status_code=202)
+    async def demo_action(request: Request, x_aix_token: str | None = Header(default=None)) -> dict:
+        if not token or x_aix_token != token:
+            raise HTTPException(status_code=401, detail="invalid link token")
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="demo action must be a JSON object")
+        scene_id = payload.get("scene_id")
+        if scene_id not in (4, 5, 6):
+            raise HTTPException(status_code=422, detail="scene_id must be 4, 5, or 6")
+        snapshot = mode.snapshot()
+        states.set_operating_mode(snapshot)
+        if snapshot["mode"] != OperatingModeController.DEMO:
+            raise HTTPException(status_code=409, detail="demo mode is not active")
+        device_id_val = str(payload.get("device_id", ""))
+        session_id = str(payload.get("session_id", ""))
+        if session_id != snapshot["session_id"]:
+            raise HTTPException(status_code=409, detail="demo session is not active")
+        frame = _latest_device_frame(device_id_val)
+        now_ms = int(time.time() * 1000)
+        result = _device_call(frame, "/demo/action", {
+            "type": "demo_action", "version": 1, "device_id": device_id_val,
+            "boot_id": frame.boot_id, "frame_seq": frame.frame_seq, "capture_ts_ms": now_ms,
+            "session_id": session_id, "scene_id": scene_id,
+        })
+        return {"accepted": True, "scene_id": scene_id, "device_id": device_id_val,
+                "frame_seq": frame.frame_seq, "ack": result}
+
+    @app.post("/v1/demo/action/reset", status_code=202)
+    async def demo_action_reset(request: Request, x_aix_token: str | None = Header(default=None)) -> dict:
+        if not token or x_aix_token != token:
+            raise HTTPException(status_code=401, detail="invalid link token")
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="demo reset must be a JSON object")
+        snapshot = mode.snapshot()
+        states.set_operating_mode(snapshot)
+        if snapshot["mode"] != OperatingModeController.DEMO:
+            raise HTTPException(status_code=409, detail="demo mode is not active")
+        device_id_val = str(payload.get("device_id", ""))
+        session_id = str(payload.get("session_id", ""))
+        if session_id != snapshot["session_id"]:
+            raise HTTPException(status_code=409, detail="demo session is not active")
+        frame = _latest_device_frame(device_id_val)
+        result = _device_call(frame, "/demo/action/reset", {
+            "type": "demo_action_reset", "version": 1, "device_id": device_id_val,
+            "boot_id": frame.boot_id, "session_id": session_id,
+        })
+        if not isinstance(result, dict) or result.get("accepted") is not True:
+            raise HTTPException(status_code=502, detail="ESP32 rejected demo reset")
+        return {"accepted": True, "device_id": device_id_val, "ack": result}
+
+    @app.post("/v1/demo/session/end", status_code=202)
+    async def demo_session_end(request: Request, x_aix_token: str | None = Header(default=None)) -> dict:
+        if not token or x_aix_token != token:
+            raise HTTPException(status_code=401, detail="invalid link token")
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="demo session must be a JSON object")
+        device_id_val = str(payload.get("device_id", ""))
+        session_id = str(payload.get("session_id", ""))
+        frame = _latest_device_frame(device_id_val)
+        _device_call(frame, "/demo/session/end", {
+            "type": "demo_session_end", "version": 1, "device_id": device_id_val,
+            "boot_id": frame.boot_id, "session_id": session_id,
+        })
+        result = mode.end(session_id)
+        if not result["accepted"]:
+            raise HTTPException(status_code=409, detail=result["error"])
+        states.set_operating_mode(result)
+        return result
+
     @app.post("/v1/road-hazards", status_code=202)
     async def road_hazards(request: Request, x_aix_token: str | None = Header(default=None)) -> dict:
         if not token or x_aix_token != token:
@@ -212,6 +385,90 @@ def create_app(
         except RoadHazardUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"accepted": True, "idempotent": not created, **event.snapshot()}
+
+    @app.post("/v1/scenario-risk", status_code=202)
+    async def scenario_risk(request: Request, x_aix_token: str | None = Header(default=None)) -> dict:
+        """Accept demo scenario input and dispatch as real vision_risk to ESP32 /risk."""
+        if not token or x_aix_token != token:
+            raise HTTPException(status_code=401, detail="invalid link token")
+        if not mode.is_real():
+            states.set_operating_mode(mode.snapshot())
+            raise HTTPException(status_code=409, detail="real dispatch paused while demo mode is active")
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=422, detail="scenario risk must be JSON") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="scenario risk must be a JSON object")
+
+        scene_id = payload.get("scene_id")
+        if scene_id not in (4, 5, 6):
+            raise HTTPException(status_code=422, detail="scene_id must be 4, 5, or 6")
+        device_id_val = str(payload.get("device_id", ""))
+        if not device_id_val or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", device_id_val):
+            raise HTTPException(status_code=422, detail="invalid device_id")
+
+        frame = store.latest(device_id_val)
+        if frame is None:
+            raise HTTPException(status_code=503, detail="no recent frame for device; cannot route to ESP32")
+
+        # --- pre-dispatch health check ---
+        # A caller-supplied transport is an explicit in-process test/dry-run
+        # boundary; the production transport always probes the real receiver.
+        source_ip = frame.source_ip
+        if callback_client is None:
+            healthz_url = f"http://{source_ip}:8080/healthz"
+            try:
+                health = _http_get(healthz_url, 2.0)
+            except OSError as exc:
+                raise HTTPException(status_code=503, detail=f"ESP32 health endpoint unreachable at {source_ip}:8080: {exc}")
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=502, detail="ESP32 health check returned invalid JSON")
+
+            if not isinstance(health, dict):
+                raise HTTPException(status_code=502, detail="ESP32 health check response malformed")
+
+            actual_device = str(health.get("device_id", ""))
+            if actual_device != device_id_val:
+                raise HTTPException(status_code=502,
+                    detail=f"ESP32 identity mismatch at {source_ip}:8080: expected device={device_id_val}, got device={actual_device}")
+
+            if not health.get("risk_receiver_ready"):
+                raise HTTPException(status_code=502, detail=f"ESP32 risk_receiver not ready at {source_ip}:8080")
+        # --- health check passed ---
+
+        now_ms = int(time.time() * 1000)
+        # A scene reuses the most recent real frame identity.  Firmware keeps
+        # demo requests out of the real frame-sequence watermark, so it cannot
+        # make subsequent camera risks appear out of order.
+        scene_seq = frame.frame_seq
+        boot_id = frame.boot_id
+        command_id_str = f"{boot_id}:scene{scene_id}:{now_ms}"
+        risk_payload = {
+            "type": "vision_risk", "version": 1,
+            "device_id": device_id_val, "boot_id": boot_id,
+            "frame_seq": scene_seq, "capture_ts_ms": now_ms,
+            "models": {"depth": "DA3-SMALL", "detector": "YOLO26m-COCO"},
+            "depth_kind": "relative", "depth_p10": 0.05, "depth_median": 0.15,
+            "confidence_median": 0.95, "detections": [],
+            "risk_score": 85, "risk_band": "critical",
+            "dominant_class": f"scenario_{scene_id:03d}",
+            "reason": "scenario_demo", "latency_ms": 0, "valid": True,
+            "actuation_hazard_active": True,
+            "scene": scene_id,
+            "voice_prompt": {"command_id": command_id_str, "track": scene_id},
+        }
+
+        try:
+            ack = callback._transport(
+                f"http://{frame.source_ip}:8080/risk", token, risk_payload, 0.5)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"ESP32 /risk call failed at {frame.source_ip}:8080: {exc}") from exc
+
+        if not isinstance(ack, dict) or ack.get("type") != "action_ack" or ack.get("accepted") is not True:
+            raise HTTPException(status_code=502, detail=f"ESP32 rejected scenario risk at {frame.source_ip}:8080")
+        return {"accepted": True, "scene_id": scene_id, "device_id": device_id_val,
+                "frame_seq": scene_seq, "ack": ack}
 
     @app.post("/v1/pneumatic/command")
     async def pneumatic_command(device_id: str, request: Request) -> dict:

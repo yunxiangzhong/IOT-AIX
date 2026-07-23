@@ -178,7 +178,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.diagnostics_window.finished.connect(self._diagnostics_window_finished)
         self.diagnostics_window.hide()
 
-        self.chain_client = PcChainClient(self.service_url, self.device_id, parent=self)
+        self.chain_client = PcChainClient(
+            self.service_url,
+            self.device_id,
+            link_token=str(os.environ.get("AIX_LINK_TOKEN") or ""),
+            parent=self,
+        )
         self.chain_client.state_received.connect(self._accept_chain_state)
         self.chain_client.snapshot_received.connect(self._accept_pc_snapshot)
         self.chain_client.health_received.connect(self._accept_health)
@@ -208,6 +213,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.connection_panel.disconnect_requested.connect(self._stop_serial)
         self.dashboard.pneumatic_panel.command_requested.connect(self.chain_client.send_pneumatic_command)
         self.dashboard.pneumatic_panel.config_requested.connect(self.chain_client.request_pneumatic_config)
+        self.scenario_panel.scene_dispatch_requested.connect(self._dispatch_scenario_risk)
+        self.chain_client.scenario_dispatched.connect(self.scenario_panel.apply_dispatch_result)
+        self.chain_client.scenario_dispatch_error.connect(self.scenario_panel.apply_submission_error)
+        self.scenario_panel.demo_mode_requested.connect(self.chain_client.send_demo_session_start)
+        self.scenario_panel.restore_real_requested.connect(self.chain_client.restore_real_link)
+        self.scenario_panel.reset_requested.connect(self.chain_client.send_demo_action_reset)
+        self.chain_client.demo_mode_received.connect(
+            lambda state: self.scenario_panel.set_operating_mode(
+                str(state.get("mode", "real")), lease_remaining_ms=int(state.get("lease_remaining_ms", 0) or 0)
+            )
+        )
+        self.chain_client.demo_mode_error.connect(self.scenario_panel.apply_mode_error)
+        self.chain_client.demo_action_dispatched.connect(self.scenario_panel.apply_dispatch_result)
+        self.chain_client.demo_action_error.connect(self.scenario_panel.apply_submission_error)
+        self.chain_client.demo_reset_finished.connect(self.scenario_panel.apply_demo_reset_result)
+        self.chain_client.demo_reset_error.connect(self.scenario_panel.apply_submission_error)
+        self.chain_client.state_received.connect(lambda state: self.scenario_panel.set_link_ready(True))
 
     def closeEvent(self, event) -> None:
         self.collision_alert_dialog.shutdown()
@@ -250,6 +272,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_primary_page(1)
         self.scenario_button.setChecked(True)
         self.overview_button.setChecked(False)
+
+    def _dispatch_scenario_risk(self, scene_id: int) -> None:
+        """Forward only a demo-mode scenario action; real risk stays on the worker path."""
+        self.chain_client.send_demo_action(scene_id)
 
     def _set_primary_page(self, index: int) -> None:
         self._page_fade.stop()
@@ -492,6 +518,7 @@ class MainWindow(QtWidgets.QMainWindow):
         elif isinstance(event, PneumaticStatusEvent):
             self.latest_pneumatic_status = event
             self.dashboard.apply_pneumatic_status(event)
+            self.scenario_panel.apply_pneumatic_status(event)
             self.session_recorder.record_pneumatic({
                 "type": "pneumatic_status", "version": 1, "ts_ms": event.ts_ms,
                 "state": event.state, "fault": event.fault, "trigger": event.trigger,
@@ -536,6 +563,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     })
         elif isinstance(event, VoiceStatusEvent):
             self.dashboard.apply_voice_status(event)
+            self.scenario_panel.apply_voice_status(event)
             self.session_recorder.record_road_hazard({
                 "type": "voice_status", "state": event.state, "command_id": event.command_id,
                 "track": event.track, "error": event.error,

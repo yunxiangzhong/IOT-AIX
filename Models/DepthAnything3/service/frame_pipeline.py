@@ -146,6 +146,7 @@ class ChainStateRepository:
             "revision": 0,
             "device_id": device_id,
             "boot_id": "",
+            "operating_mode": {"mode": "real", "session_id": "", "lease_remaining_ms": 0, "reason": "startup"},
             "camera": {"state": "unknown"},
             "upload": {"state": "waiting", "last_frame_seq": -1, "fps": 0.0, "frame_age_ms": None, "accepted_frames": 0, "queue_replaced": 0},
             "model": {
@@ -158,7 +159,7 @@ class ChainStateRepository:
                 "error": self._model_error,
                 "valid_results": 0,
             },
-            "callback": {"state": "waiting", "latency_ms": None, "attempts": 0, "confirmed_count": 0, "failed_count": 0},
+            "callback": {"state": "waiting", "latency_ms": None, "attempts": 0, "confirmed_count": 0, "failed_count": 0, "suppressed_count": 0},
             "risk": {"valid": False, "score": 0, "band": "low", "reason": ""},
             "action": {"confirmed": False, "state": "loading", "rgb_pattern": "", "frame_seq": -1},
             "road_hazard": {
@@ -267,16 +268,33 @@ class ChainStateRepository:
             }
             self._touch(state)
 
-    def record_callback(self, item: FrameEnvelope, ack: dict | None, latency_ms: float, attempts: int, error: str = "") -> None:
+    def set_operating_mode(self, snapshot: dict) -> None:
+        with self._lock:
+            for state in self._states.values():
+                state["operating_mode"] = deepcopy(snapshot)
+                self._touch(state)
+
+    def record_callback(
+        self,
+        item: FrameEnvelope,
+        ack: dict | None,
+        latency_ms: float,
+        attempts: int,
+        error: str = "",
+        *,
+        suppressed: bool = False,
+    ) -> None:
         with self._lock:
             state = self._states.setdefault(item.device_id, self._base(item.device_id))
+            previous = state["callback"]
             state["callback"] = {
-                "state": "confirmed" if ack else "failed",
+                "state": "paused_demo" if suppressed else ("confirmed" if ack else "failed"),
                 "latency_ms": round(latency_ms, 2),
                 "attempts": attempts,
-                "error": error,
-                "confirmed_count": int(state["callback"].get("confirmed_count", 0)) + (1 if ack else 0),
-                "failed_count": int(state["callback"].get("failed_count", 0)) + (0 if ack else 1),
+                "error": error or ("demo mode: real dispatch paused" if suppressed else ""),
+                "confirmed_count": int(previous.get("confirmed_count", 0)) + (1 if ack else 0),
+                "failed_count": int(previous.get("failed_count", 0)) + (0 if ack or suppressed else 1),
+                "suppressed_count": int(previous.get("suppressed_count", 0)) + (1 if suppressed else 0),
             }
             if ack:
                 state["action"] = {
@@ -477,11 +495,13 @@ class AnalysisWorker:
         states: ChainStateRepository,
         callback: RiskCallbackClient,
         analyzer=None,
+        dispatch_enabled=None,
     ) -> None:
         self._store = store
         self._states = states
         self._callback = callback
         self._analyzer = analyzer
+        self._dispatch_enabled = dispatch_enabled or (lambda: True)
         self._voice_policy = VoicePromptPolicy()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -538,6 +558,11 @@ class AnalysisWorker:
                 risk.update(device_id=item.device_id, boot_id=item.boot_id)
                 self._store.commit_processed(item)
                 self._states.record_risk(item, risk, (time.perf_counter() - started) * 1000.0)
+                if not self._dispatch_enabled():
+                    self._states.record_callback(
+                        item, None, 0.0, 0, "demo mode: real dispatch paused", suppressed=True,
+                    )
+                    continue
                 callback_payload = self._voice_policy.enrich(item, risk, now_ms=int(time.time() * 1000))
                 callback_started = time.perf_counter()
                 ack = self._callback.send(item, callback_payload, is_current=lambda: self._store.is_latest(item))

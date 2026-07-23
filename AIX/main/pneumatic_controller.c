@@ -28,8 +28,8 @@
 #define PNEUMATIC_TASK_PRIORITY 7
 #define PNEUMATIC_STATUS_PERIOD_MS 1000ULL
 #define PNEUMATIC_NVS_NAMESPACE "pneumatic"
-#define PNEUMATIC_NVS_KEY "cal_v1"
-#define PNEUMATIC_CALIBRATION_VERSION 3U
+#define PNEUMATIC_NVS_KEY "cal_v2"
+#define PNEUMATIC_CALIBRATION_VERSION 4U
 #define PNEUMATIC_SELF_TEST_MIN_RISE_KPA 0.3f
 #define PNEUMATIC_SELF_TEST_TIMEOUT_MS 6000ULL
 #define PNEUMATIC_SELF_TEST_PUMP_MS 800U
@@ -40,7 +40,6 @@ typedef struct {
     uint32_t version;
     float target_kpa;
     float max_kpa;
-    uint32_t max_inflate_ms;
 } saved_calibration_t;
 
 typedef struct {
@@ -121,7 +120,6 @@ static pneumatic_policy_config_t build_config(void)
     pneumatic_policy_config_t candidate = config;
     candidate.target_kpa = saved.target_kpa;
     candidate.max_kpa = saved.max_kpa;
-    candidate.max_inflate_ms = saved.max_inflate_ms;
     if (pneumatic_policy_config_is_valid(&candidate)) {
         candidate.calibration_valid = true;
         return candidate;
@@ -135,7 +133,6 @@ static esp_err_t persist_calibration(const pneumatic_policy_config_t *config)
         .version = PNEUMATIC_CALIBRATION_VERSION,
         .target_kpa = config->target_kpa,
         .max_kpa = config->max_kpa,
-        .max_inflate_ms = config->max_inflate_ms,
     };
     nvs_handle_t handle;
     ESP_RETURN_ON_ERROR(nvs_open(PNEUMATIC_NVS_NAMESPACE, NVS_READWRITE, &handle), TAG, "open pneumatic NVS failed");
@@ -421,7 +418,6 @@ esp_err_t pneumatic_controller_execute(
         pneumatic_policy_config_t candidate = s_policy.config;
         candidate.target_kpa = command->target_kpa;
         candidate.max_kpa = command->max_kpa;
-        candidate.max_inflate_ms = command->max_inflate_ms;
         candidate.calibration_valid = true;
         if (s_policy.state != PNEUMATIC_STATE_VENTED || !pneumatic_policy_config_is_valid(&candidate)) {
             xSemaphoreGive(s_lock);

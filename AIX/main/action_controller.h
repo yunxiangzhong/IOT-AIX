@@ -12,4 +12,8 @@ risk_accept_result_t action_controller_apply_risk(
     action_decision_t *decision);
 void action_controller_set_fault(action_fault_t fault, bool active);
 action_decision_t action_controller_get_decision(void);
+bool action_controller_apply_demo(uint8_t scene_id, uint32_t frame_seq, action_decision_t *decision);
+void action_controller_enter_demo(void);
+void action_controller_reset_demo(void);
+void action_controller_clear_demo(void);
 #endif

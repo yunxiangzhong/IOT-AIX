@@ -78,6 +78,27 @@ class PneumaticProxyTests(unittest.TestCase):
         self.assertEqual(sent[0]["command"], "self_test")
         self.assertNotIn("target_kpa", sent[0])
 
+    def test_save_calibration_forwards_only_pressure_limits(self) -> None:
+        sent = []
+
+        def transport(_url, _token, payload, _timeout_s):
+            sent.append(payload)
+            return {
+                "type": "pneumatic_ack", "version": 1, "boot_id": "0123456789abcdef",
+                "command_id": payload["command_id"], "accepted": True,
+            }
+
+        proxy = PneumaticProxy(self.store, token="unit-secret", post_transport=transport, now_ms=lambda: 11_000)
+        result = proxy.command(
+            "aix-helmet-01",
+            {"command_id": "save-01", "command": "save_calibration", "target_kpa": 8.0, "max_kpa": 12.0},
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(sent[0]["target_kpa"], 8.0)
+        self.assertEqual(sent[0]["max_kpa"], 12.0)
+        self.assertNotIn("max_inflate_ms", sent[0])
+
     def test_rejects_mismatched_ack_boot_or_command_id(self) -> None:
         def transport(_url, _token, payload, _timeout_s):
             return {
@@ -121,7 +142,7 @@ class PneumaticApiTests(unittest.TestCase):
 
             def config(self, device_id):
                 calls.append(("config", device_id))
-                return {"type": "pneumatic_config", "version": 1, "device_id": device_id}
+                return {"type": "pneumatic_config", "version": 2, "device_id": device_id}
 
         app = create_app(None, token="unit-secret", start_worker=False, pneumatic_proxy=FakeProxy())
         client = TestClient(app)

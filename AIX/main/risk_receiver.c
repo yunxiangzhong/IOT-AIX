@@ -21,6 +21,11 @@ bool risk_receiver_token_matches(const char *expected, const char *provided)
     return difference == 0U;
 }
 
+bool risk_receiver_demo_lease_valid(uint64_t now_ms, uint64_t expires_at_ms)
+{
+    return now_ms < expires_at_ms;
+}
+
 bool risk_receiver_e2e_latency_ms(uint64_t capture_ts_ms, uint64_t now_ms, uint64_t *latency_ms)
 {
     if (latency_ms == NULL || capture_ts_ms > now_ms) {
@@ -185,6 +190,9 @@ int risk_receiver_format_road_hazard_status(
 #include "mpu6050_sensor.h"
 #include "pneumatic_controller.h"
 #include "voice_prompt.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #ifndef CONFIG_AIX_LINK_TOKEN
 #define CONFIG_AIX_LINK_TOKEN ""
@@ -198,6 +206,9 @@ int risk_receiver_format_road_hazard_status(
 #define PNEUMATIC_BODY_MAX 1024U
 #define RISK_CACHE_DEVICE_ID_CAPACITY 64U
 #define RISK_CACHE_BOOT_ID_CAPACITY 32U
+#define DEMO_SESSION_ID_CAPACITY 64U
+#define DEMO_LEASE_MIN_MS 5000U
+#define DEMO_LEASE_MAX_MS 60000U
 
 static const char *TAG = "AIX_RISK_RX";
 static httpd_handle_t s_server;
@@ -214,6 +225,11 @@ typedef struct {
 } risk_ack_cache_t;
 
 static risk_ack_cache_t s_risk_ack_cache;
+static SemaphoreHandle_t s_demo_lock;
+static bool s_demo_active;
+static char s_demo_session_id[DEMO_SESSION_ID_CAPACITY];
+static uint64_t s_demo_expires_at_ms;
+static uint32_t s_demo_action_counter;
 
 static bool token_matches(httpd_req_t *request)
 {
@@ -226,6 +242,111 @@ static bool token_matches(httpd_req_t *request)
         return false;
     }
     return risk_receiver_token_matches(CONFIG_AIX_LINK_TOKEN, value);
+}
+
+static uint64_t receiver_now_ms(void)
+{
+    return (uint64_t)(esp_timer_get_time() / 1000ULL);
+}
+
+static esp_err_t demo_send_vent(const char *command_prefix, pneumatic_command_result_t *result)
+{
+    pneumatic_command_t command = {0};
+    command.type = PNEUMATIC_COMMAND_VENT;
+    snprintf(command.command_id, sizeof(command.command_id), "%s-%lu", command_prefix,
+             (unsigned long)receiver_now_ms());
+    return pneumatic_controller_execute(&command, result);
+}
+
+static void demo_restore_real(void)
+{
+    action_controller_clear_demo();
+    (void)demo_send_vent("demo-restore-vent", NULL);
+}
+
+static bool demo_session_active(void)
+{
+    if (s_demo_lock == NULL) {
+        return false;
+    }
+    const uint64_t now_ms = receiver_now_ms();
+    bool active = false;
+    bool expired = false;
+    xSemaphoreTake(s_demo_lock, portMAX_DELAY);
+    if (s_demo_active && !risk_receiver_demo_lease_valid(now_ms, s_demo_expires_at_ms)) {
+        s_demo_active = false;
+        s_demo_session_id[0] = '\0';
+        s_demo_expires_at_ms = 0U;
+        expired = true;
+    }
+    active = s_demo_active;
+    xSemaphoreGive(s_demo_lock);
+    if (expired) {
+        demo_restore_real();
+        printf("{\"type\":\"demo_mode_status\",\"version\":1,\"mode\":\"real\",\"reason\":\"lease_expired\"}\n");
+        fflush(stdout);
+    }
+    return active;
+}
+
+static bool demo_session_matches(const char *session_id, uint32_t *remaining_ms)
+{
+    if (!demo_session_active() || session_id == NULL) {
+        return false;
+    }
+    const uint64_t now_ms = receiver_now_ms();
+    bool matches = false;
+    xSemaphoreTake(s_demo_lock, portMAX_DELAY);
+    matches = s_demo_active && strcmp(s_demo_session_id, session_id) == 0;
+    if (remaining_ms != NULL) {
+        *remaining_ms = matches && s_demo_expires_at_ms > now_ms
+                             ? (uint32_t)(s_demo_expires_at_ms - now_ms)
+                             : 0U;
+    }
+    xSemaphoreGive(s_demo_lock);
+    return matches;
+}
+
+static char *receive_json_body(httpd_req_t *request, size_t max_size)
+{
+    if (request == NULL || request->content_len <= 0 || request->content_len > (int)max_size) {
+        return NULL;
+    }
+    char *body = calloc(1U, (size_t)request->content_len + 1U);
+    if (body == NULL) {
+        return NULL;
+    }
+    int received = 0;
+    while (received < request->content_len) {
+        const int chunk = httpd_req_recv(request, body + received, request->content_len - received);
+        if (chunk <= 0) {
+            free(body);
+            return NULL;
+        }
+        received += chunk;
+    }
+    return body;
+}
+
+static esp_err_t send_demo_session_ack(httpd_req_t *request, const char *status, bool accepted,
+                                       const char *session_id, const char *mode, uint32_t remaining_ms,
+                                       const char *error)
+{
+    char body[384];
+    const int written = snprintf(
+        body, sizeof(body),
+        "{\"type\":\"demo_session_ack\",\"version\":1,\"accepted\":%s,"
+        "\"device_id\":\"%s\",\"boot_id\":\"%s\",\"session_id\":\"%s\","
+        "\"mode\":\"%s\",\"lease_remaining_ms\":%lu,\"error\":\"%s\"}",
+        accepted ? "true" : "false", device_identity_device_id(), device_identity_boot_id(),
+        session_id != NULL ? session_id : "", mode != NULL ? mode : "real",
+        (unsigned long)remaining_ms, error != NULL ? error : "");
+    if (written < 0 || (size_t)written >= sizeof(body)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (status != NULL) httpd_resp_set_status(request, status);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, body);
 }
 
 static bool device_and_boot_match(const cJSON *device, const cJSON *boot)
@@ -383,11 +504,243 @@ static double json_number(const cJSON *item)
     return cJSON_IsNumber(item) ? item->valuedouble : NAN;
 }
 
+static bool parse_demo_identity(const cJSON *root, char *session_id, size_t session_capacity,
+                                uint32_t *lease_ms, const cJSON **device, const cJSON **boot)
+{
+    const cJSON *session = cJSON_GetObjectItemCaseSensitive(root, "session_id");
+    const cJSON *lease = cJSON_GetObjectItemCaseSensitive(root, "lease_ms");
+    *device = cJSON_GetObjectItemCaseSensitive(root, "device_id");
+    *boot = cJSON_GetObjectItemCaseSensitive(root, "boot_id");
+    if (!cJSON_IsString(session) || !device_and_boot_match(*device, *boot) ||
+        !risk_receiver_copy_safe_road_hazard_event_id(session_id, session_capacity, session->valuestring)) {
+        return false;
+    }
+    if (lease_ms != NULL) {
+        if (!cJSON_IsNumber(lease) || !isfinite(lease->valuedouble) ||
+            lease->valuedouble < DEMO_LEASE_MIN_MS || lease->valuedouble > DEMO_LEASE_MAX_MS ||
+            floor(lease->valuedouble) != lease->valuedouble) {
+            return false;
+        }
+        *lease_ms = (uint32_t)lease->valuedouble;
+    }
+    return true;
+}
+
+static esp_err_t demo_session_start_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        return send_demo_session_ack(request, "401 Unauthorized", false, "", "real", 0U, "token");
+    }
+    char *body = receive_json_body(request, RISK_BODY_MAX);
+    cJSON *root = body != NULL ? cJSON_Parse(body) : NULL;
+    free(body);
+    char session_id[DEMO_SESSION_ID_CAPACITY] = "";
+    uint32_t lease_ms = 0U;
+    const cJSON *device = NULL;
+    const cJSON *boot = NULL;
+    const bool valid = root != NULL && parse_demo_identity(root, session_id, sizeof(session_id), &lease_ms, &device, &boot);
+    if (!valid) {
+        if (root != NULL) cJSON_Delete(root);
+        return send_demo_session_ack(request, "400 Bad Request", false, "", "real", 0U, "schema");
+    }
+    const uint64_t now_ms = receiver_now_ms();
+    bool conflict = false;
+    xSemaphoreTake(s_demo_lock, portMAX_DELAY);
+    if (s_demo_active && strcmp(s_demo_session_id, session_id) != 0) {
+        conflict = true;
+    } else {
+        s_demo_active = true;
+        snprintf(s_demo_session_id, sizeof(s_demo_session_id), "%s", session_id);
+        s_demo_expires_at_ms = now_ms + lease_ms;
+    }
+    const uint32_t remaining = conflict ? 0U : lease_ms;
+    xSemaphoreGive(s_demo_lock);
+    cJSON_Delete(root);
+    if (conflict) {
+        return send_demo_session_ack(request, "409 Conflict", false, session_id, "demo", 0U, "another_session_active");
+    }
+    action_controller_enter_demo();
+    /* Start every simulated session from a vented, non-actuating pneumatic state. */
+    (void)demo_send_vent("demo-start-vent", NULL);
+    return send_demo_session_ack(request, NULL, true, session_id, "demo", remaining, "");
+}
+
+static esp_err_t demo_session_heartbeat_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        return send_demo_session_ack(request, "401 Unauthorized", false, "", "real", 0U, "token");
+    }
+    char *body = receive_json_body(request, RISK_BODY_MAX);
+    cJSON *root = body != NULL ? cJSON_Parse(body) : NULL;
+    free(body);
+    char session_id[DEMO_SESSION_ID_CAPACITY] = "";
+    uint32_t lease_ms = 0U;
+    const cJSON *device = NULL;
+    const cJSON *boot = NULL;
+    const bool valid = root != NULL && parse_demo_identity(root, session_id, sizeof(session_id), &lease_ms, &device, &boot);
+    if (!valid) {
+        if (root != NULL) cJSON_Delete(root);
+        return send_demo_session_ack(request, "400 Bad Request", false, session_id, "real", 0U, "schema");
+    }
+    const uint64_t now_ms = receiver_now_ms();
+    bool accepted = false;
+    xSemaphoreTake(s_demo_lock, portMAX_DELAY);
+    if (s_demo_active && strcmp(s_demo_session_id, session_id) == 0) {
+        s_demo_expires_at_ms = now_ms + lease_ms;
+        accepted = true;
+    }
+    const uint32_t remaining = accepted ? lease_ms : 0U;
+    xSemaphoreGive(s_demo_lock);
+    cJSON_Delete(root);
+    return send_demo_session_ack(request, accepted ? NULL : "409 Conflict", accepted,
+                                 session_id, accepted ? "demo" : "real", remaining,
+                                 accepted ? "" : "session_not_active");
+}
+
+static esp_err_t demo_session_end_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        return send_demo_session_ack(request, "401 Unauthorized", false, "", "real", 0U, "token");
+    }
+    char *body = receive_json_body(request, RISK_BODY_MAX);
+    cJSON *root = body != NULL ? cJSON_Parse(body) : NULL;
+    free(body);
+    char session_id[DEMO_SESSION_ID_CAPACITY] = "";
+    const cJSON *device = NULL;
+    const cJSON *boot = NULL;
+    const bool valid = root != NULL && parse_demo_identity(root, session_id, sizeof(session_id), NULL, &device, &boot);
+    if (!valid) {
+        if (root != NULL) cJSON_Delete(root);
+        return send_demo_session_ack(request, "400 Bad Request", false, session_id, "real", 0U, "schema");
+    }
+    bool accepted = false;
+    xSemaphoreTake(s_demo_lock, portMAX_DELAY);
+    if (s_demo_active && strcmp(s_demo_session_id, session_id) == 0) {
+        s_demo_active = false;
+        s_demo_session_id[0] = '\0';
+        s_demo_expires_at_ms = 0U;
+        accepted = true;
+    }
+    xSemaphoreGive(s_demo_lock);
+    cJSON_Delete(root);
+    if (accepted) {
+        demo_restore_real();
+    }
+    return send_demo_session_ack(request, accepted ? NULL : "409 Conflict", accepted,
+                                 session_id, "real", 0U, accepted ? "" : "session_not_active");
+}
+
+static esp_err_t demo_action_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        httpd_resp_set_status(request, "401 Unauthorized");
+        return httpd_resp_sendstr(request, "invalid link token");
+    }
+    if (!demo_session_active()) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "demo mode is not active");
+    }
+    char *body = receive_json_body(request, RISK_BODY_MAX);
+    cJSON *root = body != NULL ? cJSON_Parse(body) : NULL;
+    free(body);
+    const cJSON *scene = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "scene_id") : NULL;
+    const cJSON *device = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "device_id") : NULL;
+    const cJSON *boot = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "boot_id") : NULL;
+    const cJSON *frame_seq_json = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "frame_seq") : NULL;
+    const cJSON *session = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "session_id") : NULL;
+    const bool valid = root != NULL && cJSON_IsNumber(scene) && scene->valueint >= 4 && scene->valueint <= 6 &&
+                       cJSON_IsNumber(frame_seq_json) && frame_seq_json->valueint >= 0 &&
+                       cJSON_IsString(session) && cJSON_IsString(device) && cJSON_IsString(boot) &&
+                       device_and_boot_match(device, boot) && demo_session_matches(session->valuestring, NULL);
+    if (!valid) {
+        if (root != NULL) cJSON_Delete(root);
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_sendstr(request, "invalid demo action schema or session");
+    }
+    const uint8_t scene_id = (uint8_t)scene->valueint;
+    const uint32_t frame_seq = (uint32_t)frame_seq_json->valueint;
+    pneumatic_status_t pneumatic_status = {0};
+    if (!pneumatic_controller_get_status(&pneumatic_status) || !pneumatic_status.automatic_enabled ||
+        pneumatic_status.output.fault != PNEUMATIC_FAULT_NONE) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(request, "503 Service Unavailable");
+        return httpd_resp_sendstr(request, "pneumatic pressure-closed-loop controller is not ready");
+    }
+    char command_id[VOICE_PROMPT_COMMAND_ID_CAPACITY];
+    const uint32_t action_number = ++s_demo_action_counter;
+    snprintf(command_id, sizeof(command_id), "demo_%u_%lu", (unsigned int)scene_id, (unsigned long)action_number);
+    const voice_prompt_request_t voice_request = {
+        .command_id = command_id, .track = scene_id, .frame_seq = frame_seq,
+    };
+    action_decision_t decision = {0};
+    const bool action_ok = action_controller_apply_demo(scene_id, frame_seq, &decision);
+    const voice_prompt_result_t voice_result = voice_prompt_submit_scene(scene_id, &voice_request);
+    cJSON_Delete(root);
+    char response[768];
+    const int written = snprintf(
+        response, sizeof(response),
+        "{\"type\":\"demo_action_ack\",\"version\":1,\"accepted\":%s,"
+        "\"scene_id\":%u,\"frame_seq\":%lu,\"action_state\":\"%s\",\"rgb_pattern\":\"%s\","
+        "\"voice_ack\":{\"requested\":true,\"track\":%u,\"accepted\":%s,\"status\":\"%s\"},"
+        "\"pneumatic\":{\"requested\":true,\"control\":\"pressure_closed_loop\"}}",
+        action_ok && voice_result.accepted ? "true" : "false", (unsigned int)scene_id,
+        (unsigned long)frame_seq, action_state_name(decision.state), rgb_pattern_name(decision.rgb_pattern),
+        (unsigned int)voice_result.track, voice_result.accepted ? "true" : "false",
+        voice_prompt_status_name(voice_result.status));
+    if (written < 0 || (size_t)written >= sizeof(response)) return ESP_ERR_INVALID_SIZE;
+    if (!(action_ok && voice_result.accepted)) httpd_resp_set_status(request, "503 Service Unavailable");
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, response);
+}
+
+static esp_err_t demo_action_reset_handler(httpd_req_t *request)
+{
+    if (!token_matches(request)) {
+        httpd_resp_set_status(request, "401 Unauthorized");
+        return httpd_resp_sendstr(request, "invalid link token");
+    }
+    if (!demo_session_active()) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "demo mode is not active");
+    }
+    char *body = receive_json_body(request, RISK_BODY_MAX);
+    cJSON *root = body != NULL ? cJSON_Parse(body) : NULL;
+    free(body);
+    const cJSON *device = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "device_id") : NULL;
+    const cJSON *boot = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "boot_id") : NULL;
+    const cJSON *session = root != NULL ? cJSON_GetObjectItemCaseSensitive(root, "session_id") : NULL;
+    const bool valid = root != NULL && cJSON_IsString(session) && cJSON_IsString(device) && cJSON_IsString(boot) &&
+                       device_and_boot_match(device, boot) && demo_session_matches(session->valuestring, NULL);
+    if (!valid) {
+        if (root != NULL) cJSON_Delete(root);
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_sendstr(request, "invalid demo reset schema or session");
+    }
+    action_controller_reset_demo();
+    pneumatic_command_result_t result = {0};
+    const esp_err_t pneumatic_ret = demo_send_vent("demo-reset-vent", &result);
+    cJSON_Delete(root);
+    char response[384];
+    const int written = snprintf(
+        response, sizeof(response),
+        "{\"type\":\"demo_action_reset_ack\",\"version\":1,\"accepted\":%s,"
+        "\"pneumatic\":{\"requested\":true,\"accepted\":%s,\"state\":\"%s\"}}",
+        pneumatic_ret == ESP_OK && result.accepted ? "true" : "false",
+        result.accepted ? "true" : "false", pneumatic_state_name(result.status.output.state));
+    if (written < 0 || (size_t)written >= sizeof(response)) return ESP_ERR_INVALID_SIZE;
+    if (!(pneumatic_ret == ESP_OK && result.accepted)) httpd_resp_set_status(request, "503 Service Unavailable");
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, response);
+}
+
 static esp_err_t road_hazard_handler(httpd_req_t *request)
 {
     uint64_t current_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
     if (!token_matches(request)) {
         return reject_road_hazard(request, "401 Unauthorized", "", "", "token", current_ms);
+    }
+    if (demo_session_active()) {
+        return reject_road_hazard(request, "409 Conflict", "", "", "demo_mode_active", current_ms);
     }
     if (request->content_len <= 0 || request->content_len > (int)ROAD_HAZARD_BODY_MAX) {
         return reject_road_hazard(request, "413 Payload Too Large", "", "", "payload_size", current_ms);
@@ -497,6 +850,10 @@ static esp_err_t risk_handler(httpd_req_t *request)
         httpd_resp_set_status(request, "401 Unauthorized");
         return httpd_resp_sendstr(request, "invalid link token");
     }
+    if (demo_session_active()) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "real risk dispatch paused while demo mode is active");
+    }
     if (request->content_len <= 0 || request->content_len > (int)RISK_BODY_MAX) {
         httpd_resp_set_status(request, "413 Payload Too Large");
         return httpd_resp_sendstr(request, "risk payload too large");
@@ -534,6 +891,10 @@ static esp_err_t risk_handler(httpd_req_t *request)
     cJSON *latency = cJSON_GetObjectItemCaseSensitive(root, "latency_ms");
     cJSON *valid = cJSON_GetObjectItemCaseSensitive(root, "valid");
     cJSON *voice_prompt = cJSON_GetObjectItemCaseSensitive(root, "voice_prompt");
+    cJSON *scene_json = cJSON_GetObjectItemCaseSensitive(root, "scene");
+    bool scene_requested = cJSON_IsNumber(scene_json) &&
+                           (scene_json->valueint == 4 || scene_json->valueint == 5 || scene_json->valueint == 6);
+    uint8_t scene_id = scene_requested ? (uint8_t)scene_json->valueint : 0U;
     bool schema_ok = cJSON_IsString(type) && strcmp(type->valuestring, "vision_risk") == 0 &&
                      cJSON_IsNumber(version) && version->valueint == 1 &&
                      cJSON_IsString(device) && cJSON_IsString(boot) &&
@@ -551,7 +912,17 @@ static esp_err_t risk_handler(httpd_req_t *request)
                                   ? (uint8_t)track->valueint
                                   : 0U;
         voice_request.frame_seq = (uint32_t)seq->valuedouble;
-        schema_ok = cJSON_IsObject(voice_prompt) && voice_prompt_request_is_valid(band->valuestring, &voice_request);
+        if (scene_requested) {
+            /* Scene mode: track must match scene_id.  band validation is skipped
+               because the scene policy forces critical. */
+            uint8_t expected_track = 0U;
+            schema_ok = cJSON_IsObject(voice_prompt) &&
+                        voice_prompt_track_for_scene(scene_id, &expected_track) &&
+                        voice_request.track == expected_track;
+        } else {
+            schema_ok = cJSON_IsObject(voice_prompt) &&
+                        voice_prompt_request_is_valid(band->valuestring, &voice_request);
+        }
         if (schema_ok) {
             snprintf(voice_command_id, sizeof(voice_command_id), "%s", voice_request.command_id);
             voice_request.command_id = voice_command_id;
@@ -574,6 +945,8 @@ static esp_err_t risk_handler(httpd_req_t *request)
     cJSON *actuation_hazard = cJSON_GetObjectItemCaseSensitive(root, "actuation_hazard_active");
     risk.actuation_hazard_present = cJSON_IsBool(actuation_hazard);
     risk.actuation_hazard_active = risk.actuation_hazard_present && cJSON_IsTrue(actuation_hazard);
+    risk.scene_requested = scene_requested;
+    risk.scene_id = scene_id;
 
     if (device_and_boot_match(device, boot) &&
         cached_ack_matches(&risk, voice_requested, voice_request.command_id, &decision, &voice_result)) {
@@ -670,6 +1043,10 @@ static esp_err_t pneumatic_command_handler(httpd_req_t *request)
         httpd_resp_set_status(request, "401 Unauthorized");
         return httpd_resp_sendstr(request, "invalid link token");
     }
+    if (demo_session_active()) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "pneumatic command blocked while demo mode is active");
+    }
     if (!pneumatic_controller_is_started()) {
         httpd_resp_set_status(request, "503 Service Unavailable");
         return httpd_resp_sendstr(request, "pneumatic controller disabled");
@@ -728,17 +1105,14 @@ static esp_err_t pneumatic_command_handler(httpd_req_t *request)
     if (command.type == PNEUMATIC_COMMAND_SAVE_CALIBRATION) {
         cJSON *target = cJSON_GetObjectItemCaseSensitive(root, "target_kpa");
         cJSON *maximum = cJSON_GetObjectItemCaseSensitive(root, "max_kpa");
-        cJSON *inflate = cJSON_GetObjectItemCaseSensitive(root, "max_inflate_ms");
         if (!cJSON_IsNumber(target) || !isfinite(target->valuedouble) ||
-            !cJSON_IsNumber(maximum) || !isfinite(maximum->valuedouble) ||
-            !cJSON_IsNumber(inflate) || inflate->valuedouble < 0 || inflate->valuedouble > UINT32_MAX) {
+            !cJSON_IsNumber(maximum) || !isfinite(maximum->valuedouble)) {
             cJSON_Delete(root);
             httpd_resp_set_status(request, "400 Bad Request");
             return httpd_resp_sendstr(request, "invalid calibration values");
         }
         command.target_kpa = (float)target->valuedouble;
         command.max_kpa = (float)maximum->valuedouble;
-        command.max_inflate_ms = (uint32_t)inflate->valuedouble;
     }
     cJSON_Delete(root);
 
@@ -765,9 +1139,9 @@ static esp_err_t pneumatic_config_handler(httpd_req_t *request)
     snprintf(
         body,
         sizeof(body),
-        "{\"type\":\"pneumatic_config\",\"version\":1,\"device_id\":\"%s\",\"boot_id\":\"%s\","
+        "{\"type\":\"pneumatic_config\",\"version\":2,\"device_id\":\"%s\",\"boot_id\":\"%s\","
         "\"automatic_enabled\":%s,\"calibration_valid\":%s,\"target_kpa\":%.2f,"
-        "\"max_kpa\":%.2f,\"max_inflate_ms\":%lu,\"pressure_stale_ms\":%llu,"
+        "\"max_kpa\":%.2f,\"pressure_stale_ms\":%llu,"
         "\"calibration_pulse_ms\":%llu,\"calibration_ceiling_kpa\":%.1f,"
         "\"hold_max_ms\":%llu,\"clear_confirm_ms\":%llu,\"vent_timeout_ms\":%llu,"
         "\"cooldown_ms\":%llu,\"pump_gpio\":%d,\"valve_gpio\":%d,"
@@ -781,7 +1155,6 @@ static esp_err_t pneumatic_config_handler(httpd_req_t *request)
         status.config.calibration_valid ? "true" : "false",
         status.config.target_kpa,
         status.config.max_kpa,
-        (unsigned long)status.config.max_inflate_ms,
         (unsigned long long)PNEUMATIC_PRESSURE_STALE_MS,
         (unsigned long long)PNEUMATIC_CALIBRATION_PULSE_MS,
         PNEUMATIC_CALIBRATION_CEILING_KPA,
@@ -805,9 +1178,40 @@ static esp_err_t pneumatic_config_handler(httpd_req_t *request)
     return httpd_resp_sendstr(request, body);
 }
 
+static esp_err_t healthz_handler(httpd_req_t *request)
+{
+    char body[256];
+    int written = snprintf(
+        body, sizeof(body),
+        "{\"type\":\"healthz\",\"version\":1,"
+        "\"device_id\":\"%s\",\"boot_id\":\"%s\","
+        "\"risk_receiver_ready\":true}",
+        device_identity_device_id(),
+        device_identity_boot_id());
+    if (written < 0 || (size_t)written >= sizeof(body)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, body);
+}
+
+static void demo_watchdog_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        (void)demo_session_active();
+        vTaskDelay(pdMS_TO_TICKS(250U));
+    }
+}
+
 esp_err_t risk_receiver_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    // The real chain endpoints and the demo-only session/action endpoints
+    // share this server.  The ESP-IDF default is eight URI slots, which is
+    // not enough once the demo routes are registered; leave headroom for
+    // future status endpoints as well.
+    config.max_uri_handlers = 16;
     httpd_uri_t uri = {
         .uri = "/risk",
         .method = HTTP_POST,
@@ -832,6 +1236,46 @@ esp_err_t risk_receiver_start(void)
         .handler = pneumatic_config_handler,
         .user_ctx = NULL,
     };
+    httpd_uri_t healthz_uri = {
+        .uri = "/healthz",
+        .method = HTTP_GET,
+        .handler = healthz_handler,
+        .user_ctx = NULL,
+    };
+    httpd_uri_t demo_start_uri = {
+        .uri = "/demo/session/start",
+        .method = HTTP_POST,
+        .handler = demo_session_start_handler,
+        .user_ctx = NULL,
+    };
+    httpd_uri_t demo_heartbeat_uri = {
+        .uri = "/demo/session/heartbeat",
+        .method = HTTP_POST,
+        .handler = demo_session_heartbeat_handler,
+        .user_ctx = NULL,
+    };
+    httpd_uri_t demo_end_uri = {
+        .uri = "/demo/session/end",
+        .method = HTTP_POST,
+        .handler = demo_session_end_handler,
+        .user_ctx = NULL,
+    };
+    httpd_uri_t demo_action_uri = {
+        .uri = "/demo/action",
+        .method = HTTP_POST,
+        .handler = demo_action_handler,
+        .user_ctx = NULL,
+    };
+    httpd_uri_t demo_action_reset_uri = {
+        .uri = "/demo/action/reset",
+        .method = HTTP_POST,
+        .handler = demo_action_reset_handler,
+        .user_ctx = NULL,
+    };
+    s_demo_lock = xSemaphoreCreateMutex();
+    if (s_demo_lock == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     config.server_port = CONFIG_AIX_RISK_RECEIVER_PORT;
     esp_err_t ret = httpd_start(&s_server, &config);
     if (ret != ESP_OK) {
@@ -844,7 +1288,19 @@ esp_err_t risk_receiver_start(void)
     }
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &pneumatic_command_uri), TAG, "register pneumatic command failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &pneumatic_config_uri), TAG, "register pneumatic config failed");
-    ESP_LOGI(TAG, "vision, road hazard and pneumatic receiver listening on port %d", CONFIG_AIX_RISK_RECEIVER_PORT);
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &healthz_uri), TAG, "register healthz failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &demo_start_uri), TAG, "register demo start failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &demo_heartbeat_uri), TAG, "register demo heartbeat failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &demo_end_uri), TAG, "register demo end failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &demo_action_uri), TAG, "register demo action failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &demo_action_reset_uri), TAG, "register demo action reset failed");
+    if (xTaskCreate(demo_watchdog_task, "demo_watchdog", 3072, NULL, 3, NULL) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "vision, road hazard, pneumatic, demo and healthz receiver listening on port %d", CONFIG_AIX_RISK_RECEIVER_PORT);
+    printf("{\"type\":\"risk_receiver_status\",\"version\":1,\"listening\":true,\"port\":%d}\n",
+           CONFIG_AIX_RISK_RECEIVER_PORT);
+    fflush(stdout);
     return ESP_OK;
 }
 

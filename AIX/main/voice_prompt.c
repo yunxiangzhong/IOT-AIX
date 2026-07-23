@@ -38,6 +38,23 @@ bool voice_prompt_track_for_band(const char *risk_band, uint8_t *out_track)
     return true;
 }
 
+bool voice_prompt_track_for_scene(uint8_t scene_id, uint8_t *out_track)
+{
+    if (out_track == NULL) {
+        return false;
+    }
+    if (scene_id == 4U || scene_id == 5U || scene_id == 6U) {
+        *out_track = scene_id;
+        return true;
+    }
+    return false;
+}
+
+bool voice_prompt_scene_is_valid(uint8_t scene_id)
+{
+    return scene_id == 4U || scene_id == 5U || scene_id == 6U;
+}
+
 bool voice_prompt_request_is_valid(const char *risk_band, const voice_prompt_request_t *request)
 {
     uint8_t expected_track = 0;
@@ -190,6 +207,39 @@ voice_prompt_result_t voice_prompt_policy_submit(
 {
     voice_prompt_result_t result = voice_prompt_result_rejected();
     if (!voice_prompt_request_is_valid(risk_band, request) || policy == NULL) {
+        return result;
+    }
+    result.track = request->track;
+    if (command_was_seen(policy, request->command_id)) {
+        result.accepted = true;
+        result.duplicate = true;
+        result.status = VOICE_PROMPT_DUPLICATE;
+        return result;
+    }
+    if (!policy->available) {
+        result.status = VOICE_PROMPT_UNAVAILABLE;
+        return result;
+    }
+    if (policy->playing_track > request->track) {
+        result.status = VOICE_PROMPT_SUPPRESSED;
+        return result;
+    }
+    remember_command(policy, request->command_id);
+    policy->playing_track = request->track;
+    result.accepted = true;
+    result.status = VOICE_PROMPT_QUEUED;
+    return result;
+}
+
+voice_prompt_result_t voice_prompt_policy_submit_scene(
+    voice_prompt_policy_t *policy,
+    uint8_t scene_id,
+    const voice_prompt_request_t *request)
+{
+    voice_prompt_result_t result = voice_prompt_result_rejected();
+    uint8_t expected_track = 0U;
+    if (policy == NULL || request == NULL || !voice_prompt_track_for_scene(scene_id, &expected_track) ||
+        request->track != expected_track || !command_id_is_valid(request->command_id)) {
         return result;
     }
     result.track = request->track;
@@ -399,6 +449,29 @@ voice_prompt_result_t voice_prompt_submit(const char *risk_band, const voice_pro
     }
     policy_take();
     voice_prompt_result_t result = voice_prompt_policy_submit(&s_policy, risk_band, request);
+    if (result.status == VOICE_PROMPT_QUEUED) {
+        voice_prompt_queue_item_t queued_request = {0};
+        if (!voice_prompt_queue_item_init(&queued_request, request) ||
+            xQueueOverwrite(s_queue, &queued_request) != pdPASS) {
+            voice_prompt_policy_mark_finished(&s_policy, request->track);
+            result.accepted = false;
+            result.status = VOICE_PROMPT_UNAVAILABLE;
+        }
+    }
+    policy_give();
+    return result;
+}
+
+voice_prompt_result_t voice_prompt_submit_scene(uint8_t scene_id, const voice_prompt_request_t *request)
+{
+    if (!s_started || s_lock == NULL || s_queue == NULL) {
+        voice_prompt_result_t unavailable = voice_prompt_result_rejected();
+        unavailable.track = request != NULL ? request->track : 0U;
+        unavailable.status = VOICE_PROMPT_UNAVAILABLE;
+        return unavailable;
+    }
+    policy_take();
+    voice_prompt_result_t result = voice_prompt_policy_submit_scene(&s_policy, scene_id, request);
     if (result.status == VOICE_PROMPT_QUEUED) {
         voice_prompt_queue_item_t queued_request = {0};
         if (!voice_prompt_queue_item_init(&queued_request, request) ||

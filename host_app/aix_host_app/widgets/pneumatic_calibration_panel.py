@@ -29,7 +29,7 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         self.status = QtWidgets.QLabel("气动状态：未从设备读取")
         self.status.setObjectName("sectionTitle")
         layout.addWidget(self.status)
-        self._pending_saved_calibration: tuple[float, float, int] | None = None
+        self._pending_saved_calibration: tuple[float, float] | None = None
         self._last_command = ""
         self._last_state = ""
         self._last_fault = "none"
@@ -45,9 +45,6 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         self.max_kpa.setDecimals(1)
         self.max_kpa.setValue(12.0)
         self.max_kpa.setSuffix(" kPa")
-        # Retained only for the existing device protocol.  It is not an automatic
-        # inflation limit and is deliberately not exposed as a user setting.
-        self._legacy_max_inflate_ms = 5000
         controls.addWidget(QtWidgets.QLabel("目标压力"), 0, 0)
         controls.addWidget(self.target_kpa, 0, 1)
         controls.addWidget(QtWidgets.QLabel("硬上限"), 1, 0)
@@ -115,14 +112,12 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         self._pending_saved_calibration = (
             float(self.target_kpa.value()),
             float(self.max_kpa.value()),
-            self._legacy_max_inflate_ms,
         )
         self.command_requested.emit({
             "command_id": self._command_id(),
             "command": "save_calibration",
             "target_kpa": self.target_kpa.value(),
             "max_kpa": self.max_kpa.value(),
-            "max_inflate_ms": self._legacy_max_inflate_ms,
         })
 
     def apply_status(self, event: PneumaticStatusEvent) -> None:
@@ -150,31 +145,26 @@ class PneumaticCalibrationPanel(QtWidgets.QWidget):
         try:
             self.target_kpa.setValue(float(config["target_kpa"]))
             self.max_kpa.setValue(float(config["max_kpa"]))
-            self._legacy_max_inflate_ms = int(config["max_inflate_ms"])
         except (KeyError, TypeError, ValueError):
             self.threshold_snapshot.setPlainText("设备配置响应不完整，未更新当前限制。")
             return
         if self._pending_saved_calibration is not None:
-            expected_target, expected_max, expected_inflate_ms = self._pending_saved_calibration
+            expected_target, expected_max = self._pending_saved_calibration
             actual_target = float(config["target_kpa"])
             actual_max = float(config["max_kpa"])
-            actual_inflate_ms = int(config["max_inflate_ms"])
             if (
                 abs(actual_target - expected_target) < 0.05
                 and abs(actual_max - expected_max) < 0.05
-                and actual_inflate_ms == expected_inflate_ms
                 and config.get("calibration_valid")
             ):
                 self.status.setText(
                     "参数保存并回读确认成功："
-                    f"ESP32 已保存目标 {actual_target:.1f} kPa、上限 {actual_max:.1f} kPa、"
-                    f"最大充气 {actual_inflate_ms} ms。"
+                    f"ESP32 已保存目标 {actual_target:.1f} kPa、上限 {actual_max:.1f} kPa。"
                 )
             else:
                 self.status.setText(
                     "参数保存回读不一致："
-                    f"ESP32 实际为目标 {actual_target:.1f} kPa、上限 {actual_max:.1f} kPa、"
-                    f"最大充气 {actual_inflate_ms} ms，请重试。"
+                    f"ESP32 实际为目标 {actual_target:.1f} kPa、上限 {actual_max:.1f} kPa，请重试。"
                 )
             self._pending_saved_calibration = None
         mpu = config.get("mpu", {}) if isinstance(config.get("mpu"), dict) else {}

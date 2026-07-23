@@ -39,9 +39,6 @@ static void enter_state(pneumatic_policy_t *policy, pneumatic_state_t state, uin
     policy->state = state;
     policy->state_started_ms = now_ms;
     policy->clear_started_ms = 0;
-    if (state == PNEUMATIC_STATE_INFLATING) {
-        policy->inflate_started_ms = now_ms;
-    }
 }
 
 static void enter_fault(pneumatic_policy_t *policy, pneumatic_fault_t fault, uint64_t now_ms) {
@@ -81,7 +78,6 @@ pneumatic_policy_config_t pneumatic_policy_default_config(void) {
         .calibration_valid = false,
         .target_kpa = 8.0f,
         .max_kpa = 12.0f,
-        .max_inflate_ms = 5000,
     };
 }
 
@@ -94,7 +90,7 @@ bool pneumatic_policy_config_is_valid(const pneumatic_policy_config_t *config) {
         config->max_kpa > PNEUMATIC_CONFIG_HARD_LIMIT_KPA) {
         return false;
     }
-    return config->max_inflate_ms >= 200U && config->max_inflate_ms <= 5000U;
+    return true;
 }
 
 void pneumatic_policy_init(pneumatic_policy_t *policy, const pneumatic_policy_config_t *config, uint64_t now_ms) {
@@ -111,7 +107,6 @@ void pneumatic_policy_init(pneumatic_policy_t *policy, const pneumatic_policy_co
     policy->trigger_source = PNEUMATIC_TRIGGER_NONE;
     policy->operation = PNEUMATIC_OPERATION_NONE;
     policy->state_started_ms = now_ms;
-    policy->inflate_started_ms = 0;
     policy->pressure_invalid_started_ms = 0;
     policy->clear_started_ms = 0;
     policy->calibration_pump_on_ms = 0;
@@ -226,11 +221,11 @@ pneumatic_policy_output_t pneumatic_policy_step(
                        input->pressure_kpa >= PNEUMATIC_CALIBRATION_CEILING_KPA) {
                 enter_state(policy, PNEUMATIC_STATE_HOLDING, now_ms);
             } else if (policy->operation == PNEUMATIC_OPERATION_CALIBRATION &&
-                       now_ms - policy->inflate_started_ms >=
+                       now_ms - policy->state_started_ms >=
                            (input->manual_inflate_duration_ms > 0U
                                 ? input->manual_inflate_duration_ms
                                 : PNEUMATIC_CALIBRATION_PULSE_MS)) {
-                policy->calibration_pump_on_ms += (uint32_t)(now_ms - policy->inflate_started_ms);
+                policy->calibration_pump_on_ms += (uint32_t)(now_ms - policy->state_started_ms);
                 enter_state(policy, PNEUMATIC_STATE_HOLDING, now_ms);
             }
             break;

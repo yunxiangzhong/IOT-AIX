@@ -7,12 +7,137 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 _COLORS = {"waiting": "#86868B", "active": "#007AFF", "completed": "#248A3D", "failed": "#D70015"}
 
+SCENARIOS = {
+    4: {
+        "title": "货车盲区",
+        "subtitle": "右侧盲区有来车，请减速注意避让",
+        "map_title": "十字路口 · 右侧盲区",
+        "target": "货车",
+        "track": 4,
+        "severity": "high",
+    },
+    5: {
+        "title": "儿童横穿",
+        "subtitle": "右前方盲区有儿童横穿，请立即减速，注意避让",
+        "map_title": "直道 · 右前方盲区",
+        "target": "儿童",
+        "track": 5,
+        "severity": "critical",
+    },
+    6: {
+        "title": "施工绕行",
+        "subtitle": "前方施工围挡后有行人进入车道，请立即减速，注意绕行",
+        "map_title": "前方施工区域",
+        "target": "行人",
+        "track": 6,
+        "severity": "critical",
+    },
+}
 
-class _CrossroadMap(QtWidgets.QWidget):
-    """Focused L-corner view: only the truck's right approach and rider's lower approach."""
 
-    def __init__(self, parent=None) -> None:
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _segment_intersects_rect(start: tuple[float, float], end: tuple[float, float], rect: tuple[float, float, float, float]) -> bool:
+    """Liang-Barsky segment test used by geometry regression tests and drawing annotations."""
+    x0, y0 = start
+    x1, y1 = end
+    left, top, width, height = rect
+    right, bottom = left + width, top + height
+    dx, dy = x1 - x0, y1 - y0
+    p_values = (-dx, dx, -dy, dy)
+    q_values = (x0 - left, right - x0, y0 - top, bottom - y0)
+    u1, u2 = 0.0, 1.0
+    for p_value, q_value in zip(p_values, q_values):
+        if abs(p_value) < 1e-9:
+            if q_value < 0:
+                return False
+            continue
+        ratio = q_value / p_value
+        if p_value < 0:
+            u1 = max(u1, ratio)
+        else:
+            u2 = min(u2, ratio)
+        if u1 > u2:
+            return False
+    return True
+
+
+def scene_geometry(
+    scene_id: int,
+    width: int,
+    height: int,
+    *,
+    progress: float = 0.0,
+    rider_progress: float = 0.0,
+) -> dict:
+    """Return normalized road geometry for visual rendering and invariant tests."""
+    width = max(1, int(width))
+    height = max(1, int(height))
+    road_left = width * 0.27
+    road_top = height * 0.03
+    road_width = width * 0.50
+    road_height = height * 0.93
+    road = (road_left, road_top, road_width, road_height)
+    center_x = road_left + road_width * 0.5
+    rider = (road_left + road_width * 0.75,
+             road_top + road_height * 0.91 - _clamp01(rider_progress) * road_height * 0.56)
+
+    if scene_id == 5:
+        cross_y = road_top + road_height * 0.24
+        # The parked vehicle is aligned with the lane (long axis along the road),
+        # so its body is visibly vertical in the top-down view rather than a
+        # horizontal cross-road rectangle.
+        van = (road_left + road_width * 0.64, cross_y - road_height * 0.065,
+               road_width * 0.19, road_height * 0.25)
+        child_progress = _clamp01((progress - 0.12) / 0.72)
+        child = (van[0] + van[2] * 0.50 - child_progress * road_width * 0.36,
+                 van[1] + van[3] * 0.20 + child_progress * road_height * 0.06)
+        return {
+            "road": road,
+            "rider": rider,
+            "target": child,
+            "vehicle": van,
+            "rider_in_road": road_left < rider[0] < road_left + road_width and road_top < rider[1] < road_top + road_height,
+            "rider_in_open_lane": True,
+            "line_blocked_by_vehicle": _segment_intersects_rect(rider, child, van),
+            "line_blocked_by_fence": False,
+            "construction_in_opposite_lane": False,
+            "cross_y": cross_y,
+        }
+
+    if scene_id == 6:
+        construction = (road_left, road_top + road_height * 0.13,
+                        road_width * 0.47, road_height * 0.58)
+        fence = (center_x - width * 0.012, construction[1], width * 0.024, construction[3])
+        pedestrian_progress = _clamp01((progress - 0.16) / 0.68)
+        pedestrian = (construction[0] + construction[2] * 0.62 + pedestrian_progress * road_width * 0.28,
+                      construction[1] + construction[3] * 0.38 + pedestrian_progress * road_height * 0.08)
+        return {
+            "road": road,
+            "rider": rider,
+            "target": pedestrian,
+            "construction": construction,
+            "fence": fence,
+            "rider_in_road": road_left < rider[0] < road_left + road_width and road_top < rider[1] < road_top + road_height,
+            "rider_in_open_lane": center_x < rider[0] < road_left + road_width,
+            "line_blocked_by_vehicle": False,
+            "line_blocked_by_fence": _segment_intersects_rect(rider, pedestrian, fence),
+            "construction_in_opposite_lane": construction[0] >= road_left and construction[0] + construction[2] <= center_x + width * 0.01,
+            "cross_y": road_top + road_height * 0.24,
+        }
+
+    return {"road": road, "rider": rider, "target": (center_x, road_top + road_height * 0.2),
+            "rider_in_road": True, "rider_in_open_lane": True,
+            "line_blocked_by_vehicle": False, "line_blocked_by_fence": False,
+            "construction_in_opposite_lane": False, "cross_y": road_top + road_height * 0.24}
+
+
+class _ScenarioMap(QtWidgets.QWidget):
+    def __init__(self, scene_id: int = 4, parent=None) -> None:
         super().__init__(parent)
+        self.scene_id = scene_id
         self.progress = 0.0
         self.eta_seconds = 5.0
         self.phase = "等待演示"
@@ -22,7 +147,8 @@ class _CrossroadMap(QtWidgets.QWidget):
         self.rider_slowed = False
         self.rider_speed_kmh = 18
         self.setMinimumSize(560, 380)
-        self.setAccessibleName("十字路口货车盲区协同预警模拟")
+        cfg = SCENARIOS.get(scene_id, SCENARIOS[4])
+        self.setAccessibleName(f"{cfg['map_title']}协同预警模拟")
 
     def set_state(
         self, progress: float, eta_seconds: float, phase: str, *,
@@ -37,7 +163,8 @@ class _CrossroadMap(QtWidgets.QWidget):
         self.rider_progress = max(0.0, min(1.0, rider_progress))
         self.rider_slowed = rider_slowed
         self.rider_speed_kmh = rider_speed_kmh
-        self.setAccessibleDescription(f"货车距离路口约 {self.eta_seconds:.1f} 秒，当前阶段：{phase}")
+        cfg = SCENARIOS.get(self.scene_id, SCENARIOS[4])
+        self.setAccessibleDescription(f"{cfg['target']}预计到达约 {self.eta_seconds:.1f} 秒，当前阶段：{phase}")
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -46,6 +173,22 @@ class _CrossroadMap(QtWidgets.QWidget):
         bounds = self.rect().adjusted(8, 8, -8, -8)
         painter.fillRect(bounds, QtGui.QColor("#E7EFE7"))
 
+        if self.scene_id == 4:
+            self._draw_scene_004(painter, bounds)
+        elif self.scene_id == 5:
+            self._draw_scene_005(painter, bounds)
+        elif self.scene_id == 6:
+            self._draw_scene_006(painter, bounds)
+
+        # Common phase text bottom-left
+        cfg = SCENARIOS.get(self.scene_id, SCENARIOS[4])
+        painter.setPen(QtGui.QColor("#6E6E73"))
+        painter.drawText(bounds.adjusted(14, 12, -14, -12),
+                         QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft,
+                         f"{cfg['map_title']}\n{self.phase}")
+
+    def _draw_scene_004(self, painter, bounds) -> None:
+        """L-crossroad with truck approaching from right, rider from below, building blocks view."""
         road = QtGui.QColor("#60646C")
         lane = QtGui.QColor("#D8D8DC")
         # Anchor the L-shaped intersection toward the upper-left so both relevant
@@ -162,9 +305,204 @@ class _CrossroadMap(QtWidgets.QWidget):
             QtCore.Qt.AlignmentFlag.AlignHCenter, response_label,
         )
 
-        painter.setPen(QtGui.QColor("#6E6E73"))
-        painter.drawText(bounds.adjusted(14, 12, -14, -12), QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft,
-                         f"十字路口 · 右侧盲区\n{self.phase}")
+    def _draw_scene_005(self, painter, bounds) -> None:
+        """Vertical road: a parked van hides a child from the rider but not from the camera."""
+        painter.save()
+        painter.translate(bounds.left(), bounds.top())
+        geometry = scene_geometry(5, bounds.width(), bounds.height(), progress=self.progress,
+                                  rider_progress=self.rider_progress)
+        road_x, road_y, road_w, road_h = geometry["road"]
+        road_rect = QtCore.QRectF(road_x, road_y, road_w, road_h)
+        van_x, van_y, van_w, van_h = geometry["vehicle"]
+        van = QtCore.QRectF(van_x, van_y, van_w, van_h)
+        rider = QtCore.QPointF(*geometry["rider"])
+        child = QtCore.QPointF(*geometry["target"])
+        center_x = road_x + road_w * 0.5
+        painter.fillRect(road_rect, QtGui.QColor("#60646C"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#D8D8DC"), 2, QtCore.Qt.PenStyle.DashLine))
+        painter.drawLine(QtCore.QPointF(center_x, road_y), QtCore.QPointF(center_x, road_y + road_h))
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor("#CFC8BB"))
+        painter.drawRect(QtCore.QRectF(road_x + road_w, road_y, bounds.width() * 0.17, road_h))
+
+        painter.setBrush(QtGui.QColor("#F5F5F7"))
+        for y in range(int(geometry["cross_y"]), int(geometry["cross_y"] + road_h * 0.12), 14):
+            painter.drawRect(QtCore.QRectF(road_x + 4, y, road_w - 8, 7))
+
+        painter.setBrush(QtGui.QColor("#D78732"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#7B4B1C"), 2))
+        painter.drawRoundedRect(van, 7, 7)
+        painter.setBrush(QtGui.QColor("#B9E0EE"))
+        # Front/rear glazing is stacked along the vehicle's travel direction.
+        painter.drawRoundedRect(QtCore.QRectF(van.left() + van.width() * 0.16, van.top() + van.height() * 0.10,
+                                              van.width() * 0.68, van.height() * 0.20), 3, 3)
+        painter.drawRoundedRect(QtCore.QRectF(van.left() + van.width() * 0.16, van.top() + van.height() * 0.39,
+                                              van.width() * 0.68, van.height() * 0.20), 3, 3)
+        painter.setBrush(QtGui.QColor("#2C2C2E"))
+        for wheel_y in (van.top() + van.height() * 0.24, van.top() + van.height() * 0.76):
+            painter.drawEllipse(QtCore.QPointF(van.left(), wheel_y), 7, 7)
+            painter.drawEllipse(QtCore.QPointF(van.right(), wheel_y), 7, 7)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#5C5144"), 1))
+        painter.setBrush(QtGui.QColor("#D4C8B6"))
+        label_rect = QtCore.QRectF(van.left() - 20, van.top() - 30, van.width() + 40, 24)
+        painter.drawRoundedRect(label_rect, 5, 5)
+        painter.drawText(label_rect, QtCore.Qt.AlignmentFlag.AlignCenter, "停靠车辆 · 遮挡视线")
+
+        if self.progress >= 0.12:
+            painter.setBrush(QtGui.QColor("#D70015"))
+            painter.setPen(QtGui.QPen(QtGui.QColor("#FFFFFF"), 2))
+            painter.drawEllipse(child, 11, 11)
+            painter.setPen(QtGui.QColor("#FFFFFF"))
+            painter.drawText(QtCore.QRectF(child.x() - 10, child.y() - 10, 20, 20),
+                             QtCore.Qt.AlignmentFlag.AlignCenter, "C")
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            painter.setPen(QtGui.QPen(QtGui.QColor("#D70015"), 2))
+            painter.drawRoundedRect(QtCore.QRectF(child.x() - 16, child.y() - 16, 32, 32), 5, 5)
+        painter.setPen(QtGui.QColor("#D70015"))
+        painter.drawText(int(child.x() - 70), int(child.y() - 32), 140, 20,
+                         QtCore.Qt.AlignmentFlag.AlignHCenter, f"儿童 0.94 · ETA {self.eta_seconds:.1f}s")
+
+        blind = QtGui.QPolygonF([rider, QtCore.QPointF(van.left(), van.bottom()), child])
+        blind_color = QtGui.QColor("#FF9F0A")
+        blind_color.setAlpha(48)
+        painter.setBrush(blind_color)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#C93400"), 2, QtCore.Qt.PenStyle.DashLine))
+        painter.drawPolygon(blind)
+
+        camera_pos = QtCore.QPointF(road_x - bounds.width() * 0.16, road_y + road_h * 0.10)
+        fov = QtGui.QPolygonF([camera_pos, QtCore.QPointF(child.x(), child.y()),
+                               QtCore.QPointF(road_x + road_w, road_y + road_h * 0.58)])
+        fov_color = QtGui.QColor("#007AFF")
+        fov_color.setAlpha(32)
+        painter.setBrush(fov_color)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#007AFF"), 1, QtCore.Qt.PenStyle.DashLine))
+        painter.drawPolygon(fov)
+        painter.setBrush(QtGui.QColor("#1D1D1F"))
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(QtCore.QRectF(camera_pos.x() - 13, camera_pos.y() - 8, 26, 16), 4, 4)
+        painter.setPen(QtGui.QColor("#1D1D1F"))
+        painter.drawText(int(camera_pos.x() + 20), int(camera_pos.y() - 6), 100, 20,
+                         QtCore.Qt.AlignmentFlag.AlignLeft, "路侧摄像头")
+
+        rider_color = QtGui.QColor("#248A3D" if self.rider_slowed else "#007AFF")
+        painter.setBrush(rider_color)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#FFFFFF"), 2))
+        painter.drawEllipse(rider, 13, 13)
+        painter.setPen(QtGui.QColor("#FFFFFF"))
+        painter.drawText(QtCore.QRectF(rider.x() - 10, rider.y() - 10, 20, 20),
+                         QtCore.Qt.AlignmentFlag.AlignCenter, "H")
+        painter.setPen(QtGui.QColor("#1D1D1F"))
+        painter.drawText(int(rider.x() - 58), int(rider.y() + 20), 116, 20,
+                         QtCore.Qt.AlignmentFlag.AlignHCenter, "骑行者 / 头盔")
+        painter.setPen(QtGui.QColor("#248A3D" if self.rider_slowed else "#007AFF"))
+        response_label = "已减速 · 6 km/h" if self.rider_slowed else f"正常骑行 · {self.rider_speed_kmh} km/h"
+        painter.drawText(int(rider.x() - 78), max(12, int(rider.y() - 72)), 156, 18,
+                         QtCore.Qt.AlignmentFlag.AlignHCenter, response_label)
+        painter.setPen(QtGui.QPen(rider_color, 3))
+        painter.drawLine(QtCore.QPointF(rider.x(), rider.y() - 20), QtCore.QPointF(rider.x(), rider.y() - 48))
+        painter.drawLine(QtCore.QPointF(rider.x(), rider.y() - 48), QtCore.QPointF(rider.x() - 6, rider.y() - 39))
+        painter.drawLine(QtCore.QPointF(rider.x(), rider.y() - 48), QtCore.QPointF(rider.x() + 6, rider.y() - 39))
+        painter.restore()
+
+    def _draw_scene_006(self, painter, bounds) -> None:
+        """Vertical road: the opposite lane is closed by a fence and a pedestrian emerges."""
+        painter.save()
+        painter.translate(bounds.left(), bounds.top())
+        geometry = scene_geometry(6, bounds.width(), bounds.height(), progress=self.progress,
+                                  rider_progress=self.rider_progress)
+        road_x, road_y, road_w, road_h = geometry["road"]
+        road_rect = QtCore.QRectF(road_x, road_y, road_w, road_h)
+        construction = QtCore.QRectF(*geometry["construction"])
+        fence = QtCore.QRectF(*geometry["fence"])
+        rider = QtCore.QPointF(*geometry["rider"])
+        pedestrian = QtCore.QPointF(*geometry["target"])
+        center_x = road_x + road_w * 0.5
+        painter.fillRect(road_rect, QtGui.QColor("#60646C"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#D8D8DC"), 2, QtCore.Qt.PenStyle.DashLine))
+        painter.drawLine(QtCore.QPointF(center_x, road_y), QtCore.QPointF(center_x, road_y + road_h))
+        painter.setBrush(QtGui.QColor("#8C6B43"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#6A4A2D"), 1))
+        painter.drawRect(construction)
+        painter.setPen(QtGui.QColor("#5C5144"))
+        painter.drawText(construction.adjusted(8, 8, -8, -8), QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft,
+                         "对向车道施工封闭")
+
+        painter.setBrush(QtGui.QColor("#3B7DD8"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#1D4F91"), 2))
+        painter.drawRoundedRect(fence, 4, 4)
+        painter.setBrush(QtGui.QColor("#FFFFFF"))
+        for y in range(int(fence.top() + 8), int(fence.bottom() - 8), 22):
+            painter.drawRect(QtCore.QRectF(fence.left() + 3, y, fence.width() - 6, 10))
+        painter.setPen(QtGui.QColor("#1D4F91"))
+        painter.drawText(int(fence.left() - 46), int(fence.top() - 10), 100, 18,
+                         QtCore.Qt.AlignmentFlag.AlignHCenter, "施工围挡")
+
+        painter.setBrush(QtGui.QColor("#FF6B00"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#B84500"), 1))
+        for y in (construction.top() + 35, construction.top() + 92, construction.top() + 149):
+            cone = QtGui.QPolygonF([QtCore.QPointF(center_x - 34, y),
+                                    QtCore.QPointF(center_x - 46, y + 26),
+                                    QtCore.QPointF(center_x - 22, y + 26)])
+            painter.drawPolygon(cone)
+        painter.setPen(QtGui.QColor("#5C5144"))
+        painter.drawText(int(center_x - 84), int(construction.bottom() + 16), 170, 18,
+                         QtCore.Qt.AlignmentFlag.AlignHCenter, "本方向车道保持开放")
+
+        if self.progress >= 0.16:
+            painter.setBrush(QtGui.QColor("#D70015"))
+            painter.setPen(QtGui.QPen(QtGui.QColor("#FFFFFF"), 2))
+            painter.drawEllipse(pedestrian, 11, 11)
+            painter.setPen(QtGui.QColor("#FFFFFF"))
+            painter.drawText(QtCore.QRectF(pedestrian.x() - 10, pedestrian.y() - 10, 20, 20),
+                             QtCore.Qt.AlignmentFlag.AlignCenter, "P")
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            painter.setPen(QtGui.QPen(QtGui.QColor("#D70015"), 2))
+            painter.drawRoundedRect(QtCore.QRectF(pedestrian.x() - 16, pedestrian.y() - 16, 32, 32), 5, 5)
+        painter.setPen(QtGui.QColor("#D70015"))
+        painter.drawText(int(pedestrian.x() - 64), int(pedestrian.y() - 32), 128, 20,
+                         QtCore.Qt.AlignmentFlag.AlignHCenter, f"行人 0.94 · ETA {self.eta_seconds:.1f}s")
+
+        blind = QtGui.QPolygonF([rider, QtCore.QPointF(fence.left(), fence.top() + fence.height() * 0.5), pedestrian])
+        blind_color = QtGui.QColor("#FF9F0A")
+        blind_color.setAlpha(48)
+        painter.setBrush(blind_color)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#C93400"), 2, QtCore.Qt.PenStyle.DashLine))
+        painter.drawPolygon(blind)
+
+        camera_pos = QtCore.QPointF(road_x + road_w + bounds.width() * 0.10, road_y + road_h * 0.10)
+        fov = QtGui.QPolygonF([camera_pos, pedestrian,
+                               QtCore.QPointF(road_x, road_y + road_h * 0.60)])
+        fov_color = QtGui.QColor("#007AFF")
+        fov_color.setAlpha(32)
+        painter.setBrush(fov_color)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#007AFF"), 1, QtCore.Qt.PenStyle.DashLine))
+        painter.drawPolygon(fov)
+        painter.setBrush(QtGui.QColor("#1D1D1F"))
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(QtCore.QRectF(camera_pos.x() - 13, camera_pos.y() - 8, 26, 16), 4, 4)
+        painter.setPen(QtGui.QColor("#1D1D1F"))
+        painter.drawText(int(camera_pos.x() - 100), int(camera_pos.y() - 6), 90, 20,
+                         QtCore.Qt.AlignmentFlag.AlignRight, "路侧摄像头")
+
+        rider_color = QtGui.QColor("#248A3D" if self.rider_slowed else "#007AFF")
+        painter.setBrush(rider_color)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#FFFFFF"), 2))
+        painter.drawEllipse(rider, 13, 13)
+        painter.setPen(QtGui.QColor("#FFFFFF"))
+        painter.drawText(QtCore.QRectF(rider.x() - 10, rider.y() - 10, 20, 20),
+                         QtCore.Qt.AlignmentFlag.AlignCenter, "H")
+        painter.setPen(QtGui.QColor("#1D1D1F"))
+        painter.drawText(int(rider.x() - 58), int(rider.y() + 20), 116, 20,
+                         QtCore.Qt.AlignmentFlag.AlignHCenter, "骑行者 / 头盔")
+        painter.setPen(QtGui.QColor("#248A3D" if self.rider_slowed else "#007AFF"))
+        response_label = "已减速避让 · 6 km/h" if self.rider_slowed else f"正常骑行 · {self.rider_speed_kmh} km/h"
+        painter.drawText(int(rider.x() - 78), max(12, int(rider.y() - 72)), 156, 18,
+                         QtCore.Qt.AlignmentFlag.AlignHCenter, response_label)
+        painter.setPen(QtGui.QPen(rider_color, 3))
+        painter.drawLine(QtCore.QPointF(rider.x(), rider.y() - 20), QtCore.QPointF(rider.x(), rider.y() - 48))
+        painter.drawLine(QtCore.QPointF(rider.x(), rider.y() - 48), QtCore.QPointF(rider.x() - 6, rider.y() - 39))
+        painter.drawLine(QtCore.QPointF(rider.x(), rider.y() - 48), QtCore.QPointF(rider.x() + 6, rider.y() - 39))
+        painter.restore()
 
 
 class _ScenarioStage(QtWidgets.QFrame):
@@ -200,13 +538,16 @@ class _ScenarioStage(QtWidgets.QFrame):
 class CooperativeScenarioPanel(QtWidgets.QWidget):
     start_requested = QtCore.Signal(dict)
     reset_requested = QtCore.Signal()
+    scene_dispatch_requested = QtCore.Signal(int)
+    demo_mode_requested = QtCore.Signal()
+    restore_real_requested = QtCore.Signal()
 
     EVENT_DURATION_MS = 5000
     CLOUD_DISPATCH_MS = 850
 
     @staticmethod
     def has_simulated_input() -> bool:
-        """The collaboration page intentionally has a self-contained visual demo."""
+        """The visual input is a labelled demo; the downstream hardware path is real."""
         return True
 
     def __init__(self, parent=None) -> None:
@@ -217,7 +558,10 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self._ack_remaining_ms: int | None = None
         self._ack_elapsed_ms: int | None = None
         self._ack_is_simulated = False
+        self._active_scene_id = 0
         self.current_event_id = ""
+        self._link_ready = False
+        self._demo_mode = False
         self._reduced_motion = False
         self._clock = QtCore.QElapsedTimer()
         self._last_elapsed_ms = 0
@@ -235,21 +579,37 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         h.setContentsMargins(16, 11, 16, 11)
         labels = QtWidgets.QVBoxLayout()
         labels.setSpacing(2)
-        title = QtWidgets.QLabel("十字路口协同预警")
+        title = QtWidgets.QLabel("三场景真实后段响应演示")
         title.setObjectName("pageTitle")
-        detail = QtWidgets.QLabel("独立的 5 秒协同演示：模拟货车、云端与 ESP32 回执仅用于本页展示，不发送给真实头盔、气泵或 DFPlayer")
+        warning = QtWidgets.QLabel("⚠ 演示输入，后段实物执行 — DFPlayer 语音 / RGB 警示 / 气泵充气均为真实硬件响应")
+        warning.setObjectName("demoWarning")
+        warning.setWordWrap(True)
+        detail = QtWidgets.QLabel("前段动画模拟摄像头→云端→PC 数据流；后段真实下发 ESP32，以 DFPlayer、显示器/RGB、气泵与压力遥测证明实际响应")
         detail.setObjectName("muted")
         detail.setWordWrap(True)
         labels.addWidget(title)
+        labels.addWidget(warning)
         labels.addWidget(detail)
         h.addLayout(labels, 1)
-        self.start_button = QtWidgets.QPushButton("开始 5 秒协同演示")
-        self.start_button.setObjectName("primaryAction")
+        button_group = QtWidgets.QVBoxLayout()
+        button_group.setSpacing(4)
+        self.mode_button = QtWidgets.QPushButton("进入模拟模式")
+        self.mode_button.setObjectName("primaryAction")
+        self.mode_button.clicked.connect(self._toggle_operating_mode)
+        button_group.addWidget(self.mode_button)
+        self.scene_buttons: dict[int, QtWidgets.QPushButton] = {}
+        for scene_id in (4, 5, 6):
+            cfg = SCENARIOS[scene_id]
+            display_index = scene_id - 3
+            btn = QtWidgets.QPushButton(f"场景{display_index} · {cfg['title']} · {cfg['subtitle']}")
+            btn.setObjectName("primaryAction")
+            btn.clicked.connect(lambda checked, s=scene_id: self.begin_demo(s))
+            self.scene_buttons[scene_id] = btn
+            button_group.addWidget(btn)
         self.reset_button = QtWidgets.QPushButton("复位")
-        self.start_button.clicked.connect(self.begin_demo)
         self.reset_button.clicked.connect(self.reset_demo)
-        h.addWidget(self.start_button)
-        h.addWidget(self.reset_button)
+        button_group.addWidget(self.reset_button)
+        h.addLayout(button_group)
         root.addWidget(heading)
 
         content = QtWidgets.QHBoxLayout()
@@ -266,9 +626,10 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         map_head.addWidget(map_title)
         map_head.addStretch(1)
         map_head.addWidget(self.map_badge)
-        self.road_map = _CrossroadMap()
+        self.road_map = _ScenarioMap(4)
         map_layout.addLayout(map_head)
         map_layout.addWidget(self.road_map, 1)
+        self._map_container = map_layout
         content.addWidget(map_panel, 2)
 
         side = QtWidgets.QFrame()
@@ -283,14 +644,14 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         eta_card.setObjectName("etaCard")
         eta_layout = QtWidgets.QVBoxLayout(eta_card)
         eta_layout.setContentsMargins(14, 12, 14, 12)
-        eta_caption = QtWidgets.QLabel("货车预计到达路口")
-        eta_caption.setObjectName("metricTitle")
+        self.eta_caption = QtWidgets.QLabel("货车预计到达路口")
+        self.eta_caption.setObjectName("metricTitle")
         self.eta_value = QtWidgets.QLabel("5.0 秒")
         self.eta_value.setObjectName("etaValue")
         self.deadline_value = QtWidgets.QLabel("ESP32 必须在倒计时结束前响应")
         self.deadline_value.setObjectName("muted")
         self.deadline_value.setWordWrap(True)
-        eta_layout.addWidget(eta_caption)
+        eta_layout.addWidget(self.eta_caption)
         eta_layout.addWidget(self.eta_value)
         eta_layout.addWidget(self.deadline_value)
         side_layout.addWidget(eta_card)
@@ -355,19 +716,44 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.road_map.reduced_motion = enabled
         self._timer.setInterval(160 if enabled else 33)
 
-    def demo_payload(self, eta_ms: int | None = None) -> dict:
-        remaining = max(0, self.EVENT_DURATION_MS - self._last_elapsed_ms) if eta_ms is None else max(0, eta_ms)
-        return {
-            "event_id": self.current_event_id, "device_id": "aix-helmet-01", "camera_id": "roadside-cam-01",
-            "intersection_id": "demo-crossing-01", "direction": "right", "object_type": "truck",
-            "eta_ms": remaining, "severity": "high", "ttl_ms": 7000, "simulated": True,
-            "message_code": "truck_right_eta_5s",
-        }
+    def set_link_ready(self, ready: bool) -> None:
+        """Called when the chain client confirms ESP32 frames are being received."""
+        self._link_ready = ready
 
-    def begin_demo(self) -> None:
+    def set_operating_mode(self, mode: str, *, lease_remaining_ms: int = 0) -> None:
+        self._demo_mode = mode == "demo"
+        if self._demo_mode:
+            self.mode_button.setText("恢复真实链路")
+            self.mode_button.setToolTip(f"模拟通道租约剩余 {max(0, lease_remaining_ms) / 1000:.1f} 秒")
+            if not self._running:
+                for button in self.scene_buttons.values():
+                    button.setEnabled(True)
+            self.map_badge.setText("● 模拟通道已启用 · 真实下发已暂停")
+        else:
+            self.mode_button.setText("进入模拟模式")
+            self.mode_button.setToolTip("恢复摄像头→云端→PC→ESP32真实链路")
+            for button in self.scene_buttons.values():
+                button.setEnabled(False)
+            if not self._running:
+                self.map_badge.setText("● 真实链路已恢复")
+
+    def _toggle_operating_mode(self) -> None:
+        if self._demo_mode:
+            self.restore_real_requested.emit()
+        else:
+            self.demo_mode_requested.emit()
+
+    def begin_demo(self, scene_id: int = 4) -> None:
         if self._running:
             return
-        self.current_event_id = f"roadside-truck-{uuid.uuid4().hex[:10]}"
+        if not self._demo_mode and not self._link_ready:
+            self.stages[3].set_state("请先进入模拟模式 · 链路未就绪", "failed")
+            self.helmet_status[1].setText("模拟通道未启用，真实链路不会被场景演示占用")
+            self.map_badge.setText("● 请先进入模拟模式")
+            return
+        self._active_scene_id = scene_id
+        self._replace_road_map(scene_id)
+        self.current_event_id = f"scenario-{scene_id:03d}-{uuid.uuid4().hex[:8]}"
         self._running = True
         self._dispatched = False
         self._ack_received = False
@@ -376,10 +762,22 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self._ack_is_simulated = False
         self._last_elapsed_ms = 0
         self._clock.start()
-        self.start_button.setEnabled(False)
+        for btn in self.scene_buttons.values():
+            btn.setEnabled(False)
         self.event_value.setText(f"事件 ID · {self.current_event_id}")
         self._update_from_elapsed(0)
         self._timer.start()
+
+    def _replace_road_map(self, scene_id: int) -> None:
+        """Swap the animated map to match the selected scene layout."""
+        old = self.road_map
+        new_map = _ScenarioMap(scene_id)
+        new_map.reduced_motion = self._reduced_motion
+        idx = self._map_container.indexOf(old)
+        if idx >= 0:
+            self._map_container.insertWidget(idx, new_map)
+        old.deleteLater()
+        self.road_map = new_map
 
     def reset_demo(self) -> None:
         self._reset_state(emit_signal=True)
@@ -392,9 +790,11 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self._ack_remaining_ms = None
         self._ack_elapsed_ms = None
         self._ack_is_simulated = False
+        self._active_scene_id = 0
         self.current_event_id = ""
         self._last_elapsed_ms = 0
-        self.start_button.setEnabled(True)
+        for btn in self.scene_buttons.values():
+            btn.setEnabled(self._demo_mode)
         for stage in self.stages:
             stage.set_state("等待", "waiting")
         self.eta_value.setText("5.0 秒")
@@ -407,8 +807,8 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.detection_value[1].setText("等待检测")
         self.cloud_status[1].setText("等待上传")
         self.helmet_status[1].setText("等待下发")
-        self.rider_status[1].setText("正常骑行 · 18 km/h")
-        self.protection_status[1].setText("等待 ESP32 确认")
+        self.rider_status[1].setText("等待 ESP32 确认")
+        self.protection_status[1].setText("等待真实 DFPlayer 与泵阀状态")
         self.map_badge.setText("● 等待演示")
         self.road_map.set_state(0.0, 5.0, "等待演示")
         if emit_signal:
@@ -427,79 +827,62 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         remaining_ms = max(0, self.EVENT_DURATION_MS - elapsed_ms)
         eta = remaining_ms / 1000.0
         progress = min(1.0, elapsed_ms / self.EVENT_DURATION_MS)
+        cfg = SCENARIOS.get(self._active_scene_id, SCENARIOS[4])
+        target = cfg["target"]
+        self.eta_caption.setText(f"{target}预计到达")
 
         if elapsed_ms < 260:
-            phase = "路侧摄像头锁定右侧货车"
-            self.stages[0].set_state("货车 · 置信度 0.94", "active")
-            self.detection_value[1].setText("货车 · 右侧来向 · 置信度 0.94")
-            self.map_badge.setText("● 已发现货车")
+            phase = f"路侧摄像头锁定{target}"
+            self.stages[0].set_state(f"{target} · 置信度 0.94", "active")
+            self.detection_value[1].setText(f"{target} · 置信度 0.94")
+            self.map_badge.setText(f"● 已发现{target}")
         elif elapsed_ms < 560:
             phase = "检测结果正在上传云端"
-            self.stages[0].set_state("检测完成 · 0.94", "completed")
+            self.stages[0].set_state(f"{target}检测完成 · 0.94", "completed")
             self.stages[1].set_state("正在上传检测事件", "active")
-            self.cloud_status[1].setText("正在上传目标、方向和 ETA 数据")
+            self.cloud_status[1].setText("正在上传目标和场景数据")
         elif elapsed_ms < self.CLOUD_DISPATCH_MS:
-            phase = "云端正在预测到达时间"
-            self.stages[0].set_state("检测完成 · 0.94", "completed")
+            phase = "云端正在分析场景"
+            self.stages[0].set_state(f"{target}检测完成 · 0.94", "completed")
             self.stages[1].set_state("上传完成", "completed")
-            self.stages[2].set_state(f"预测 ETA {eta:.1f} 秒", "active")
-            self.cloud_status[1].setText(f"货车预计 {eta:.1f} 秒后到达路口")
+            self.stages[2].set_state(f"场景分析 · {cfg['severity']}", "active")
+            self.cloud_status[1].setText(f"识别为{cfg['title']}场景")
         else:
-            phase = "预警已下发，等待 ESP32 在期限前响应"
-            self.stages[0].set_state("检测完成 · 0.94", "completed")
+            phase = "预警已下发，等待 ESP32 真实响应"
+            self.stages[0].set_state(f"{target}检测完成 · 0.94", "completed")
             self.stages[1].set_state("上传完成", "completed")
-            self.stages[2].set_state(f"ETA 持续更新 · {eta:.1f} 秒", "completed")
-            self.cloud_status[1].setText(f"预测完成 · 货车约 {eta:.1f} 秒后到达")
+            self.stages[2].set_state(f"场景确认 · {cfg['severity']}", "completed")
+            self.cloud_status[1].setText(f"已确认{cfg['title']}场景 · 正在真实下发")
             if not self._dispatched:
                 self._dispatched = True
-                # Keep the restored demonstration self-contained: it must never
-                # inject its historical simulated=true event into the real chain.
-                self._accept_response(elapsed_ms, simulated=True)
-                self.stages[3].set_state("演示下发完成", "completed")
-                self.helmet_status[1].setText("本地演示回执 · 未向真实 ESP32 下发")
-                self.voice_value.setText("语音 · 演示提示（不播放硬件）")
+                if self._demo_mode and self._link_ready:
+                    self.stages[3].set_state("正在真实下发到 ESP32", "active")
+                    self.helmet_status[1].setText("通过 /risk 链路下发，等待 ESP32 ACK")
+                    self.scene_dispatch_requested.emit(self._active_scene_id)
+                else:
+                    self.stages[3].set_state("模拟通道未就绪 · 跳过下发", "failed")
+                    self.helmet_status[1].setText("请先进入模拟模式并确认头盔最新帧")
+                    self.map_badge.setText("● 模拟通道未就绪，未执行硬件动作")
+                    self.deadline_value.setText("模拟通道未就绪；动画仅用于演示，未触发硬件")
             if not self._ack_received:
-                self.stages[4].set_state(f"等待响应 · 剩余 {eta:.1f} 秒", "waiting")
-
-        # 骑行者先按正常速度接近路口；只有真实 ACK 才改变演示结果。
-        rider_progress = min(0.82, progress * 0.82)
-        rider_slowed = False
-        rider_speed_kmh = 18
-        if self._ack_received and self._ack_elapsed_ms is not None:
-            after_ack_ms = max(0, elapsed_ms - self._ack_elapsed_ms)
-            base_progress = min(0.82, self._ack_elapsed_ms / self.EVENT_DURATION_MS * 0.82)
-            rider_progress = min(0.92, base_progress + max(0, after_ack_ms - 700) / self.EVENT_DURATION_MS * 0.10)
-            if after_ack_ms < 700:
-                phase = "ESP32 已确认，等待真实执行反馈"
-                self.rider_status[1].setText("收到预警 · 准备减速")
-                self.protection_status[1].setText("等待真实 DFPlayer 与泵阀状态")
-            else:
-                phase = "预警已确认，模拟骑行者减速通过路口"
-                rider_slowed = True
-                rider_speed_kmh = 6
-                self.rider_status[1].setText("模拟减速 · 6 km/h · 保持安全距离")
-                self.map_badge.setText("● 真实 ACK 已确认")
-        else:
-            self.rider_status[1].setText("正常骑行 · 18 km/h")
-            self.protection_status[1].setText("等待 ESP32 确认")
+                self.stages[4].set_state(f"等待 ESP32 响应 · 剩余 {eta:.1f} 秒", "waiting")
 
         self.eta_value.setText(f"{eta:.1f} 秒")
         self.road_map.set_state(
             progress, eta, phase,
-            rider_progress=rider_progress,
-            rider_slowed=rider_slowed,
-            rider_speed_kmh=rider_speed_kmh,
+            rider_progress=min(0.82, progress * 0.82),
+            rider_slowed=self._ack_received,
+            rider_speed_kmh=6 if self._ack_received else 18,
         )
         if remaining_ms <= 0:
             self._running = False
             self._timer.stop()
             if self._ack_received:
-                source = "演示链路" if self._ack_is_simulated else "ESP32"
-                self.deadline_value.setText(f"{source} 已提前 {self._ack_remaining_ms / 1000.0:.1f} 秒完成响应")
+                self.deadline_value.setText(f"ESP32 已提前 {self._ack_remaining_ms / 1000.0:.1f} 秒完成响应")
             else:
-                self.stages[4].set_state("响应超时 · 未在货车到达前确认", "failed")
+                self.stages[4].set_state("响应超时 · 未在期限内确认", "failed")
                 self.helmet_status[1].setText("响应超时：未收到有效 ESP32 ACK")
-                self.deadline_value.setText("货车已到达路口，当前演示响应失败")
+                self.deadline_value.setText("倒计时结束，当前演示响应失败")
                 self.map_badge.setText("● 响应超时")
 
     def apply_chain_state(self, state: dict) -> None:
@@ -549,33 +932,57 @@ class CooperativeScenarioPanel(QtWidgets.QWidget):
         self.rgb_value.setText(f"RGB · {pattern}" if pattern else "RGB · 等待 ACK")
 
     def apply_submission_error(self, message: str) -> None:
-        """Expose real cloud/service rejection instead of leaving a simulated success state."""
+        """Expose real service rejection instead of leaving a simulated success state."""
         if not self.current_event_id:
             return
-        self.stages[3].set_state("下发失败 · 协同服务拒绝", "failed")
+        detail = (message or "服务拒绝").replace("\n", " ")
+        self.stages[3].set_state(f"下发失败 · {detail}", "failed")
         self.stages[4].set_state("未确认 · 未到达 ESP32", "failed")
-        self.helmet_status[1].setText(message or "协同服务拒绝预警事件")
-        self.deadline_value.setText("下发失败；倒计时继续，仅用于观察货车到达过程")
+        self.helmet_status[1].setText(message or "服务拒绝场景事件")
+        self.deadline_value.setText("下发失败；倒计时继续，仅用于观察动画过程")
         self.map_badge.setText("● 下发失败")
 
-    def _accept_response(self, elapsed_ms: int, *, simulated: bool) -> None:
-        """Record a response; production flow only calls this for a real ESP32 ACK."""
+    def apply_demo_reset_result(self, result: dict) -> None:
+        if not self._demo_mode:
+            return
+        self.map_badge.setText("● ESP32 已接收复位，等待真实泄压")
+        self.helmet_status[1].setText("模拟动作已复位 · 等待泵阀与压力遥测")
+        self.protection_status[1].setText("等待真实气动泄压反馈")
+
+    def apply_mode_error(self, message: str) -> None:
+        self.mode_button.setEnabled(True)
+        self.map_badge.setText("● 模拟通道切换失败")
+        self.helmet_status[1].setText(message or "模拟通道切换失败")
+
+    def apply_dispatch_result(self, result: dict) -> None:
+        """Real ESP32 ACK received from scenario dispatch."""
+        if not self.current_event_id or not self._running:
+            return
+        elapsed = max(self._last_elapsed_ms,
+                      self._clock.elapsed() if self._clock.isValid() else 0)
+        self._accept_response(elapsed)
+        ack = result.get("ack", {})
+        if isinstance(ack, dict):
+            pattern = str(ack.get("effective_rgb_pattern") or ack.get("rgb_pattern") or "")
+            self.rgb_value.setText(f"RGB · {pattern}" if pattern else "RGB · ACK 已确认")
+            voice = ack.get("voice_ack", {})
+            if isinstance(voice, dict):
+                status = str(voice.get("status", ""))
+                self.voice_value.setText(f"语音 · {status}")
+        self.helmet_status[1].setText("ESP32 已响应 · 等待实物执行反馈")
+
+    def _accept_response(self, elapsed_ms: int) -> None:
+        """Record a real ESP32 ACK response."""
         self._ack_received = True
-        self._ack_is_simulated = simulated
+        self._ack_is_simulated = False
         self._ack_remaining_ms = self.EVENT_DURATION_MS - elapsed_ms
         self._ack_elapsed_ms = elapsed_ms
         remaining = self._ack_remaining_ms / 1000.0
         self.stages[3].set_state("下发完成", "completed")
-        if simulated:
-            self.stages[4].set_state(f"演示响应 · 提前 {remaining:.1f} 秒", "completed")
-            self.helmet_status[1].setText(f"演示 ACK 已确认 · 剩余安全时间 {remaining:.1f} 秒")
-            self.deadline_value.setText(f"演示链路已在期限前响应，剩余 {remaining:.1f} 秒")
-            self.map_badge.setText("● 演示响应已确认")
-        else:
-            self.stages[4].set_state(f"真实 ACK · 提前 {remaining:.1f} 秒", "completed")
-            self.helmet_status[1].setText(f"ESP32 已响应 · 剩余安全时间 {remaining:.1f} 秒")
-            self.deadline_value.setText(f"ESP32 已在期限前响应，剩余 {remaining:.1f} 秒")
-            self.map_badge.setText("● ESP32 已响应")
+        self.stages[4].set_state(f"ESP32 已响应 · 提前 {remaining:.1f} 秒", "completed")
+        self.helmet_status[1].setText(f"ESP32 已响应 · 剩余安全时间 {remaining:.1f} 秒")
+        self.deadline_value.setText(f"ESP32 已在期限前响应，剩余 {remaining:.1f} 秒")
+        self.map_badge.setText("● ESP32 已响应")
 
     def apply_serial_status(self, event) -> None:
         self.serial_status.setText(f"串口状态 · {event.state} · {event.event_id or '—'}")

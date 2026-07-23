@@ -8,6 +8,7 @@ from PySide6 import QtWidgets
 
 from aix_host_app.app import MainWindow
 from aix_host_app.models import VoiceStatusEvent
+from aix_host_app.widgets.cooperative_scenario import scene_geometry
 
 
 class CooperativeWarningUiTests(unittest.TestCase):
@@ -15,17 +16,18 @@ class CooperativeWarningUiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-    def test_global_navigation_has_real_dashboard_and_local_simulation_page(self):
+    def test_global_navigation_has_real_dashboard_and_labelled_demo_input_page(self):
         window = MainWindow()
         self.assertEqual(window.primary_pages.count(), 2)
         self.assertEqual(window.overview_button.text(), "中控总览")
         self.assertEqual(window.scenario_button.text(), "协同场景")
         self.assertTrue(hasattr(window, "scenario_panel"))
         self.assertTrue(window.scenario_panel.has_simulated_input())
-        self.assertEqual(window.scenario_panel.start_button.text(), "开始 5 秒协同演示")
-        window.scenario_panel.begin_demo()
+        self.assertEqual(tuple(window.scenario_panel.scene_buttons), (4, 5, 6))
+        self.assertIn("演示输入", window.scenario_panel.findChildren(QtWidgets.QLabel)[1].text())
+        window.scenario_panel.begin_demo(4)
         window.scenario_panel._update_from_elapsed(1000)
-        self.assertIn("演示", window.scenario_panel.stages[3].meta.text())
+        self.assertIn("链路未就绪", window.scenario_panel.stages[3].meta.text())
         self.assertFalse(hasattr(window, "settings_dialog"))
         self.assertTrue(window.device_window.isHidden())
         self.assertFalse(hasattr(window.connection_panel, "storage_root_edit"))
@@ -155,6 +157,99 @@ class CooperativeWarningUiTests(unittest.TestCase):
 
         self.assertIsNone(window.reader)
         self.assertEqual(window._serial_port, "")
+        window.close()
+
+    def test_scene_005_map_shows_child_not_truck(self):
+        """场景 005 显示儿童直道元素，不含货车。"""
+        window = MainWindow()
+        panel = window.scenario_panel
+        panel.set_link_ready(True)
+        panel.begin_demo(5)
+        panel._update_from_elapsed(500)
+        self.assertIn("儿童", panel.detection_value[1].text())
+        self.assertNotIn("货车", panel.detection_value[1].text())
+        self.assertIn("儿童", panel.stages[0].meta.text())
+        window.close()
+
+    def test_scene_006_map_shows_pedestrian_not_truck(self):
+        """场景 006 显示行人施工元素，不含货车。"""
+        window = MainWindow()
+        panel = window.scenario_panel
+        panel.set_link_ready(True)
+        panel.begin_demo(6)
+        panel._update_from_elapsed(500)
+        self.assertIn("行人", panel.detection_value[1].text())
+        self.assertNotIn("货车", panel.detection_value[1].text())
+        self.assertIn("行人", panel.stages[0].meta.text())
+        window.close()
+
+    def test_scene_004_map_still_shows_truck(self):
+        """场景 004 应仍显示货车元素。"""
+        window = MainWindow()
+        panel = window.scenario_panel
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel._update_from_elapsed(300)
+        self.assertIn("货车", panel.detection_value[1].text())
+        window.close()
+
+    def test_scene_005_geometry_keeps_rider_on_road_and_child_behind_parked_vehicle(self):
+        geometry = scene_geometry(5, 1000, 600, progress=0.2, rider_progress=0.2)
+        self.assertTrue(geometry["rider_in_road"])
+        self.assertTrue(geometry["line_blocked_by_vehicle"])
+        self.assertLess(geometry["vehicle"][2], geometry["vehicle"][3])
+        self.assertLess(geometry["rider"][1], geometry["road"][1] + geometry["road"][3])
+
+    def test_scene_006_geometry_keeps_rider_in_open_lane_and_pedestrian_behind_fence(self):
+        geometry = scene_geometry(6, 1000, 600, progress=0.2, rider_progress=0.2)
+        self.assertTrue(geometry["rider_in_open_lane"])
+        self.assertTrue(geometry["line_blocked_by_fence"])
+        self.assertTrue(geometry["construction_in_opposite_lane"])
+
+    def test_demo_scenes_require_demo_mode_and_restore_real_link(self):
+        window = MainWindow()
+        panel = window.scenario_panel
+        self.assertEqual(panel.mode_button.text(), "进入模拟模式")
+        panel.begin_demo(5)
+        self.assertIn("模拟模式", panel.stages[3].meta.text())
+        panel.set_operating_mode("demo", lease_remaining_ms=15000)
+        self.assertEqual(panel.mode_button.text(), "恢复真实链路")
+        self.assertTrue(panel.scene_buttons[5].isEnabled())
+        panel.reset_demo()
+        panel.set_operating_mode("real")
+        self.assertEqual(panel.mode_button.text(), "进入模拟模式")
+        self.assertFalse(panel._demo_mode)
+        window.close()
+
+    def test_scenario_errors_are_differentiated(self):
+        """apply_submission_error 应显示具体错误而非统一"服务拒绝"。"""
+        window = MainWindow()
+        panel = window.scenario_panel
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        self.assertTrue(panel._running)
+
+        panel.apply_submission_error("PC 鉴权失败：链路令牌无效")
+        self.assertIn("鉴权失败", panel.stages[3].meta.text())
+
+        panel.reset_demo()
+        panel.set_link_ready(True)
+        panel.begin_demo(5)
+        panel.apply_submission_error("未收到头盔最新帧：ESP32 尚未上传检测画面")
+        self.assertIn("最新帧", panel.stages[3].meta.text())
+
+        panel.reset_demo()
+        panel.set_link_ready(True)
+        panel.begin_demo(6)
+        panel.apply_submission_error("ESP32:8080 不可达：Connection refused")
+        self.assertIn("不可达", panel.stages[3].meta.text())
+
+        panel.reset_demo()
+        panel.set_link_ready(True)
+        panel.begin_demo(4)
+        panel.apply_submission_error("ESP32 拒绝风险事件：rejected")
+        self.assertIn("拒绝风险事件", panel.stages[3].meta.text())
+
         window.close()
 
 

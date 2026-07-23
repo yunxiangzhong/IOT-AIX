@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from copy import deepcopy
 
 from PySide6 import QtCore, QtNetwork
@@ -29,6 +30,17 @@ def frame_identity_from_state(state: dict) -> tuple[str, int] | None:
     return boot_id, frame_seq
 
 
+def build_scenario_request(url: str, link_token: str) -> QtNetwork.QNetworkRequest:
+    request = build_get_request(url, timeout_ms=2500)
+    request.setHeader(QtNetwork.QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
+    request.setRawHeader(b"X-AIX-Token", link_token.encode("utf-8"))
+    return request
+
+
+def build_demo_reset_payload(device_id: str, session_id: str) -> dict:
+    return {"device_id": device_id, "session_id": session_id}
+
+
 class PcChainClient(QtCore.QObject):
     health_received = QtCore.Signal(dict)
     state_received = QtCore.Signal(dict)
@@ -37,11 +49,20 @@ class PcChainClient(QtCore.QObject):
     pneumatic_command_finished = QtCore.Signal(dict)
     pneumatic_error = QtCore.Signal(str)
     error_changed = QtCore.Signal(str)
+    scenario_dispatched = QtCore.Signal(dict)
+    scenario_dispatch_error = QtCore.Signal(str)
+    demo_mode_received = QtCore.Signal(dict)
+    demo_mode_error = QtCore.Signal(str)
+    demo_action_dispatched = QtCore.Signal(dict)
+    demo_action_error = QtCore.Signal(str)
+    demo_reset_finished = QtCore.Signal(dict)
+    demo_reset_error = QtCore.Signal(str)
 
-    def __init__(self, service_url: str, device_id: str, *, parent=None) -> None:
+    def __init__(self, service_url: str, device_id: str, *, link_token: str = "", parent=None) -> None:
         super().__init__(parent)
         self.service_url = normalize_service_url(service_url)
         self.device_id = device_id
+        self.link_token = link_token.strip()
         self._network = QtNetwork.QNetworkAccessManager(self)
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(SNAPSHOT_POLL_INTERVAL_MS)
@@ -54,6 +75,10 @@ class PcChainClient(QtCore.QObject):
         self._queued_snapshot: tuple[tuple[str, int], dict] | None = None
         self._pneumatic_config_reply: QtNetwork.QNetworkReply | None = None
         self._poll_count = 0
+        self._demo_session_id = ""
+        self._demo_heartbeat_timer = QtCore.QTimer(self)
+        self._demo_heartbeat_timer.setInterval(5000)
+        self._demo_heartbeat_timer.timeout.connect(self.send_demo_session_heartbeat)
 
     def configure(self, service_url: str, device_id: str) -> None:
         self.service_url = normalize_service_url(service_url)
@@ -62,6 +87,12 @@ class PcChainClient(QtCore.QObject):
         self._requested_identity = None
         self._requested_state = None
         self._queued_snapshot = None
+        self._demo_session_id = ""
+        self._demo_heartbeat_timer.stop()
+
+    def is_link_ready(self) -> bool:
+        """True when the client has a service URL, device ID, and link token configured."""
+        return bool(self.service_url and self.device_id and self.link_token)
 
     def start(self) -> None:
         if not self._timer.isActive():
@@ -90,6 +121,190 @@ class PcChainClient(QtCore.QObject):
         url.setQuery(query)
         self._pneumatic_config_reply = self._network.get(build_get_request(url.toString(), timeout_ms=1500))
         self._pneumatic_config_reply.finished.connect(self._handle_pneumatic_config)
+
+    def send_scenario_risk(self, scene_id: int) -> None:
+        """POST /v1/scenario-risk to PC backend for real ESP32 dispatch."""
+        if not self.service_url or not self.device_id:
+            self.scenario_dispatch_error.emit("未配置 PC 服务地址或设备标识")
+            return
+        if not self.link_token:
+            self.scenario_dispatch_error.emit("未配置 AIX 链路令牌，已阻止场景下发")
+            return
+        if self._last_frame_identity is None:
+            self.scenario_dispatch_error.emit("链路未就绪：未收到 ESP32 帧数据，无法路由场景事件")
+            return
+        url = QtCore.QUrl(f"{self.service_url}/v1/scenario-risk")
+        request = build_scenario_request(url.toString(), self.link_token)
+        body = json.dumps({"scene_id": scene_id, "device_id": self.device_id},
+                          separators=(",", ":")).encode("utf-8")
+        reply = self._network.post(request, body)
+        reply.finished.connect(lambda r=reply: self._handle_scenario_risk(r))
+
+    def _post_json(self, endpoint: str, payload: dict, finished) -> None:
+        request = build_scenario_request(f"{self.service_url}{endpoint}", self.link_token)
+        reply = self._network.post(request, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        reply.finished.connect(lambda r=reply: finished(r))
+
+    def send_demo_session_start(self) -> None:
+        if not self.is_link_ready() or self._last_frame_identity is None:
+            self.demo_mode_error.emit("真实链路未就绪：没有可用头盔最新帧，无法建立模拟通道")
+            return
+        self._demo_session_id = f"demo-{uuid.uuid4().hex[:12]}"
+        self._post_json("/v1/demo/session/start", {
+            "device_id": self.device_id, "session_id": self._demo_session_id, "lease_ms": 15_000,
+        }, self._handle_demo_session_start)
+
+    def _handle_demo_session_start(self, reply: QtNetwork.QNetworkReply) -> None:
+        self._handle_demo_mode_reply(reply, starting=True)
+
+    def send_demo_session_heartbeat(self) -> None:
+        if not self._demo_session_id:
+            return
+        self._post_json("/v1/demo/session/heartbeat", {
+            "device_id": self.device_id, "session_id": self._demo_session_id, "lease_ms": 15_000,
+        }, lambda reply: self._handle_demo_mode_reply(reply, starting=False, heartbeat=True))
+
+    def restore_real_link(self) -> None:
+        if not self._demo_session_id:
+            self.demo_mode_received.emit({"mode": "real", "session_id": "", "lease_remaining_ms": 0})
+            return
+        self._post_json("/v1/demo/session/end", {
+            "device_id": self.device_id, "session_id": self._demo_session_id,
+        }, self._handle_demo_session_end)
+
+    def _handle_demo_session_end(self, reply: QtNetwork.QNetworkReply) -> None:
+        try:
+            payload = self._read_json_reply(reply)
+            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError or not payload.get("accepted"):
+                self.demo_mode_error.emit(self._map_demo_error(reply, payload))
+                return
+            self._demo_heartbeat_timer.stop()
+            self._demo_session_id = ""
+            self.demo_mode_received.emit(payload)
+        finally:
+            reply.deleteLater()
+
+    def _handle_demo_mode_reply(self, reply: QtNetwork.QNetworkReply, *, starting: bool, heartbeat: bool = False) -> None:
+        try:
+            payload = self._read_json_reply(reply)
+            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError or not payload.get("accepted"):
+                self.demo_mode_error.emit(self._map_demo_error(reply, payload))
+                if starting:
+                    self._demo_session_id = ""
+                return
+            if starting:
+                self._demo_heartbeat_timer.start()
+            self.demo_mode_received.emit(payload)
+        finally:
+            reply.deleteLater()
+
+    @staticmethod
+    def _read_json_reply(reply: QtNetwork.QNetworkReply) -> dict:
+        raw = bytes(reply.readAll())
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+
+    @staticmethod
+    def _map_demo_error(reply: QtNetwork.QNetworkReply, payload: dict) -> str:
+        detail = str(payload.get("detail", ""))
+        status = reply.attribute(QtNetwork.QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        if status == 401:
+            return "PC 鉴权失败：链路令牌无效"
+        if status == 503:
+            return f"模拟通道不可达：{detail or reply.errorString()}"
+        if status == 409:
+            return f"模拟通道状态冲突：{detail or reply.errorString()}"
+        return f"模拟通道请求失败：{detail or reply.errorString()}"
+
+    def send_demo_action(self, scene_id: int) -> None:
+        if not self._demo_session_id:
+            self.demo_action_error.emit("模拟通道未启用，请先进入模拟模式")
+            return
+        if self._last_frame_identity is None:
+            self.demo_action_error.emit("未收到头盔最新帧，无法下发模拟动作")
+            return
+        self._post_json("/v1/demo/action", {
+            "device_id": self.device_id, "session_id": self._demo_session_id, "scene_id": scene_id,
+        }, self._handle_demo_action)
+
+    def send_demo_action_reset(self) -> None:
+        if not self._demo_session_id or self._last_frame_identity is None:
+            return
+        self._post_json(
+            "/v1/demo/action/reset",
+            build_demo_reset_payload(self.device_id, self._demo_session_id),
+            self._handle_demo_action_reset,
+        )
+
+    def _handle_demo_action(self, reply: QtNetwork.QNetworkReply) -> None:
+        try:
+            payload = self._read_json_reply(reply)
+            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError or not payload.get("accepted"):
+                self.demo_action_error.emit(self._map_demo_error(reply, payload))
+                return
+            self.demo_action_dispatched.emit(payload)
+        finally:
+            reply.deleteLater()
+
+    def _handle_demo_action_reset(self, reply: QtNetwork.QNetworkReply) -> None:
+        try:
+            payload = self._read_json_reply(reply)
+            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError or not payload.get("accepted"):
+                self.demo_reset_error.emit(self._map_demo_error(reply, payload))
+                return
+            self.demo_reset_finished.emit(payload)
+        finally:
+            reply.deleteLater()
+
+    def _handle_scenario_risk(self, reply: QtNetwork.QNetworkReply) -> None:
+        try:
+            http_status = reply.attribute(QtNetwork.QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            raw = bytes(reply.readAll())
+            if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError:
+                detail = ""
+                try:
+                    body = json.loads(raw.decode("utf-8"))
+                    detail = str(body.get("detail", ""))
+                except Exception:
+                    pass
+                message = self._map_scenario_error(http_status, detail, reply.errorString())
+                self.scenario_dispatch_error.emit(message)
+                return
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict) or not payload.get("accepted"):
+                self.scenario_dispatch_error.emit("场景下发被 PC 服务拒绝")
+                return
+            self.scenario_dispatched.emit(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self.scenario_dispatch_error.emit(f"场景下发响应无效：{exc}")
+        finally:
+            reply.deleteLater()
+
+    @staticmethod
+    def _map_scenario_error(http_status: int | None, detail: str, fallback: str) -> str:
+        """Map PC backend HTTP response to user-facing Chinese error messages."""
+        if http_status == 401:
+            return "PC 鉴权失败：链路令牌无效"
+        if http_status == 503:
+            if "no recent frame" in detail.lower():
+                return "未收到头盔最新帧：ESP32 尚未上传检测画面"
+            if "health endpoint" in detail.lower() or "unreachable" in detail.lower():
+                return f"ESP32:8080 不可达：{detail}"
+            return f"ESP32 服务不可用：{detail or fallback}"
+        if http_status == 502:
+            if "身份不匹配" in detail or "identity mismatch" in detail.lower():
+                return f"ESP32 身份不匹配：{detail}"
+            if "拒绝" in detail or "rejected" in detail.lower():
+                return f"ESP32 拒绝风险事件：{detail}"
+            if "不可达" in detail or "call failed" in detail.lower():
+                return f"ESP32:8080 不可达：{detail}"
+            return f"ESP32 通信失败：{detail or fallback}"
+        if http_status in (422, 400):
+            return f"场景请求参数无效：{detail or fallback}"
+        return fallback
 
     def send_pneumatic_command(self, payload: dict) -> None:
         if not self.service_url or not self.device_id:
@@ -233,7 +448,8 @@ class PcChainClient(QtCore.QObject):
             self._start_queued_snapshot()
             return
         if expected is None or (boot_id, frame_seq) != expected:
-            self.error_changed.emit("PC 最新帧与链路状态不一致，已丢弃")
+            # Frame identity doesn't match what was requested — the state has
+            # advanced since we asked.  Discard silently and try the next one.
             reply.deleteLater()
             self._start_queued_snapshot()
             return

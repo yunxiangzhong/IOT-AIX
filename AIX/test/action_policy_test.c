@@ -67,20 +67,29 @@ int main(void)
     expect(action_policy_accept(&policy, &input, 2900) == RISK_REJECT_SEQUENCE,
            "out-of-order frame accepted");
 
-    input = risk(5, 3000, 29, "attention");
-    expect(action_policy_accept(&policy, &input, 3100) == RISK_REJECT_BAND,
+    input = risk(4, 2900, 85, "critical");
+    input.scene_requested = true;
+    input.scene_id = 4;
+    expect(action_policy_accept(&policy, &input, 3000) == RISK_ACCEPTED,
+           "scene must be accepted without advancing the real frame sequence");
+    input = risk(5, 3000, 20, "low");
+    expect(action_policy_accept(&policy, &input, 3100) == RISK_ACCEPTED,
+           "next real frame must remain acceptable after a scene");
+
+    input = risk(6, 3200, 29, "attention");
+    expect(action_policy_accept(&policy, &input, 3300) == RISK_REJECT_BAND,
            "score/band mismatch accepted");
-    input = risk(5, 100, 20, "low");
-    expect(action_policy_accept(&policy, &input, 3201) == RISK_REJECT_STALE,
+    input = risk(6, 100, 20, "low");
+    expect(action_policy_accept(&policy, &input, 3301) == RISK_REJECT_STALE,
            "stale callback accepted");
-    input = risk(5, 3200, 20, "low");
+    input = risk(6, 3300, 20, "low");
     input.boot_id = "fedcba9876543210";
-    expect(action_policy_accept(&policy, &input, 3300) == RISK_REJECT_BOOT,
+    expect(action_policy_accept(&policy, &input, 3400) == RISK_REJECT_BOOT,
            "wrong boot id accepted");
 
-    expect(action_policy_decide(&policy, 5800).state == ACTION_STATE_FAULT,
+    expect(action_policy_decide(&policy, 6101).state == ACTION_STATE_FAULT,
            "risk older than three seconds must fail safe");
-    expect(action_policy_decide(&policy, 5800).rgb_pattern == RGB_PURPLE_BLINK_1HZ,
+    expect(action_policy_decide(&policy, 6101).rgb_pattern == RGB_PURPLE_BLINK_1HZ,
            "stale risk must blink purple");
 
     action_policy_set_fault(&policy, ACTION_FAULT_NETWORK, true);

@@ -24,7 +24,6 @@ typedef struct {
     char command_id[PNEUMATIC_COMMAND_ID_CAPACITY];
     float target_kpa;
     float max_kpa;
-    uint32_t max_inflate_ms;
 } pneumatic_command_t;
 
 typedef struct {

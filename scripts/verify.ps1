@@ -38,6 +38,16 @@ if (-not (Test-Path -LiteralPath $python)) {
     throw "Missing project virtual environment: $python"
 }
 
+$sdkconfigText = Get-Content -Raw -LiteralPath (Join-Path $aix "sdkconfig")
+$previewPort = [regex]::Match($sdkconfigText, '(?m)^CONFIG_AIX_CAMERA_PREVIEW_PORT=(\d+)').Groups[1].Value
+$riskPort = [regex]::Match($sdkconfigText, '(?m)^CONFIG_AIX_RISK_RECEIVER_PORT=(\d+)').Groups[1].Value
+if ($previewPort -and $riskPort -and $previewPort -eq $riskPort) {
+    throw "Camera preview and risk receiver ports must be different; both are configured as $riskPort"
+}
+if ($riskPort -ne "8080") {
+    throw "Risk receiver port must remain 8080 for the PC callback path; found $riskPort"
+}
+
 $gcc = Get-Command gcc -ErrorAction SilentlyContinue
 if ($null -eq $gcc) {
     throw "gcc was not found in PATH. Install MinGW-w64 or run from a configured development shell."
@@ -123,6 +133,17 @@ Invoke-HostCTest "voice_prompt_test" @(
     (Join-Path $main "dfplayer.c"),
     (Join-Path $main "voice_prompt.c"),
     (Join-Path $aix "test\voice_prompt_test.c")
+)
+Invoke-HostCTest "voice_prompt_scene_test" @(
+    (Join-Path $main "dfplayer.c"),
+    (Join-Path $main "voice_prompt.c"),
+    (Join-Path $aix "test\voice_prompt_scene_test.c")
+)
+
+Invoke-HostCTest "demo_mode_test" @(
+    (Join-Path $aix "main\risk_receiver.c"),
+    (Join-Path $aix "test\demo_mode_test.c"),
+    "-I", (Join-Path $aix "main")
 )
 Invoke-HostCTest "vision_uplink_test" @(
     (Join-Path $main "vision_uplink.c"),

@@ -90,6 +90,101 @@ class FrameApiTests(unittest.TestCase):
         self.assertEqual(state["action"]["rgb_pattern"], "")
 
 
+class ScenarioRiskApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.calls = []
+        self.ack_accepted = True
+
+        def transport(url, token, payload, timeout_s):
+            self.calls.append((url, token, payload))
+            return {
+                "type": "action_ack", "version": 1,
+                "frame_seq": payload["frame_seq"], "accepted": self.ack_accepted,
+                "stale": False, "action_state": "critical",
+                "rgb_pattern": "red_double_pulse",
+                "voice_ack": {"accepted": True, "track": payload["voice_prompt"]["track"]},
+            }
+
+        callback = RiskCallbackClient(token="unit-secret", transport=transport, retry_delays_s=(0,))
+        self.client = TestClient(create_app(None, token="unit-secret", callback_client=callback, start_worker=False))
+        headers = {
+            "X-AIX-Token": "unit-secret", "X-Device-Id": "aix-helmet-01",
+            "X-Boot-Id": "0123456789abcdef", "X-Frame-Seq": "12", "X-Capture-Ts-Ms": "4800",
+        }
+        self.assertEqual(self.client.post("/v1/frames", content=JPEG_A, headers=headers).status_code, 202)
+
+    def test_scenario_uses_latest_real_frame_sequence(self) -> None:
+        response = self.client.post("/v1/scenario-risk", json={"scene_id": 4, "device_id": "aix-helmet-01"},
+                                    headers={"X-AIX-Token": "unit-secret"})
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(self.calls[0][2]["frame_seq"], 12)
+        self.assertEqual(self.calls[0][2]["scene"], 4)
+        self.assertEqual(self.calls[0][2]["voice_prompt"]["track"], 4)
+
+    def test_scenario_surfaces_a_rejected_esp_ack(self) -> None:
+        self.ack_accepted = False
+        response = self.client.post("/v1/scenario-risk", json={"scene_id": 5, "device_id": "aix-helmet-01"},
+                                    headers={"X-AIX-Token": "unit-secret"})
+        self.assertEqual(response.status_code, 502)
+
+
+class DemoModeApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.calls = []
+
+        def device_transport(url, token, payload, timeout_s):
+            self.calls.append((url, token, payload))
+            if url.endswith("/demo/action"):
+                return {"type": "demo_action_ack", "version": 1, "accepted": True,
+                        "scene_id": payload["scene_id"], "frame_seq": payload["frame_seq"]}
+            if url.endswith("/demo/action/reset"):
+                return {"type": "demo_action_reset_ack", "version": 1, "accepted": True,
+                        "pneumatic": {"accepted": True, "state": "venting"}}
+            return {"type": "demo_session_ack", "version": 1, "accepted": True,
+                    "session_id": payload.get("session_id", "demo-1")}
+
+        self.client = TestClient(create_app(
+            None, token="unit-secret", device_transport=device_transport, start_worker=False,
+        ))
+        headers = {
+            "X-AIX-Token": "unit-secret", "X-Device-Id": "aix-helmet-01",
+            "X-Boot-Id": "0123456789abcdef", "X-Frame-Seq": "12", "X-Capture-Ts-Ms": "4800",
+        }
+        self.assertEqual(self.client.post("/v1/frames", content=JPEG_A, headers=headers).status_code, 202)
+
+    def test_demo_session_uses_separate_endpoint_and_blocks_real_mode_dispatch(self) -> None:
+        start = self.client.post("/v1/demo/session/start", json={
+            "device_id": "aix-helmet-01", "session_id": "demo-1", "lease_ms": 15_000,
+        }, headers={"X-AIX-Token": "unit-secret"})
+        self.assertEqual(start.status_code, 202)
+        self.assertEqual(start.json()["mode"], "demo")
+        self.assertEqual(self.client.get("/v1/operating-mode").json()["mode"], "demo")
+
+        action = self.client.post("/v1/demo/action", json={
+            "device_id": "aix-helmet-01", "session_id": "demo-1", "scene_id": 5,
+        }, headers={"X-AIX-Token": "unit-secret"})
+        self.assertEqual(action.status_code, 202)
+        self.assertTrue(action.json()["accepted"])
+        self.assertTrue(self.calls[-1][0].endswith("/demo/action"))
+
+        reset = self.client.post("/v1/demo/action/reset", json={
+            "device_id": "aix-helmet-01", "session_id": "demo-1",
+        }, headers={"X-AIX-Token": "unit-secret"})
+        self.assertEqual(reset.status_code, 202)
+        self.assertTrue(reset.json()["accepted"])
+        self.assertTrue(self.calls[-1][0].endswith("/demo/action/reset"))
+
+        real = self.client.post("/v1/scenario-risk", json={"scene_id": 5, "device_id": "aix-helmet-01"},
+                                headers={"X-AIX-Token": "unit-secret"})
+        self.assertEqual(real.status_code, 409)
+
+        end = self.client.post("/v1/demo/session/end", json={
+            "device_id": "aix-helmet-01", "session_id": "demo-1",
+        }, headers={"X-AIX-Token": "unit-secret"})
+        self.assertEqual(end.status_code, 202)
+        self.assertEqual(end.json()["mode"], "real")
+
+
 class RiskCallbackTests(unittest.TestCase):
     def test_retries_then_requires_matching_action_ack(self) -> None:
         attempts = []
