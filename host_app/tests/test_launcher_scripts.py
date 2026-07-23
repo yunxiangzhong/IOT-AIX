@@ -12,7 +12,7 @@ class LauncherScriptTests(unittest.TestCase):
     def test_launcher_ensures_hotspot_before_starting_host_app(self):
         launcher = (HOST_APP / "start_stack.ps1").read_text(encoding="utf-8")
         helper_call = "ensure_mobile_hotspot.ps1"
-        app_call = '"-m", "aix_host_app.web_server"'
+        app_call = '"-m", "aix_host_app"'
 
         self.assertIn(helper_call, launcher)
         self.assertLess(launcher.index(helper_call), launcher.index(app_call))
@@ -42,21 +42,13 @@ class LauncherScriptTests(unittest.TestCase):
         self.assertIn("server:create_runtime_app", launcher)
         self.assertIn("/healthz", launcher)
         self.assertLess(launcher.index("sync_runtime_config.ps1"), launcher.index("server:create_runtime_app"))
-        self.assertLess(launcher.index("/healthz"), launcher.index('"-m", "aix_host_app.web_server"'))
+        self.assertLess(launcher.index("/healthz"), launcher.index('"-m", "aix_host_app"'))
         self.assertTrue(sync_script.exists())
         content = sync_script.read_text(encoding="utf-8")
         self.assertIn("CONFIG_AIX_WIFI_SSID", content)
         self.assertIn("CONFIG_AIX_LINK_TOKEN", content)
         self.assertIn('ValidateSet("Preserve", "Manual", "Automatic")', content)
         self.assertIn("CONFIG_AIX_ENABLE_PNEUMATIC_AUTOMATIC", content)
-
-    def test_launcher_starts_loopback_browser_dashboard_on_9696(self):
-        launcher = (HOST_APP / "start_stack.ps1").read_text(encoding="utf-8")
-        command = (HOST_APP / "start_host_app.cmd").read_text(encoding="utf-8")
-
-        self.assertIn("127.0.0.1:$WebPort", launcher)
-        self.assertIn("aix_host_app.web_server", launcher)
-        self.assertIn('set "AIX_WEB_PORT=9696"', command)
 
     def test_launcher_reuses_only_the_expected_ready_cuda_model_service(self):
         launcher = (HOST_APP / "start_stack.ps1").read_text(encoding="utf-8")

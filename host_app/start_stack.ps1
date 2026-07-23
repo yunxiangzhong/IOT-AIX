@@ -1,17 +1,7 @@
 [CmdletBinding()]
-param(
-    [switch]$DryRun,
-    [int]$WebPort = 9696
-)
+param([switch]$DryRun)
 
 $ErrorActionPreference = "Stop"
-if (-not [string]::IsNullOrWhiteSpace($env:AIX_WEB_PORT)) {
-    try {
-        $WebPort = [int]$env:AIX_WEB_PORT
-    } catch {
-        throw "AIX_WEB_PORT must be an integer: $env:AIX_WEB_PORT"
-    }
-}
 $hostRoot = $PSScriptRoot
 $projectRoot = Split-Path -Parent $hostRoot
 $commonGitDir = (& git -C $projectRoot rev-parse --git-common-dir).Trim()
@@ -51,11 +41,8 @@ foreach ($required in @($hostPython, $modelPython, $syncScript, $hotspotScript))
     }
 }
 if ($DryRun) {
-    Write-Output "aix_stack_ready host_python=$hostPython model_python=$modelPython web_port=$WebPort"
+    Write-Output "aix_stack_ready host_python=$hostPython model_python=$modelPython"
     exit 0
-}
-if ($WebPort -lt 1024 -or $WebPort -gt 65535) {
-    throw "AIX web port must be between 1024 and 65535: $WebPort"
 }
 
 Write-Output "[1/5] Synchronizing ignored runtime configuration..."
@@ -134,20 +121,15 @@ try {
         throw "DA3-SMALL + YOLO26m CUDA model service did not become ready within 180 seconds. See $stderrPath"
     }
 
-    Write-Output "[5/5] Starting local browser dashboard on http://127.0.0.1:$WebPort..."
+    Write-Output "[5/5] Starting PySide6 industrial dashboard..."
     Push-Location $hostRoot
     try {
-        $hostArgs = @("-m", "aix_host_app.web_server", "--port", "$WebPort")
-        $web = Start-Process -FilePath $hostPython -ArgumentList $hostArgs -WorkingDirectory $hostRoot -WindowStyle Hidden -PassThru
-        Start-Sleep -Milliseconds 700
-        if ($web.HasExited) {
-            throw "Web dashboard exited early with code $($web.ExitCode)"
+        $hostArgs = @("-m", "aix_host_app")
+        & $hostPython @hostArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "Host app exited with code $LASTEXITCODE"
         }
-        Start-Process "http://127.0.0.1:$WebPort"
-        Wait-Process -Id $web.Id
-        if ($web.ExitCode -ne 0) { throw "Web dashboard exited with code $($web.ExitCode)" }
     } finally {
-        if ($null -ne $web -and -not $web.HasExited) { Stop-Process -Id $web.Id -Force }
         Pop-Location
     }
 } finally {
