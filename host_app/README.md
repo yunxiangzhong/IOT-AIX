@@ -86,7 +86,7 @@ cd D:\Projects\IOTCompetition\ProjectFile\host_app
 .\start_host_app.cmd
 ~~~
 
-启动器会同步运行时配置、检查 2.4 GHz 热点，只复用已确认 DA3-SMALL、YOLO26m、CUDA 和真实后端全部就绪的模型服务，否则启动异步模型服务并等待同一完整条件，再启动 UI。旧 run_host_app.cmd 不是当前链路入口。
+启动器会同步运行时配置、检查 2.4 GHz 热点，只复用已确认 DA3-SMALL、YOLO26m、CUDA 和真实后端全部就绪的模型服务，否则启动异步模型服务并等待同一完整条件。随后它启动本机网页上位机并自动打开 `http://127.0.0.1:9696`；8008 仍只用于 DA3 推理与 ESP32 回调，不能改作网页端口。网页在收到可解析 AIX 串口遥测前只显示“等待确认”，不会把端口已打开误报为设备已连接。旧 run_host_app.cmd 不是当前链路入口。
 
 运行时 Wi-Fi、token、串口和存储路径都在本机配置中；凭据与 token 不会提交到 Git。
 

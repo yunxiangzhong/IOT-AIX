@@ -16,8 +16,9 @@ if not exist "%HOST_ROOT%start_stack.ps1" (
 
 set "DRY_RUN_ARG="
 if /i "%AIX_HOST_DRY_RUN%"=="1" set "DRY_RUN_ARG=-DryRun"
+set "AIX_WEB_PORT=9696"
 
-echo [AIX] Starting host stack from "%HOST_ROOT%"
+echo [AIX] Starting browser host stack on http://127.0.0.1:%AIX_WEB_PORT% from "%HOST_ROOT%"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%HOST_ROOT%start_stack.ps1" %DRY_RUN_ARG%
 set "STACK_EXIT_CODE=%ERRORLEVEL%"
 popd
