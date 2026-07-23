@@ -571,6 +571,9 @@ static esp_err_t risk_handler(httpd_req_t *request)
     risk.dominant_class = dominant->valuestring;
     risk.reason = reason->valuestring;
     risk.valid = true;
+    cJSON *actuation_hazard = cJSON_GetObjectItemCaseSensitive(root, "actuation_hazard_active");
+    risk.actuation_hazard_present = cJSON_IsBool(actuation_hazard);
+    risk.actuation_hazard_active = risk.actuation_hazard_present && cJSON_IsTrue(actuation_hazard);
 
     if (device_and_boot_match(device, boot) &&
         cached_ack_matches(&risk, voice_requested, voice_request.command_id, &decision, &voice_result)) {

@@ -65,6 +65,15 @@ static pneumatic_policy_output_t output_from_policy(const pneumatic_policy_t *po
     return output;
 }
 
+static bool actuation_requests_fast_vent(const pneumatic_policy_t *policy,
+                                         const pneumatic_policy_input_t *input) {
+    return input->actuation_hazard_present && !input->actuation_hazard_active &&
+           policy->operation == PNEUMATIC_OPERATION_AUTOMATIC &&
+           (policy->trigger_source == PNEUMATIC_TRIGGER_VISION_CRITICAL ||
+            policy->trigger_source == PNEUMATIC_TRIGGER_VISION_HIGH ||
+            policy->trigger_source == PNEUMATIC_TRIGGER_VISION_ATTENTION);
+}
+
 pneumatic_policy_config_t pneumatic_policy_default_config(void) {
     return (pneumatic_policy_config_t){
         .calibration_enabled = true,
@@ -191,6 +200,12 @@ pneumatic_policy_output_t pneumatic_policy_step(
             break;
 
         case PNEUMATIC_STATE_PRIME_VALVE:
+            if (actuation_requests_fast_vent(policy, input)) {
+                policy->operation = PNEUMATIC_OPERATION_NONE;
+                policy->trigger_source = PNEUMATIC_TRIGGER_NONE;
+                enter_state(policy, PNEUMATIC_STATE_VENTING, now_ms);
+                break;
+            }
             if (now_ms - policy->state_started_ms >= PNEUMATIC_PRIME_VALVE_MS) {
                 enter_state(policy, PNEUMATIC_STATE_INFLATING, now_ms);
             }
@@ -198,6 +213,12 @@ pneumatic_policy_output_t pneumatic_policy_step(
 
         case PNEUMATIC_STATE_INFLATING: {
             if (policy->operation == PNEUMATIC_OPERATION_AUTOMATIC) {
+                if (actuation_requests_fast_vent(policy, input)) {
+                    policy->operation = PNEUMATIC_OPERATION_NONE;
+                    policy->trigger_source = PNEUMATIC_TRIGGER_NONE;
+                    enter_state(policy, PNEUMATIC_STATE_VENTING, now_ms);
+                    break;
+                }
                 if (input->pressure_kpa >= policy->active_target_kpa) {
                     enter_state(policy, PNEUMATIC_STATE_HOLDING, now_ms);
                 }
@@ -217,6 +238,12 @@ pneumatic_policy_output_t pneumatic_policy_step(
 
         case PNEUMATIC_STATE_HOLDING:
             if (policy->operation == PNEUMATIC_OPERATION_AUTOMATIC) {
+                if (actuation_requests_fast_vent(policy, input)) {
+                    policy->operation = PNEUMATIC_OPERATION_NONE;
+                    policy->trigger_source = PNEUMATIC_TRIGGER_NONE;
+                    enter_state(policy, PNEUMATIC_STATE_VENTING, now_ms);
+                    break;
+                }
                 if (automatic_trigger == PNEUMATIC_TRIGGER_NONE) {
                     if (policy->clear_started_ms == 0U) {
                         policy->clear_started_ms = now_ms;

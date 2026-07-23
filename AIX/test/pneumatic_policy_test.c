@@ -314,6 +314,147 @@ static void test_self_test_can_request_a_longer_calibration_pulse(void)
     assert(!output.pump_on);
 }
 
+static void test_actuation_hazard_false_fast_vents_in_prime_valve(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = automatic_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.vision_state = ACTION_STATE_HIGH;
+    input.vision_fresh = true;
+
+    pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 1);
+    assert(output.state == PNEUMATIC_STATE_PRIME_VALVE);
+    assert(output.valve_on && !output.pump_on);
+
+    input.actuation_hazard_present = true;
+    input.actuation_hazard_active = false;
+    input.pressure_timestamp_ms = 2;
+    output = pneumatic_policy_step(&policy, &input, 2);
+    assert(output.state == PNEUMATIC_STATE_VENTING);
+    assert(!output.pump_on && !output.valve_on);
+    assert(output.trigger_source == PNEUMATIC_TRIGGER_NONE);
+}
+
+static void test_actuation_hazard_false_fast_vents_in_inflating(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = automatic_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.vision_state = ACTION_STATE_HIGH;
+    input.vision_fresh = true;
+
+    pneumatic_policy_step(&policy, &input, 1);
+    pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 21);
+    assert(output.state == PNEUMATIC_STATE_INFLATING);
+    assert(output.pump_on && output.valve_on);
+
+    input.actuation_hazard_present = true;
+    input.actuation_hazard_active = false;
+    input.pressure_timestamp_ms = 22;
+    output = pneumatic_policy_step(&policy, &input, 22);
+    assert(output.state == PNEUMATIC_STATE_VENTING);
+    assert(!output.pump_on && !output.valve_on);
+    assert(output.trigger_source == PNEUMATIC_TRIGGER_NONE);
+}
+
+static void test_actuation_hazard_false_bypasses_clear_confirm_in_holding(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = automatic_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.vision_state = ACTION_STATE_HIGH;
+    input.vision_fresh = true;
+
+    pneumatic_policy_step(&policy, &input, 1);
+    pneumatic_policy_step(&policy, &input, 21);
+    input.pressure_kpa = config.target_kpa;
+    input.pressure_timestamp_ms = 22;
+    pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 22);
+    assert(output.state == PNEUMATIC_STATE_HOLDING);
+
+    /* With actuation_hazard signal present and false, vent immediately —
+     * should not wait 5 seconds (PNEUMATIC_CLEAR_CONFIRM_MS). */
+    input.actuation_hazard_present = true;
+    input.actuation_hazard_active = false;
+    input.pressure_timestamp_ms = 23;
+    output = pneumatic_policy_step(&policy, &input, 23);
+    assert(output.state == PNEUMATIC_STATE_VENTING);
+    assert(!output.pump_on && !output.valve_on);
+    assert(output.trigger_source == PNEUMATIC_TRIGGER_NONE);
+}
+
+static void test_actuation_hazard_absent_falls_back_to_clear_confirm(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = automatic_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.vision_state = ACTION_STATE_HIGH;
+    input.vision_fresh = true;
+
+    pneumatic_policy_step(&policy, &input, 1);
+    pneumatic_policy_step(&policy, &input, 21);
+    input.pressure_kpa = config.target_kpa;
+    input.pressure_timestamp_ms = 22;
+    pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 22);
+    assert(output.state == PNEUMATIC_STATE_HOLDING);
+
+    /* No actuation_hazard signal → must still wait full clear_confirm. */
+    input.vision_fresh = false;
+    input.actuation_hazard_present = false;
+    input.pressure_timestamp_ms = 23;
+    output = pneumatic_policy_step(&policy, &input, 23);
+    assert(output.state == PNEUMATIC_STATE_HOLDING);
+
+    input.pressure_timestamp_ms = 5023;
+    output = pneumatic_policy_step(&policy, &input, 5023);
+    assert(output.state == PNEUMATIC_STATE_VENTING);
+}
+
+static void test_actuation_hazard_false_does_not_affect_mpu_trigger(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = automatic_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.motion_impact = true;
+
+    pneumatic_policy_step(&policy, &input, 1);
+    pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 21);
+    assert(output.state == PNEUMATIC_STATE_INFLATING);
+    assert(output.trigger_source == PNEUMATIC_TRIGGER_MPU_IMPACT);
+
+    /* MPU trigger should NOT be interrupted by actuation_hazard. */
+    input.actuation_hazard_present = true;
+    input.actuation_hazard_active = false;
+    input.pressure_timestamp_ms = 22;
+    output = pneumatic_policy_step(&policy, &input, 22);
+    assert(output.state == PNEUMATIC_STATE_INFLATING);
+    assert(output.pump_on && output.valve_on);
+}
+
+static void test_actuation_hazard_false_does_not_affect_calibration(void)
+{
+    pneumatic_policy_t policy;
+    pneumatic_policy_config_t config = pneumatic_policy_default_config();
+    pneumatic_policy_init(&policy, &config, 0);
+    pneumatic_policy_input_t input = safe_input();
+    input.manual_inflate_pulse = true;
+
+    pneumatic_policy_output_t output = pneumatic_policy_step(&policy, &input, 1);
+    assert(output.state == PNEUMATIC_STATE_PRIME_VALVE);
+
+    input.actuation_hazard_present = true;
+    input.actuation_hazard_active = false;
+    input.pressure_timestamp_ms = 2;
+    output = pneumatic_policy_step(&policy, &input, 2);
+    /* Manual calibration must not be interrupted. */
+    assert(output.state == PNEUMATIC_STATE_PRIME_VALVE);
+}
+
 int main(void)
 {
     test_high_risk_starts_pump_holds_then_vents_after_clear();
@@ -329,6 +470,12 @@ int main(void)
     test_stale_pressure_has_startup_grace_then_faults();
     test_manual_pulse_remains_available_without_automatic_mode();
     test_self_test_can_request_a_longer_calibration_pulse();
+    test_actuation_hazard_false_fast_vents_in_prime_valve();
+    test_actuation_hazard_false_fast_vents_in_inflating();
+    test_actuation_hazard_false_bypasses_clear_confirm_in_holding();
+    test_actuation_hazard_absent_falls_back_to_clear_confirm();
+    test_actuation_hazard_false_does_not_affect_mpu_trigger();
+    test_actuation_hazard_false_does_not_affect_calibration();
     puts("pneumatic_policy_test: PASS");
     return 0;
 }

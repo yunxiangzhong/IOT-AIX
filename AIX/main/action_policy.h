@@ -53,6 +53,8 @@ typedef struct {
     const char *dominant_class;
     const char *reason;
     bool valid;
+    bool actuation_hazard_present;
+    bool actuation_hazard_active;
 } vision_risk_input_t;
 
 typedef struct {
@@ -66,6 +68,8 @@ typedef struct {
     char risk_band[12];
     uint8_t faults;
     bool has_risk;
+    bool actuation_hazard_present;
+    bool actuation_hazard_active;
 } action_policy_t;
 
 typedef struct {
@@ -75,6 +79,8 @@ typedef struct {
     uint8_t risk_score;
     bool stale;
     bool valid;
+    bool actuation_hazard_present;
+    bool actuation_hazard_active;
 } action_decision_t;
 
 void action_policy_init(action_policy_t *policy, const char *device_id, const char *boot_id, uint64_t now_ms);

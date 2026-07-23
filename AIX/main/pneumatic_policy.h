@@ -86,6 +86,8 @@ typedef struct {
     bool vent_request;
     bool emergency_stop;
     bool reset_fault;
+    bool actuation_hazard_present;
+    bool actuation_hazard_active;
 } pneumatic_policy_input_t;
 
 typedef struct {

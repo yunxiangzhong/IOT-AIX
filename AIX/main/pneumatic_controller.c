@@ -283,6 +283,8 @@ static void controller_task(void *arg)
             .vent_request = pending.vent,
             .emergency_stop = pending.emergency_stop,
             .reset_fault = pending.reset_fault,
+            .actuation_hazard_present = decision.actuation_hazard_present,
+            .actuation_hazard_active = decision.actuation_hazard_active,
         };
 
         const pneumatic_status_t previous = s_status;

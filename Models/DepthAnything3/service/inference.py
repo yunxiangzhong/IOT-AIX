@@ -38,6 +38,7 @@ class RiskSummary:
     risk_band: str
     dominant_class: str
     reason: str
+    actuation_hazard_active: bool
 
 
 class RiskTracker:
@@ -238,6 +239,7 @@ def summarize_risk(
             reason = f"{detection.class_name}_proximity"
             emergency = object_emergency
 
+    actuation_hazard_active = (best_score >= 60.0 or emergency)
     smoothed, stable_band = tracker.update(best_score, emergency=emergency)
     return RiskSummary(
         depth_p10=float(p10),
@@ -248,6 +250,7 @@ def summarize_risk(
         risk_band=stable_band,
         dominant_class=dominant_class,
         reason=reason,
+        actuation_hazard_active=actuation_hazard_active,
     )
 
 
@@ -425,4 +428,5 @@ class VisionAnalyzer:
             reason=summary.reason,
             latency_ms=(perf_counter() - started) * 1000.0,
             detector_model=self.detector_model_name,
+            actuation_hazard_active=summary.actuation_hazard_active,
         )

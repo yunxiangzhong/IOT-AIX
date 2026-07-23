@@ -62,6 +62,8 @@ risk_accept_result_t action_policy_accept(action_policy_t *policy, const vision_
     policy->risk_score = (uint8_t)risk->risk_score;
     strncpy(policy->risk_band, risk->risk_band, sizeof(policy->risk_band) - 1U);
     policy->risk_band[sizeof(policy->risk_band) - 1U] = '\0';
+    policy->actuation_hazard_present = risk->actuation_hazard_present;
+    policy->actuation_hazard_active = risk->actuation_hazard_active;
     return RISK_ACCEPTED;
 }
 
@@ -90,6 +92,8 @@ action_decision_t action_policy_decide(const action_policy_t *policy, uint64_t n
     }
     result.source_frame_seq = policy->frame_seq;
     result.risk_score = policy->risk_score;
+    result.actuation_hazard_present = policy->actuation_hazard_present;
+    result.actuation_hazard_active = policy->actuation_hazard_active;
     if (policy->faults != 0U) {
         return result;
     }

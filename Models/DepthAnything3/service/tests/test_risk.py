@@ -105,6 +105,62 @@ class RiskAlgorithmTests(unittest.TestCase):
         self.assertEqual(band, "critical")
         self.assertGreaterEqual(score, 80)
 
+    def test_actuation_hazard_active_true_when_raw_score_above_threshold(self) -> None:
+        """actuation_hazard_active reflects unsmoothed raw risk, not smoothed."""
+        depth = np.full((100, 100), 0.9, dtype=np.float32)
+        depth[30:80, 40:60] = 0.2
+        confidence = np.ones_like(depth)
+        detections = [
+            DetectionSummary("car", 0.9, (0.4, 0.3, 0.6, 0.8), 0.2),
+        ]
+        tracker = RiskTracker()
+        result = None
+        for now_ms in (1000, 2000):
+            result = summarize_risk(
+                depth=depth, confidence=confidence,
+                detections=detections, tracker=tracker, now_ms=now_ms,
+            )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.actuation_hazard_active,
+                        "raw object score >= 60 should set actuation_hazard_active=True")
+
+    def test_actuation_hazard_active_false_for_low_raw_score(self) -> None:
+        """Low raw risk must produce actuation_hazard_active=False regardless of EMA."""
+        depth = np.ones((100, 100), dtype=np.float32)
+        depth[50:, 20:70] = 0.1
+        confidence = np.ones_like(depth)
+        tracker = RiskTracker()
+
+        # Saturate the EMA so smoothed stays high.
+        for _ in range(6):
+            tracker.update(50.0)
+        # Single frame with low raw risk: unsmoothed hazard should be false.
+        result = summarize_risk(
+            depth=depth, confidence=confidence, detections=[],
+            tracker=tracker, now_ms=8000,
+        )
+        self.assertFalse(result.actuation_hazard_active,
+                         "low raw score (<60) should set actuation_hazard_active=False")
+
+    def test_actuation_hazard_active_with_emergency(self) -> None:
+        """Emergency must force actuation_hazard_active=True."""
+        depth = np.full((100, 100), 0.5, dtype=np.float32)
+        depth[40:80, 30:70] = 0.05
+        confidence = np.ones_like(depth)
+        detections = [
+            DetectionSummary("car", 0.92, (0.35, 0.45, 0.65, 0.75), 0.08),
+        ]
+        tracker = RiskTracker()
+        result = None
+        for now_ms in (1000, 2000):
+            result = summarize_risk(
+                depth=depth, confidence=confidence,
+                detections=detections, tracker=tracker, now_ms=now_ms,
+            )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.actuation_hazard_active,
+                        "emergency-qualifying detection must set actuation_hazard_active=True")
+
 
 if __name__ == "__main__":
     unittest.main()

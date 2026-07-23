@@ -45,13 +45,14 @@ def build_vision_risk_response(
     reason: str,
     latency_ms: float,
     detector_model: str = "YOLO26m-COCO",
+    actuation_hazard_active: bool | None = None,
 ) -> dict:
     measurements = (depth_p10, depth_median, confidence_median, latency_ms)
     if frame_seq < 0 or capture_ts_ms < 0 or not all(math.isfinite(value) for value in measurements):
         raise ValueError("vision_risk fields must be finite non-negative values")
     if not 0 <= risk_score <= 100 or risk_band not in {"low", "attention", "high", "critical"}:
         raise ValueError("risk_score or risk_band is invalid")
-    return {
+    payload: dict = {
         "type": "vision_risk",
         "version": 1,
         "frame_seq": frame_seq,
@@ -69,3 +70,6 @@ def build_vision_risk_response(
         "latency_ms": latency_ms,
         "valid": True,
     }
+    if actuation_hazard_active is not None:
+        payload["actuation_hazard_active"] = actuation_hazard_active
+    return payload
